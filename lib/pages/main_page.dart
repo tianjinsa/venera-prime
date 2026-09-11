@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:venera/agent/agent_integration.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/pages/categories_page.dart';
 import 'package:venera/pages/search_page.dart';
@@ -41,13 +42,14 @@ class _MainPageState extends State<MainPage> {
     _observer = NaviObserver();
     _navigatorKey = GlobalKey();
     App.mainNavigatorKey = _navigatorKey;
-    index = int.tryParse(appdata.settings['initialPage'].toString()) ?? 0;
+    index = agentInitialPage(appdata.settings['initialPage']);
     super.initState();
   }
 
   final _pages = [
     const HomePage(),
     const FavoritesPage(key: PageStorageKey('favorites')),
+    const AgentPage(key: PageStorageKey('agent')),
     const ExplorePage(key: PageStorageKey('explore')),
     const CategoriesPage(key: PageStorageKey('categories')),
   ];
@@ -71,6 +73,7 @@ class _MainPageState extends State<MainPage> {
           icon: Icons.local_activity_outlined,
           activeIcon: Icons.local_activity,
         ),
+        agentPaneItem,
         PaneItemEntry(
           label: 'Explore'.tl,
           icon: Icons.explore_outlined,
