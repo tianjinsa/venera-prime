@@ -1,16 +1,15 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:venera/components/components.dart' show ComicTile;
 import 'package:venera/foundation/app.dart';
-import 'package:venera/foundation/appdata.dart';
 import 'package:venera/pages/comic_source_page.dart';
 import 'agent_controller.dart';
 import 'agent_message_view.dart';
 import 'agent_models.dart';
 import 'agent_settings_page.dart';
+import 'agent_showcase_view.dart';
 import 'agent_store.dart';
-import 'agent_tools.dart';
+import 'agent_turn_view.dart';
 
 class AgentPage extends StatefulWidget {
   final AgentController? controller;
@@ -19,7 +18,7 @@ class AgentPage extends StatefulWidget {
   State<AgentPage> createState() => _AgentPageState();
 }
 
-class _AgentPageState extends State<AgentPage> {
+class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   AgentController? _controller;
   String? _loadError;
   final _draft = TextEditingController();
@@ -28,10 +27,12 @@ class _AgentPageState extends State<AgentPage> {
   final _showcaseScroll = ScrollController();
   double _width = 0;
   String? _focusedGroup;
+  int _focusRevision = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
 
@@ -72,7 +73,13 @@ class _AgentPageState extends State<AgentPage> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _controller?.checkpoint();
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller?.removeListener(_onUpdate);
     _controller?.dispose();
     _draft.dispose();
@@ -113,7 +120,7 @@ class _AgentPageState extends State<AgentPage> {
 
   Future<void> _send() async {
     final controller = _controller!;
-    if (controller.busy || _draft.text.trim().isEmpty) return;
+    if (controller.isStopping || _draft.text.trim().isEmpty) return;
     if (controller.model == null) {
       await _settings();
       return;
@@ -203,7 +210,12 @@ class _AgentPageState extends State<AgentPage> {
     ),
   );
   Future<void> _showcase([String? id]) async {
-    if (id != null) setState(() => _focusedGroup = id);
+    if (id != null) {
+      setState(() {
+        _focusedGroup = id;
+        _focusRevision++;
+      });
+    }
     if (_width >= 720) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _showcaseScroll.hasClients) {
@@ -276,7 +288,7 @@ class _AgentPageState extends State<AgentPage> {
                 if (_width >= 720) ...[
                   const VerticalDivider(width: 1),
                   SizedBox(
-                    width: 280,
+                    width: 304,
                     child: _showcasePanel(scroll: _showcaseScroll),
                   ),
                 ],
@@ -291,16 +303,16 @@ class _AgentPageState extends State<AgentPage> {
   Widget _chat() {
     final controller = _controller!;
     final model = controller.model;
-    final lastUser = controller.messages.lastIndexWhere(
-      (m) => m.role == 'user',
-    );
-    // A user turn may contain many model responses. Render every step and its
-    // ordered parts instead of flattening reasoning, prose, and tool calls.
-    final steps = <int>[];
-    var step = 0;
+    final entries = <List<AgentMessage>>[];
     for (final message in controller.messages) {
-      step = message.role == 'user' ? 0 : step + 1;
-      steps.add(step);
+      final startsTurn = message.role == 'user' && !message.isFollowUp;
+      if (startsTurn ||
+          entries.isEmpty ||
+          entries.last.first.role == 'user' && !entries.last.first.isFollowUp) {
+        entries.add([message]);
+      } else {
+        entries.last.add(message);
+      }
     }
     return Column(
       children: [
@@ -415,22 +427,24 @@ class _AgentPageState extends State<AgentPage> {
               : ListView.builder(
                   key: const ValueKey('agent-messages'),
                   controller: _scroll,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  itemCount: controller.messages.length,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 12,
+                  ),
+                  itemCount: entries.length,
                   itemBuilder: (_, index) {
-                    final message = controller.messages[index];
-                    return AgentMessageView(
-                      key: ValueKey(message.id),
-                      message: message,
-                      stepNumber: steps[index] == 0 ? null : steps[index],
-                      modelName:
-                          controller.store.settings
-                              .findModel(message.modelId)
-                              ?.name ??
-                          'Agent',
-                      busy: controller.busy,
-                      onEdit: message.role == 'user'
-                          ? () async {
+                    final messages = entries[index];
+                    final message = messages.first;
+                    if (message.role == 'user' && !message.isFollowUp) {
+                      return Align(
+                        key: ValueKey(message.id),
+                        alignment: Alignment.topCenter,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 860),
+                          child: AgentUserMessageView(
+                            message: message,
+                            busy: controller.busy,
+                            onEdit: () async {
                               final text = await _editText(
                                 '编辑后重发（替换后续回复）',
                                 message.text,
@@ -441,33 +455,55 @@ class _AgentPageState extends State<AgentPage> {
                                   () => controller.editAndResend(message, text),
                                 );
                               }
+                            },
+                          ),
+                        ),
+                      );
+                    }
+                    final current = index == entries.length - 1;
+                    return Align(
+                      key: ValueKey(message.id),
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 860),
+                        child: AgentTurnView(
+                          messages: messages,
+                          running: current && controller.busy,
+                          interrupted:
+                              current &&
+                              controller.error != null &&
+                              controller.hasUnfinishedTask,
+                          modelName:
+                              controller.store.settings
+                                  .findModel(message.modelId)
+                                  ?.name ??
+                              '未配置模型',
+                          busy: controller.busy,
+                          onRegenerate: current
+                              ? () => _act(controller.regenerate)
+                              : null,
+                          canRetry: controller.canRetry,
+                          onRetry: (message, call) =>
+                              _act(() => controller.retryTool(message, call)),
+                          onShowcase: (id) => _showcase(id),
+                          hasUndo: (id) => controller.store.hasUndo(
+                            id,
+                            controller.conversation.id,
+                          ),
+                          onUndo: (id) => _act(() async {
+                            final result = await controller.undo(id);
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
+                                  ),
+                                ),
+                              );
                             }
-                          : null,
-                      onRegenerate:
-                          index == controller.messages.length - 1 &&
-                              index > lastUser
-                          ? () => _act(controller.regenerate)
-                          : null,
-                      canRetry: (call) => controller.canRetry(message, call),
-                      onRetry: (call) =>
-                          _act(() => controller.retryTool(message, call)),
-                      onShowcase: (id) => _showcase(id),
-                      hasUndo: (id) => controller.store.hasUndo(
-                        id,
-                        controller.conversation.id,
+                          }),
+                        ),
                       ),
-                      onUndo: (id) => _act(() async {
-                        final result = await controller.undo(id);
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
-                              ),
-                            ),
-                          );
-                        }
-                      }),
                     );
                   },
                 ),
@@ -516,6 +552,7 @@ class _AgentPageState extends State<AgentPage> {
               ],
             ),
           ),
+        if (model != null) _contextStatus(),
         _composer(),
       ],
     );
@@ -566,6 +603,62 @@ class _AgentPageState extends State<AgentPage> {
     ),
   );
 
+  Widget _contextStatus() {
+    final controller = _controller!;
+    final usage = controller.usage;
+    final capacity = controller.model!.contextWindowTokens;
+    final label = controller.compacting
+        ? '正在压缩上下文…'
+        : controller.compactionQueued
+        ? '压缩已排队，当前操作结束后处理'
+        : usage == null
+        ? controller.contextNotice ?? '上下文 · 等待接口统计'
+        : '上下文 ${usage.totalTokens} / $capacity · ${(usage.totalTokens / capacity * 100).toStringAsFixed(1)}%';
+    final detail = usage == null
+        ? '等待模型返回 token 使用统计后更新占用量。达到容量90%时自动压缩。'
+        : '最近一次响应：输入 ${usage.inputTokens ?? "未知"}（其中缓存 ${usage.cachedTokens ?? "未知"}），输出 ${usage.outputTokens ?? "未知"}。总计 ${usage.totalTokens} tokens。缓存属于输入时不重复计数。';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 12, 0),
+      child: Row(
+        children: [
+          Icon(
+            Icons.data_usage,
+            size: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Tooltip(
+              message: detail,
+              child: Text(
+                label,
+                key: const ValueKey('agent-context-status'),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          IconButton(
+            key: const ValueKey('agent-compact'),
+            tooltip: '压缩上下文',
+            onPressed:
+                controller.compacting ||
+                    controller.compactionQueued ||
+                    controller.isStopping ||
+                    (!controller.busy && !controller.canCompact)
+                ? null
+                : () => _act(controller.requestCompaction),
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.compress_rounded, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _composer() {
     final controller = _controller!;
     return Padding(
@@ -596,25 +689,31 @@ class _AgentPageState extends State<AgentPage> {
                   minLines: 1,
                   maxLines: 5,
                   textInputAction: TextInputAction.newline,
-                  decoration: const InputDecoration(
-                    hintText: '输入消息…',
-                    border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.all(14),
+                  decoration: InputDecoration(
+                    hintText: controller.busy ? '补充要求，当前操作结束后处理…' : '输入消息…',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    contentPadding: const EdgeInsets.all(14),
                   ),
                 ),
               ),
               const SizedBox(width: 8),
+              if (controller.busy)
+                IconButton.outlined(
+                  key: const ValueKey('agent-stop'),
+                  tooltip: '停止',
+                  onPressed: controller.isStopping ? null : controller.stop,
+                  icon: const Icon(Icons.stop_rounded, size: 20),
+                ),
+              if (controller.busy) const SizedBox(width: 6),
               IconButton.filled(
                 key: const ValueKey('agent-send'),
-                tooltip: controller.busy ? '停止' : '发送（Ctrl+Enter）',
-                onPressed: controller.isStopping
-                    ? null
-                    : controller.busy
-                    ? controller.stop
-                    : _send,
-                icon: Icon(
-                  controller.busy ? Icons.stop_rounded : Icons.arrow_upward,
-                ),
+                tooltip: controller.busy
+                    ? '补充消息（Ctrl+Enter）'
+                    : '发送（Ctrl+Enter）',
+                onPressed: controller.isStopping ? null : _send,
+                icon: const Icon(Icons.arrow_upward, size: 20),
               ),
             ],
           ),
@@ -753,135 +852,16 @@ class _AgentPageState extends State<AgentPage> {
 
   Widget _showcasePanel({VoidCallback? close, ScrollController? scroll}) {
     final controller = _controller!;
-    final groups = [...controller.showcases];
-    final focus = groups.indexWhere((g) => g.id == _focusedGroup);
-    if (focus > 0) groups.insert(0, groups.removeAt(focus));
-    return Column(
-      children: [
-        ListTile(
-          title: const Text('展示漫画'),
-          trailing: close == null
-              ? IconButton(
-                  tooltip: '清空展示面板',
-                  onPressed: groups.isEmpty ? null : controller.clearShowcases,
-                  icon: const Icon(Icons.clear_all),
-                )
-              : IconButton(
-                  tooltip: '关闭',
-                  onPressed: close,
-                  icon: const Icon(Icons.close),
-                ),
-        ),
-        if (close != null && groups.isNotEmpty)
-          TextButton(
-            onPressed: controller.clearShowcases,
-            child: const Text('清空展示面板'),
-          ),
-        Expanded(
-          child: groups.isEmpty
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text(
-                      'Agent 展示的漫画会出现在这里',
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                )
-              : ListView.builder(
-                  controller: scroll,
-                  padding: const EdgeInsets.all(8),
-                  itemCount: groups.length,
-                  itemBuilder: (_, index) {
-                    final group = groups[index];
-                    return Card(
-                      key: ValueKey(group.id),
-                      color: group.id == _focusedGroup
-                          ? Theme.of(context).colorScheme.secondaryContainer
-                          : null,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          ListTile(
-                            title: Text(
-                              group.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text('${group.comics.length} 本'),
-                            trailing: IconButton(
-                              tooltip: '移除此组',
-                              onPressed: () =>
-                                  controller.hideShowcase(group.id),
-                              icon: const Icon(Icons.close, size: 18),
-                            ),
-                          ),
-                          if (group.note.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                              ),
-                              child: Text(
-                                group.note,
-                                style: Theme.of(context).textTheme.bodySmall,
-                              ),
-                            ),
-                          GridView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            padding: const EdgeInsets.all(8),
-                            itemCount: group.comics.length,
-                            gridDelegate:
-                                SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount:
-                                      appdata.settings['comicDisplayMode'] ==
-                                          'detailed'
-                                      ? 1
-                                      : 2,
-                                  mainAxisExtent:
-                                      appdata.settings['comicDisplayMode'] ==
-                                          'detailed'
-                                      ? 136
-                                      : null,
-                                  childAspectRatio: .58,
-                                  mainAxisSpacing: 8,
-                                  crossAxisSpacing: 8,
-                                ),
-                            itemBuilder: (_, comicIndex) {
-                              final comic = group.comics[comicIndex];
-                              return Stack(
-                                children: [
-                                  Positioned.fill(
-                                    child: ComicTile(
-                                      comic: AgentTools.toComic(comic),
-                                      heroID: Object.hash(
-                                        group.id,
-                                        comic.identity,
-                                      ),
-                                    ),
-                                  ),
-                                  Positioned(
-                                    right: 0,
-                                    top: 0,
-                                    child: IconButton.filledTonal(
-                                      tooltip: '从展示中移除',
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () =>
-                                          controller.hideComic(group.id, comic),
-                                      icon: const Icon(Icons.close, size: 14),
-                                    ),
-                                  ),
-                                ],
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
+    return AgentShowcasePanel(
+      conversationId: controller.conversation.id,
+      groups: controller.showcases,
+      focusedGroup: _focusedGroup,
+      focusRevision: _focusRevision,
+      close: close,
+      scroll: scroll,
+      clear: controller.clearShowcases,
+      hideGroup: controller.hideShowcase,
+      hideComic: controller.hideComic,
     );
   }
 }

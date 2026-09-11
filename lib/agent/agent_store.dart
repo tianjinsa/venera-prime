@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/utils/atomic_file.dart';
 import 'agent_models.dart';
+import 'agent_context.dart';
 
 /// Entirely local storage, outside the app's existing backup manifest.
 class AgentStore {
@@ -54,7 +55,7 @@ class AgentStore {
     _db.execute('PRAGMA busy_timeout = 3000;');
     final version =
         _db.select('PRAGMA user_version;').first.values.first as int;
-    if (version > 1) {
+    if (version > 2) {
       throw const FormatException('Agent 数据来自更新版本，请更新应用后再打开');
     }
     _db.execute('''
@@ -92,9 +93,18 @@ class AgentStore {
         conversation TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         payload TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS conversation_context (
+        conversation TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+        summary TEXT NOT NULL DEFAULT '', through_message_id TEXT,
+        usage TEXT, usage_model_id TEXT, compacted_at INTEGER,
+        compaction_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS showcase_operations (
+        set_id TEXT PRIMARY KEY REFERENCES showcases(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL, folder TEXT NOT NULL DEFAULT ''
+      );
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation, seq);
       CREATE INDEX IF NOT EXISTS showcases_conversation ON showcases(conversation, created_at);
-      PRAGMA user_version = 1;
     ''');
     _db.execute(
       "UPDATE messages SET state = 'interrupted' WHERE state = 'running';",
@@ -122,6 +132,74 @@ class AgentStore {
           jsonEncode(parts),
           row['id'],
         ]);
+      }
+    }
+    if (version < 2) _backfillOperationShowcases();
+    _db.execute('PRAGMA user_version = 2;');
+  }
+
+  void _backfillOperationShowcases() {
+    // Existing conversations should gain the new collection groups too.
+    // Replay only their display receipts, never their actual write tools.
+    final rows = _db.select(
+      "SELECT conversation,parts FROM messages WHERE role='assistant' ORDER BY seq;",
+    );
+    for (final row in rows) {
+      final conversationId = row['conversation'] as String;
+      for (final raw in jsonDecode(row['parts'] as String) as List) {
+        final part = agentObject(raw);
+        if (part['type'] != 'tool_call') continue;
+        final name = part['name'];
+        final result = part['result'];
+        if (result is! Map || result['ok'] != true || result['data'] is! Map) {
+          continue;
+        }
+        final receipts = result['data']['results'];
+        if (receipts is! List) continue;
+        final arguments = part['arguments'] is Map
+            ? agentObject(part['arguments'])
+            : <String, dynamic>{};
+        for (final receipt in receipts.whereType<Map>()) {
+          final source = receipt['source_key'];
+          final comicId = receipt['comic_id'];
+          if (source is! String || comicId is! String) continue;
+          final status = receipt['status'];
+          if (['fav_add', 'later_add', 'fav_move'].contains(name) &&
+              (['added', 'moved'].contains(status) ||
+                  receipt['reason'] == 'ALREADY_EXISTS')) {
+            final comic = seen(conversationId, source, comicId);
+            final folder = name == 'fav_move'
+                ? arguments['to_folder']
+                : arguments['folder'];
+            if (comic != null && (name == 'later_add' || folder is String)) {
+              recordOperationComics(
+                conversationId,
+                name == 'later_add' ? 'later' : 'favorites',
+                [comic],
+                folder: folder as String? ?? '',
+              );
+            }
+          }
+          if (name == 'fav_move' && status == 'moved') {
+            removeOperationComic(
+              conversationId,
+              'favorites',
+              source,
+              comicId,
+              folder: arguments['from_folder'] as String?,
+            );
+          }
+          if (['fav_remove', 'later_remove'].contains(name) &&
+              (status == 'removed' || receipt['reason'] == 'NOT_PRESENT')) {
+            removeOperationComic(
+              conversationId,
+              name == 'later_remove' ? 'later' : 'favorites',
+              source,
+              comicId,
+              folder: arguments['folder'] as String?,
+            );
+          }
+        }
       }
     }
   }
@@ -260,6 +338,7 @@ class AgentStore {
       .toList();
 
   void truncateFrom(AgentMessage message, {bool include = true}) {
+    invalidateContextFrom(message, include: include);
     final comparison = include ? '>=' : '>';
     _db.execute(
       '''
@@ -267,6 +346,68 @@ class AgentStore {
         (SELECT seq FROM messages WHERE id=? AND conversation=?);
     ''',
       [message.conversationId, message.id, message.conversationId],
+    );
+  }
+
+  AgentConversationContext conversationContext(String conversationId) {
+    final rows = _db.select(
+      'SELECT * FROM conversation_context WHERE conversation=?;',
+      [conversationId],
+    );
+    if (rows.isEmpty) return const AgentConversationContext();
+    final row = rows.first;
+    return AgentConversationContext(
+      summary: row['summary'] as String,
+      throughMessageId: row['through_message_id'] as String?,
+      usage: row['usage'] == null
+          ? null
+          : AgentUsage.fromResponse(jsonDecode(row['usage'] as String)),
+      usageModelId: row['usage_model_id'] as String?,
+      compactedAt: row['compacted_at'] as int?,
+      compactionCount: row['compaction_count'] as int,
+    );
+  }
+
+  void saveContext(String conversationId, AgentConversationContext value) =>
+      _db.execute(
+        '''
+    INSERT INTO conversation_context(conversation,summary,through_message_id,usage,usage_model_id,compacted_at,compaction_count)
+    VALUES (?,?,?,?,?,?,?) ON CONFLICT(conversation) DO UPDATE SET
+      summary=excluded.summary, through_message_id=excluded.through_message_id,
+      usage=excluded.usage, usage_model_id=excluded.usage_model_id,
+      compacted_at=excluded.compacted_at, compaction_count=excluded.compaction_count;
+  ''',
+        [
+          conversationId,
+          value.summary,
+          value.throughMessageId,
+          value.usage == null ? null : jsonEncode(value.usage!.toJson()),
+          value.usageModelId,
+          value.compactedAt,
+          value.compactionCount,
+        ],
+      );
+
+  /// An edited/retried message must not survive as stale facts in a summary.
+  void invalidateContextFrom(AgentMessage message, {bool include = true}) {
+    final comparison = include ? '>=' : '>';
+    _db.execute(
+      '''
+      DELETE FROM conversation_context WHERE conversation=? AND through_message_id IN (
+        SELECT id FROM messages WHERE conversation=? AND seq $comparison
+          (SELECT seq FROM messages WHERE id=? AND conversation=?)
+      );
+    ''',
+      [
+        message.conversationId,
+        message.conversationId,
+        message.id,
+        message.conversationId,
+      ],
+    );
+    _db.execute(
+      'UPDATE conversation_context SET usage=NULL, usage_model_id=NULL WHERE conversation=?;',
+      [message.conversationId],
     );
   }
 
@@ -314,6 +455,7 @@ class AgentStore {
           '''
           UPDATE showcases SET dismissed=1 WHERE id=(
             SELECT id FROM showcases WHERE conversation=? AND dismissed=0
+              AND NOT EXISTS (SELECT 1 FROM showcase_operations o WHERE o.set_id=showcases.id)
             ORDER BY created_at DESC, rowid DESC LIMIT 1
           );
         ''',
@@ -348,8 +490,10 @@ class AgentStore {
     return _db
         .select(
           '''
-      SELECT * FROM showcases WHERE conversation=? AND dismissed=0
-      ORDER BY created_at DESC, rowid DESC;
+      SELECT s.*, o.kind, o.folder FROM showcases s
+      LEFT JOIN showcase_operations o ON o.set_id=s.id
+      WHERE s.conversation=? AND s.dismissed=0
+      ORDER BY s.created_at DESC, s.rowid DESC;
     ''',
           [conversationId],
         )
@@ -374,11 +518,99 @@ class AgentStore {
             note: row['note'] as String,
             createdAt: row['created_at'] as int,
             comics: comics,
+            kind: row['kind'] as String? ?? 'discovery',
+            folder: row['folder'] as String?,
           );
         })
         .where((group) => group.comics.isNotEmpty)
         .toList();
   }
+
+  /// One persistent operation group per collection/folder in this conversation.
+  /// Repeating an add updates the existing group instead of creating duplicates.
+  String recordOperationComics(
+    String conversationId,
+    String kind,
+    List<AgentComic> comics, {
+    String folder = '',
+  }) {
+    final rows = _db.select(
+      '''
+      SELECT s.id,s.dismissed FROM showcases s JOIN showcase_operations o ON o.set_id=s.id
+      WHERE s.conversation=? AND o.kind=? AND o.folder=? LIMIT 1;
+    ''',
+      [conversationId, kind, folder],
+    );
+    final id = rows.isEmpty ? agentId() : rows.first['id'] as String;
+    _db.execute('BEGIN;');
+    try {
+      if (rows.isEmpty) {
+        _db.execute(
+          'INSERT INTO showcases(id,conversation,title,note,created_at) VALUES (?,?,?,?,?);',
+          [
+            id,
+            conversationId,
+            kind == 'favorites' ? folder : '稍后再看',
+            '',
+            agentNow(),
+          ],
+        );
+        _db.execute(
+          'INSERT INTO showcase_operations(set_id,kind,folder) VALUES (?,?,?);',
+          [id, kind, folder],
+        );
+      } else {
+        if (rows.first['dismissed'] == 1) {
+          _db.execute('UPDATE showcase_items SET hidden=1 WHERE set_id=?;', [
+            id,
+          ]);
+        }
+        _db.execute('UPDATE showcases SET dismissed=0 WHERE id=?;', [id]);
+      }
+      var seq =
+          _db.select(
+                'SELECT COALESCE(MAX(seq),-1)+1 AS next FROM showcase_items WHERE set_id=?;',
+                [id],
+              ).first['next']
+              as int;
+      for (final comic in comics) {
+        _db.execute(
+          '''
+          INSERT INTO showcase_items(set_id,source_key,comic_id,brief,seq) VALUES (?,?,?,?,?)
+          ON CONFLICT(set_id,source_key,comic_id) DO UPDATE SET brief=excluded.brief, hidden=0;
+        ''',
+          [
+            id,
+            comic.sourceKey,
+            comic.comicId,
+            jsonEncode(comic.toJson()),
+            seq++,
+          ],
+        );
+      }
+      _db.execute('COMMIT;');
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+    return id;
+  }
+
+  void removeOperationComic(
+    String conversationId,
+    String kind,
+    String sourceKey,
+    String comicId, {
+    String? folder,
+  }) => _db.execute(
+    '''
+    UPDATE showcase_items SET hidden=1 WHERE source_key=? AND comic_id=? AND set_id IN (
+      SELECT s.id FROM showcases s JOIN showcase_operations o ON o.set_id=s.id
+      WHERE s.conversation=? AND o.kind=? ${folder == null ? '' : 'AND o.folder=?'}
+    );
+  ''',
+    [sourceKey, comicId, conversationId, kind, if (folder != null) folder],
+  );
 
   void hideComic(String setId, AgentComic comic) => _db.execute(
     '''

@@ -62,7 +62,7 @@ void main() {
         if (width < 720) {
           await tester.tap(find.byTooltip('展示漫画'));
           await tester.pumpAndSettle();
-          expect(find.text('Agent 展示的漫画会出现在这里'), findsOneWidget);
+          expect(find.text('Agent 展示或加入收藏、稍后再看的漫画会出现在这里'), findsOneWidget);
           await tester.tap(find.byTooltip('关闭'));
           await tester.pumpAndSettle();
         }
@@ -188,6 +188,9 @@ void main() {
         );
         await tester.pumpAndSettle();
         expect(find.byType(ComicTile), findsOneWidget);
+        final comicRect = tester.getRect(find.byType(ComicTile));
+        final removeRect = tester.getRect(find.byTooltip('从展示中移除'));
+        expect(comicRect.overlaps(removeRect), false);
         expect(find.text('[图片已省略]'), findsOneWidget);
         expect(find.byType(Image), findsNothing);
         expect(tester.takeException(), null);
@@ -209,7 +212,7 @@ void main() {
 
   for (final width in [360.0, 1200.0]) {
     testWidgets(
-      'one Agent turn retains multiple thoughts, bodies, and tools at $width',
+      'Agent groups activity between prose and resets disclosures after completion at $width',
       (tester) async {
         final root = (await tester.runAsync(
           () => Directory.systemTemp.createTemp('agent-steps-'),
@@ -260,16 +263,32 @@ void main() {
               ],
             ),
           );
+          if (i == 2) {
+            store.saveMessage(
+              AgentMessage(
+                id: 'supplement',
+                conversationId: controller.conversation.id,
+                role: 'user',
+                createdAt: 4,
+                parts: [
+                  {'type': 'text', 'text': '运行中的补充要求', 'follow_up_to': 'user'},
+                ],
+              ),
+            );
+          }
         }
         controller.reload();
+        controller.busy = true;
         tester.view.devicePixelRatio = 1;
         tester.view.physicalSize = Size(width, 2400);
         try {
           await tester.pumpWidget(
             MaterialApp(home: AgentPage(controller: controller)),
           );
-          await tester.pumpAndSettle();
-          expect(find.text('思考内容'), findsNWidgets(3));
+          await tester.pump();
+          expect(find.text('执行过程'), findsNWidgets(4));
+          expect(find.text('思考过程'), findsNothing);
+          expect(find.text('运行中的补充要求'), findsOneWidget);
           expect(
             tester
                 .widgetList<MarkdownBody>(find.byType(MarkdownBody))
@@ -277,40 +296,88 @@ void main() {
             ['正文步骤1', '正文步骤2', '正文步骤3'],
           );
           for (final label in ['查看漫画源', '读取搜索选项', '搜索漫画']) {
-            expect(find.text(label), findsOneWidget);
+            expect(find.text(label), findsNothing);
           }
-          expect(find.text('已完成'), findsNWidgets(4));
-          expect(
-            tester.getTopLeft(find.text('Agent · 第 1 步')).dy,
-            lessThan(tester.getTopLeft(find.text('Agent · 第 2 步')).dy),
-          );
-          expect(
-            tester.getTopLeft(find.text('Agent · 第 2 步')).dy,
-            lessThan(tester.getTopLeft(find.text('Agent · 第 3 步')).dy),
-          );
-          await tester.tap(find.text('思考内容').at(0));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('思考内容').at(1));
-          await tester.pumpAndSettle();
+          expect(find.textContaining('第 1 步'), findsNothing);
+
+          Future<void> toggle(String id) async {
+            await tester.tap(find.byKey(ValueKey('toggle-$id')));
+            await tester.pump(const Duration(milliseconds: 200));
+          }
+
+          await toggle('activity-step-1-0');
+          expect(find.text('思考过程'), findsOneWidget);
+          expect(find.text('思考步骤1'), findsNothing);
+          await toggle('activity-step-1-2');
+          // The next response's reasoning shares a group with the previous
+          // response's tools; only visible prose and user input divide groups.
+          expect(find.text('思考过程'), findsNWidgets(2));
+          expect(find.text('查看漫画源'), findsOneWidget);
+          expect(find.text('读取搜索选项'), findsOneWidget);
+          expect(find.text('搜索漫画'), findsNothing);
+          expect(find.text('思考步骤2'), findsNothing);
+          expect(find.textContaining('"tool": "list_sources"'), findsNothing);
+          await toggle('reasoning-step-1-0');
+          await toggle('reasoning-step-2-0');
           expect(find.text('思考步骤1'), findsOneWidget);
           expect(find.text('思考步骤2'), findsOneWidget);
           expect(find.text('思考步骤3'), findsNothing);
-          await tester.tap(find.text('查看漫画源'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('读取搜索选项'));
-          await tester.pumpAndSettle();
+          await toggle('tool-step-1-2');
+          await toggle('tool-step-1-3');
           expect(find.textContaining('"tool": "list_sources"'), findsOneWidget);
           expect(
             find.textContaining('"tool": "list_search_options"'),
             findsOneWidget,
           );
-          await tester.tap(find.text('思考内容').at(0));
-          await tester.pumpAndSettle();
+          await toggle('reasoning-step-1-0');
           expect(find.text('思考步骤1'), findsNothing);
           expect(find.text('思考步骤2'), findsOneWidget);
-          await tester.tap(find.text('思考内容').at(0));
-          await tester.pumpAndSettle();
+          await toggle('reasoning-step-1-0');
           expect(find.text('思考步骤1'), findsOneWidget);
+          await toggle('activity-step-1-2');
+          expect(find.text('思考步骤2'), findsNothing);
+          expect(find.text('查看漫画源'), findsNothing);
+          await toggle('activity-step-1-2');
+          expect(find.text('思考步骤2'), findsOneWidget);
+          expect(find.textContaining('"tool": "list_sources"'), findsOneWidget);
+          controller.reload();
+          await tester.pump();
+          expect(find.text('思考步骤2'), findsOneWidget);
+          controller.busy = false;
+          controller.reload();
+          await tester.pumpAndSettle();
+          expect(
+            tester
+                .widgetList<MarkdownBody>(find.byType(MarkdownBody))
+                .map((w) => w.data),
+            ['正文步骤3'],
+          );
+          expect(find.text('运行中的补充要求'), findsNothing);
+          expect(find.text('演示一次多步骤 Agent 执行过程'), findsOneWidget);
+          expect(find.text('思考步骤1'), findsNothing);
+          expect(find.text('查看漫画源'), findsNothing);
+          await tester.tap(find.byKey(const ValueKey('toggle-turn-step-1')));
+          await tester.pumpAndSettle();
+          expect(find.text('运行中的补充要求'), findsOneWidget);
+          expect(
+            tester
+                .widgetList<MarkdownBody>(find.byType(MarkdownBody))
+                .map((w) => w.data),
+            ['正文步骤1', '正文步骤2', '正文步骤3'],
+          );
+          expect(find.text('执行过程'), findsNWidgets(4));
+          expect(find.text('思考过程'), findsNothing);
+          expect(find.text('思考步骤1'), findsNothing);
+          expect(find.text('查看漫画源'), findsNothing);
+          await toggle('activity-step-1-2');
+          expect(find.text('查看漫画源'), findsOneWidget);
+          expect(find.text('思考过程'), findsOneWidget);
+          expect(find.text('思考步骤2'), findsNothing);
+          expect(find.textContaining('"tool": "list_sources"'), findsNothing);
+          await toggle('reasoning-step-2-0');
+          expect(find.text('思考步骤2'), findsOneWidget);
+          await toggle('tool-step-1-2');
+          expect(find.textContaining('"tool": "list_sources"'), findsOneWidget);
           expect(tester.takeException(), null);
         } finally {
           await tester.pumpWidget(const SizedBox.shrink());

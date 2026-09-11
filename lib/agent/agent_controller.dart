@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'agent_client.dart';
+import 'agent_context.dart';
 import 'agent_models.dart';
 import 'agent_store.dart';
 import 'agent_tools.dart';
@@ -25,6 +26,10 @@ class AgentController extends ChangeNotifier {
   String? error;
   AgentConfirmation? confirmation;
   bool busy = false;
+  bool compacting = false;
+  bool compactionQueued = false;
+  String? contextNotice;
+  AgentConversationContext contextState = const AgentConversationContext();
   bool _disposed = false;
   bool _allowSession = false;
   AgentRun? _run;
@@ -32,6 +37,7 @@ class AgentController extends ChangeNotifier {
   Completer<bool>? _approval;
   Future<void>? _task;
   Timer? _notifyTimer;
+  Timer? _checkpointTimer;
 
   AgentController(this.store, {AgentClient? client, AgentTools? tools})
     : client = client ?? AgentClient(),
@@ -51,6 +57,18 @@ class AgentController extends ChangeNotifier {
       store.settings.defaultModel;
   String? get thinkingId => model?.thinking(conversation.thinkingId).id;
   bool get isStopping => busy && _run?.isCancelled == true;
+  AgentUsage? get usage =>
+      contextState.usageModelId == model?.id ? contextState.usage : null;
+  bool get hasUnfinishedTask =>
+      messages.isNotEmpty &&
+      (messages.last.role == 'user' ||
+          messages.last.state != 'done' ||
+          messages.last.tools.isNotEmpty);
+  bool get _hasQueuedInput =>
+      messages.any((m) => m.role == 'user' && m.state == 'queued');
+  int get _rootIndex =>
+      messages.lastIndexWhere((m) => m.role == 'user' && !m.isFollowUp);
+  bool get canCompact => _compactionBoundary() >= 0;
 
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -63,16 +81,28 @@ class AgentController extends ChangeNotifier {
     });
   }
 
+  void checkpoint() {
+    if (!_disposed && _activeMessage != null) {
+      store.saveMessage(_activeMessage!);
+    }
+  }
+
+  void _scheduleCheckpoint() {
+    _checkpointTimer ??= Timer(const Duration(milliseconds: 500), () {
+      _checkpointTimer = null;
+      checkpoint();
+    });
+  }
+
   void reload() {
     if (_disposed) return;
     messages = store.messages(conversation.id);
     showcases = store.showcases(conversation.id);
+    contextState = store.conversationContext(conversation.id);
     conversations = store.conversations(historyQuery);
-    if (!busy && error == null && messages.isNotEmpty) {
+    if (!busy && error == null && hasUnfinishedTask) {
       final last = messages.last;
-      if (last.state == 'interrupted' || last.state == 'failed') {
-        error = last.error ?? '上次生成未完成，已保存的操作不会自动重放，可以继续对话。';
-      }
+      error = last.error ?? '上次任务未完成，已保存生成内容和操作结果。发送消息或点击继续即可接着处理。';
     }
     _notify();
   }
@@ -148,19 +178,26 @@ class AgentController extends ChangeNotifier {
     if (model == null) {
       throw const AgentException('NO_MODEL', '请先配置模型');
     }
-    await stopAndWait();
-    if (_disposed) return;
+    if (isStopping) throw const AgentException('STOPPING', '正在停止，请稍后发送');
     final selected = model!;
+    final root = (busy || hasUnfinishedTask) && _rootIndex >= 0
+        ? messages[_rootIndex].id
+        : null;
     final message = AgentMessage(
       id: agentId(),
       conversationId: conversation.id,
       role: 'user',
       parts: [
-        {'type': 'text', 'text': content},
+        {
+          'type': 'text',
+          'text': content,
+          if (root != null) 'follow_up_to': root,
+        },
       ],
       modelId: selected.id,
       thinkingId: thinkingId,
       createdAt: agentNow(),
+      state: busy ? 'queued' : 'done',
     );
     if (messages.isEmpty) {
       conversation.title = content.runes
@@ -173,6 +210,15 @@ class AgentController extends ChangeNotifier {
     store.saveConversation(conversation);
     store.saveMessage(message);
     messages.add(message);
+    if (busy) {
+      // A new requirement invalidates unstarted calls, including a pending
+      // confirmation. The operation already executing is allowed to finish.
+      if (_approval != null && !_approval!.isCompleted) {
+        _approval!.complete(false);
+      }
+      _notify();
+      return;
+    }
     await _start(selected, message.thinkingId);
   }
 
@@ -193,7 +239,9 @@ class AgentController extends ChangeNotifier {
   Future<void> regenerate({bool useCurrentModel = false}) async {
     await stopAndWait();
     if (_disposed) return;
-    final users = messages.where((m) => m.role == 'user').toList();
+    final users = messages
+        .where((m) => m.role == 'user' && !m.isFollowUp)
+        .toList();
     if (users.isEmpty) return;
     final lastUser = users.last;
     final selected = useCurrentModel
@@ -202,7 +250,14 @@ class AgentController extends ChangeNotifier {
     if (selected == null) {
       throw const AgentException('NO_MODEL', '原模型已删除，请选择“用当前模型重试”');
     }
+    final supplements = messages
+        .where((m) => m.followUpTo == lastUser.id)
+        .toList();
     store.truncateFrom(lastUser, include: false);
+    for (final message in supplements) {
+      message.state = 'done';
+      store.saveMessage(message);
+    }
     reload();
     await _start(selected, useCurrentModel ? thinkingId : lastUser.thinkingId);
   }
@@ -220,23 +275,15 @@ class AgentController extends ChangeNotifier {
     await stopAndWait();
     if (_disposed) return;
     if (model == null || messages.every((m) => m.role != 'user')) return;
-    if (messages.isNotEmpty) {
-      final last = messages.last;
-      if (last.role == 'assistant' &&
-          last.state != 'done' &&
-          last.tools.isEmpty) {
-        store.truncateFrom(last);
-        reload();
-      }
-    }
     await _start(model!, thinkingId);
   }
 
   static bool retryable(AgentJson call) {
     final result = call['result'];
     if (result is! Map || result['ok'] != false) return false;
-    if (!AgentTools.writeTools.contains(call['name'])) return true;
     final code = result['error'] is Map ? result['error']['code'] : null;
+    if (code == 'INPUT_UPDATED') return false;
+    if (!AgentTools.writeTools.contains(call['name'])) return true;
     // Unknown/partial write failures are never blindly replayed.
     return {
       'INVALID_ARGUMENT',
@@ -251,7 +298,7 @@ class AgentController extends ChangeNotifier {
   }
 
   bool canRetry(AgentMessage message, AgentJson call) {
-    final lastUser = messages.lastIndexWhere((m) => m.role == 'user');
+    final lastUser = _rootIndex;
     return !_disposed &&
         !busy &&
         retryable(call) &&
@@ -267,6 +314,8 @@ class AgentController extends ChangeNotifier {
     // Later rounds can already contain successful writes. Preserve their
     // results in the next model request instead of truncating their audit.
     messages[messages.indexWhere((m) => m.id == message.id)] = message;
+    store.invalidateContextFrom(message);
+    contextState = store.conversationContext(conversation.id);
     await _start(
       selected,
       message.thinkingId,
@@ -311,6 +360,10 @@ class AgentController extends ChangeNotifier {
     AgentRun run,
   ) async {
     run.check();
+    if (_hasQueuedInput) {
+      _skipForNewInput(message, call);
+      return;
+    }
     call['state'] = 'running';
     call.remove('result');
     store.saveMessage(message);
@@ -320,6 +373,10 @@ class AgentController extends ChangeNotifier {
     final name = call['name'] as String;
     final allowed = await _confirm(name, args, run);
     run.check();
+    if (_hasQueuedInput) {
+      _skipForNewInput(message, call);
+      return;
+    }
     final result = allowed
         ? await tools.execute(
             name,
@@ -336,11 +393,117 @@ class AgentController extends ChangeNotifier {
     _notify();
   }
 
+  void _skipForNewInput(AgentMessage message, AgentJson call) {
+    call['state'] = 'skipped';
+    call['result'] = const AgentException(
+      'INPUT_UPDATED',
+      '用户补充了要求，该工具尚未执行，请按新要求重新判断',
+    ).toJson();
+    store.saveMessage(message);
+    _notify();
+  }
+
+  int _compactionBoundary() {
+    final previous = messages.indexWhere(
+      (m) => m.id == contextState.throughMessageId,
+    );
+    final candidates = <int>[];
+    for (var i = previous + 1; i < messages.length; i++) {
+      final message = messages[i];
+      if (message.role == 'assistant' &&
+          message.state != 'running' &&
+          !message.tools.any(
+            (call) => ['pending', 'running'].contains(call['state']),
+          )) {
+        candidates.add(i);
+      }
+    }
+    // Keep the newest response and its tool receipts when possible.
+    return candidates.isEmpty
+        ? -1
+        : candidates[candidates.length > 1 ? candidates.length - 2 : 0];
+  }
+
+  bool _shouldCompact(AgentModel selected) =>
+      contextState.usageModelId == selected.id &&
+      (contextState.usage?.totalTokens ?? 0) >=
+          selected.contextWindowTokens * .9;
+
+  Future<void> requestCompaction() async {
+    if (_disposed || model == null || isStopping || compacting) return;
+    if (busy) {
+      compactionQueued = true;
+      _notify();
+      return;
+    }
+    await _start(model!, thinkingId, compactOnly: true);
+  }
+
+  Future<void> _compact(
+    AgentModel selected,
+    String? thinking,
+    AgentRun run,
+  ) async {
+    compactionQueued = false;
+    final boundary = _compactionBoundary();
+    if (boundary < 0) {
+      contextNotice = '暂无可压缩的历史';
+      return;
+    }
+    compacting = true;
+    _notify();
+    final previous = contextState;
+    final throughId = messages[boundary].id;
+    try {
+      final response = await client.complete(
+        model: selected,
+        apiKey: store.secrets[selected.id] ?? '',
+        thinkingId: thinking,
+        messages: [
+          ...agentWire(
+            messages.sublist(0, boundary + 1),
+            selected,
+            context: previous,
+          ),
+          {'role': 'user', 'content': agentCompactionPrompt},
+        ],
+        tools: const [],
+        run: run,
+        onDelta: (_, _) {},
+      );
+      run.check();
+      if (response.text.trim().isEmpty || response.tools.isNotEmpty) {
+        throw const AgentException('INVALID_SUMMARY', '模型没有返回有效的上下文摘要');
+      }
+      final next = AgentConversationContext(
+        summary: response.text.trim(),
+        throughMessageId: throughId,
+        compactedAt: agentNow(),
+        compactionCount: previous.compactionCount + 1,
+      );
+      // Save only complete summaries. The summarizer's usage is not the next
+      // conversation request's occupancy, so wait for new response statistics.
+      store.saveContext(conversation.id, next);
+      contextState = next;
+      contextNotice = '上下文已压缩，完整记录仍可查看';
+    } catch (e) {
+      if (run.isCancelled) rethrow;
+      throw AgentException(
+        'COMPACTION_FAILED',
+        '上下文压缩失败，原上下文已保留。${e is AgentException ? e.message : '请稍后重试。'}',
+      );
+    } finally {
+      compacting = false;
+      _notify();
+    }
+  }
+
   Future<void> _start(
     AgentModel selected,
     String? thinking, {
     AgentMessage? retryMessage,
     AgentJson? retryCall,
+    bool compactOnly = false,
   }) async {
     while (busy && !_disposed) {
       await stopAndWait();
@@ -351,6 +514,7 @@ class AgentController extends ChangeNotifier {
     _run = run;
     busy = true;
     error = null;
+    contextNotice = null;
     _notify();
     final task = _generate(
       selected,
@@ -358,6 +522,7 @@ class AgentController extends ChangeNotifier {
       run,
       retryMessage: retryMessage,
       retryCall: retryCall,
+      compactOnly: compactOnly,
     );
     _task = task;
     await task;
@@ -369,18 +534,34 @@ class AgentController extends ChangeNotifier {
     AgentRun run, {
     AgentMessage? retryMessage,
     AgentJson? retryCall,
+    bool compactOnly = false,
   }) async {
     try {
+      if (compactOnly) {
+        await _compact(selected, thinking, run);
+        if (!_hasQueuedInput) return;
+      }
       if (retryMessage != null && retryCall != null) {
         _activeMessage = retryMessage;
         await _executeCall(retryMessage, retryCall, run);
         retryMessage.state = 'done';
         retryMessage.error = null;
         store.saveMessage(retryMessage);
+        _activeMessage = null;
       }
-      for (var round = 0; round < selected.maxToolRounds; round++) {
+      while (true) {
         run.check();
-        final wire = agentWire(messages, selected);
+        if (compactionQueued || _shouldCompact(selected)) {
+          await _compact(selected, thinking, run);
+        }
+        run.check();
+        for (final input in messages.where(
+          (m) => m.role == 'user' && m.state == 'queued',
+        )) {
+          input.state = 'done';
+          store.saveMessage(input);
+        }
+        final wire = agentWire(messages, selected, context: contextState);
         final assistant = AgentMessage(
           id: agentId(),
           conversationId: conversation.id,
@@ -406,6 +587,7 @@ class AgentController extends ChangeNotifier {
             if (_disposed || run.isCancelled) return;
             assistant.appendText(type, text);
             _throttle();
+            _scheduleCheckpoint();
           },
         );
         run.check();
@@ -427,15 +609,22 @@ class AgentController extends ChangeNotifier {
           });
         }
         store.saveMessage(assistant);
+        contextState = contextState.withUsage(response.usage, selected.id);
+        store.saveContext(conversation.id, contextState);
         for (final call in assistant.tools) {
           await _executeCall(assistant, call, run);
         }
         assistant.state = 'done';
         store.saveMessage(assistant);
+        _activeMessage = null;
         _notify();
-        if (response.tools.isEmpty) return;
+        if (response.tools.isEmpty && !_hasQueuedInput) {
+          if (compactionQueued || _shouldCompact(selected)) {
+            await _compact(selected, thinking, run);
+          }
+          if (!_hasQueuedInput) return;
+        }
       }
-      error = '已达到本轮工具调用上限；已完成的操作已保存，可点击继续。';
     } catch (e) {
       if (_disposed) return;
       final interrupted = run.isCancelled;
@@ -447,7 +636,11 @@ class AgentController extends ChangeNotifier {
       _markInterrupted(interrupted ? 'interrupted' : 'failed');
     } finally {
       busy = false;
+      compacting = false;
+      compactionQueued = false;
       _activeMessage = null;
+      _checkpointTimer?.cancel();
+      _checkpointTimer = null;
       if (!_disposed) {
         _notifyTimer?.cancel();
         _notifyTimer = null;
@@ -517,6 +710,7 @@ class AgentController extends ChangeNotifier {
     }
     _disposed = true;
     _notifyTimer?.cancel();
+    _checkpointTimer?.cancel();
     if (_approval != null && !_approval!.isCompleted) {
       _approval!.complete(false);
     }
