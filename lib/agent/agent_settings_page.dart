@@ -191,6 +191,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   bool _saving = false;
   String? _error;
   static const _encoder = JsonEncoder.withIndent('  ');
+  List<AgentThinkingLevel> _levels = [];
+  String? _defaultThinking;
   @override
   void initState() {
     super.initState();
@@ -206,10 +208,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
               {'id': 'default', 'label': '默认', 'params': <String, dynamic>{}},
             ],
       ),
-      'default': model?.defaultThinking ?? 'default',
       'body': _encoder.convert(model?.extraBody ?? {}),
       'headers': _encoder.convert(model?.headers ?? {}),
-      'rounds': (model?.maxToolRounds ?? 12).toString(),
+      'context': (model?.contextWindowTokens ?? 128000).toString(),
       'temperature': model?.temperature?.toString() ?? '',
     };
     for (final entry in values.entries) {
@@ -218,7 +219,41 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     _vision = model?.supportsVision ?? false;
     _reasoning = model?.includeReasoning ?? false;
     _stream = model?.stream ?? true;
+    _defaultThinking = model?.defaultThinking ?? 'default';
+    _updateLevels();
+    _fields['thinking']!.addListener(_thinkingChanged);
   }
+
+  List<AgentThinkingLevel> _readLevels() {
+    try {
+      final raw = jsonDecode(_value('thinking'));
+      if (raw is! List) throw const FormatException();
+      final levels = raw
+          .map((e) => AgentThinkingLevel.fromJson(agentObject(e)))
+          .toList();
+      if (levels.isEmpty ||
+          levels.any((e) => e.id.trim().isEmpty || e.label.trim().isEmpty) ||
+          levels.map((e) => e.id).toSet().length != levels.length) {
+        throw const FormatException();
+      }
+      return levels;
+    } catch (_) {
+      throw const FormatException('思考深度需要合法的 JSON 数组，每项包含唯一 ID、显示名称和参数对象');
+    }
+  }
+
+  void _updateLevels() {
+    try {
+      _levels = _readLevels();
+      if (!_levels.any((level) => level.id == _defaultThinking)) {
+        _defaultThinking = _levels.first.id;
+      }
+    } catch (_) {
+      _levels = [];
+    }
+  }
+
+  void _thinkingChanged() => setState(_updateLevels);
 
   @override
   void dispose() {
@@ -244,10 +279,11 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       _error = null;
     });
     try {
-      final levels = jsonDecode(_value('thinking'));
-      if (levels is! List) throw const FormatException('思考深度需要 JSON 数组');
-      final rounds = int.tryParse(_value('rounds'));
-      if (rounds == null) throw const FormatException('工具轮数需要整数');
+      final levels = _readLevels();
+      final contextWindow = int.tryParse(_value('context'));
+      if (contextWindow == null || contextWindow < 1) {
+        throw const FormatException('上下文容量需要是正整数');
+      }
       final temperature = _value('temperature');
       if (temperature.isNotEmpty && double.tryParse(temperature) == null) {
         throw const FormatException('temperature 需要数字，或留空');
@@ -260,13 +296,11 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         supportsVision: _vision,
         includeReasoning: _reasoning,
         stream: _stream,
-        thinkingLevels: levels
-            .map((e) => AgentThinkingLevel.fromJson(agentObject(e)))
-            .toList(),
-        defaultThinking: _value('default'),
+        thinkingLevels: levels,
+        defaultThinking: _defaultThinking!,
         extraBody: _object('body', '额外请求体'),
         headers: Map<String, String>.from(_object('headers', '请求头')),
-        maxToolRounds: rounds,
+        contextWindowTokens: contextWindow,
         temperature: temperature.isEmpty ? null : double.parse(temperature),
       );
       model.validate();
@@ -394,8 +428,43 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 hint:
                     '每项包含 id、label 和 params；例如 params: {"reasoning_effort":"low"}，以服务商支持为准',
               ),
-              _field('default', '默认思考深度 ID', required: true),
-              _field('rounds', '最大工具轮数（1–32）', required: true),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: '默认思考深度',
+                    border: const OutlineInputBorder(),
+                    helperText: _levels.isEmpty
+                        ? '请先填写有效的思考深度列表'
+                        : '选项来自上方思考深度列表',
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      key: const ValueKey('agent-model-default'),
+                      isExpanded: true,
+                      isDense: true,
+                      value: _levels.isEmpty ? null : _defaultThinking,
+                      items: _levels
+                          .map(
+                            (level) => DropdownMenuItem(
+                              value: level.id,
+                              child: Text(level.label),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: _levels.isEmpty || _saving
+                          ? null
+                          : (value) => setState(() => _defaultThinking = value),
+                    ),
+                  ),
+                ),
+              ),
+              _field(
+                'context',
+                '模型上下文容量（tokens）',
+                required: true,
+                hint: '填写服务商提供的容量；达到90%时自动压缩，也可在对话中手动压缩',
+              ),
               _field('temperature', 'temperature（可选，0–2）'),
               ExpansionTile(
                 title: const Text('高级请求配置'),

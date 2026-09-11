@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:venera/network/app_dio.dart';
 import 'agent_models.dart';
+import 'agent_context.dart';
 import 'agent_http_adapter.dart';
 
 typedef AgentDelta = void Function(String type, String text);
@@ -18,7 +19,8 @@ class AgentResponse {
   final String text;
   final String reasoning;
   final List<AgentToolCall> tools;
-  const AgentResponse(this.text, this.reasoning, this.tools);
+  final AgentUsage? usage;
+  const AgentResponse(this.text, this.reasoning, this.tools, {this.usage});
 }
 
 class _ToolFragments {
@@ -42,18 +44,42 @@ class AgentClient {
     required String? thinkingId,
     required List<AgentJson> messages,
     required List<AgentJson> tools,
-  }) => {
-    ...model.extraBody,
-    ...model.thinking(thinkingId).params,
-    if (model.temperature != null) 'temperature': model.temperature,
-    // Protocol fields cannot be overridden by provider-specific patches.
-    'model': model.model,
-    'messages': messages,
-    'tools': tools,
-    'tool_choice': 'auto',
-    'stream': model.stream,
-    'n': 1,
-  };
+  }) {
+    final body = <String, dynamic>{
+      ...model.extraBody,
+      ...model.thinking(thinkingId).params,
+      if (model.temperature != null) 'temperature': model.temperature,
+      // Protocol fields cannot be overridden by provider-specific patches.
+      'model': model.model,
+      'messages': messages,
+      'stream': model.stream,
+      'n': 1,
+    };
+    if (tools.isEmpty) {
+      for (final key in [
+        'tools',
+        'tool_choice',
+        'functions',
+        'function_call',
+        'parallel_tool_calls',
+      ]) {
+        body.remove(key);
+      }
+    } else {
+      body['tools'] = tools;
+      body['tool_choice'] = 'auto';
+    }
+    if (model.stream) {
+      body['stream_options'] = {
+        if (body['stream_options'] is Map)
+          ...agentObject(body['stream_options']),
+        'include_usage': true,
+      };
+    } else {
+      body.remove('stream_options');
+    }
+    return body;
+  }
 
   Future<AgentResponse> complete({
     required AgentModel model,
@@ -137,7 +163,7 @@ class AgentClient {
     bool? jsonMode;
     var done = false;
     String? finish;
-    var received = 0;
+    AgentUsage? usage;
 
     void emit(String type, Object? value) {
       if (value == null) return;
@@ -156,6 +182,8 @@ class AgentClient {
       if (data['error'] != null) {
         throw const AgentException('MODEL_ERROR', '模型服务返回错误，请检查配置后重试');
       }
+      // The final SSE usage event normally has no choices.
+      usage = AgentUsage.fromResponse(data['usage']) ?? usage;
       final choices = data['choices'];
       if (choices is! List || choices.isEmpty) return;
       final matching = choices.where(
@@ -182,9 +210,6 @@ class AgentClient {
           final name = function['name'] as String?;
           if (name != null && name != buffer.name) buffer.name += name;
           buffer.arguments += function['arguments'] as String? ?? '';
-          if (buffer.arguments.length > 128 * 1024) {
-            throw const AgentException('TOOL_TOO_LARGE', '模型的工具参数过长');
-          }
         }
       }
       finish = choice['finish_reason'] as String? ?? finish;
@@ -212,10 +237,6 @@ class AgentClient {
       )) {
         run.check();
         final line = iterator.current;
-        received += line.length;
-        if (received > 2 * 1024 * 1024) {
-          throw const AgentException('RESPONSE_TOO_LARGE', '模型响应过长，已停止接收');
-        }
         if (jsonMode == null && line.trim().isNotEmpty) {
           jsonMode = line.trimLeft().startsWith('{');
         }
@@ -239,7 +260,7 @@ class AgentClient {
         throw AgentException(
           'INCOMPLETE_RESPONSE',
           finish == 'length'
-              ? '模型输出达到长度限制；未执行未完成的工具，请调整输出上限后重试'
+              ? '服务商在输出上限处结束了生成，收到的内容已保留；未执行不完整工具。可调整模型输出参数后继续'
               : '模型响应未完整结束；未执行工具，可重试本轮',
         );
       }
@@ -254,7 +275,12 @@ class AgentClient {
         agentObject(jsonDecode(call.arguments));
         calls.add(AgentToolCall(call.id, call.name, call.arguments));
       }
-      return AgentResponse(text.toString(), reasoning.toString(), calls);
+      return AgentResponse(
+        text.toString(),
+        reasoning.toString(),
+        calls,
+        usage: usage,
+      );
     } finally {
       await iterator.cancel();
     }

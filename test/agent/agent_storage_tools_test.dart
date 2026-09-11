@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/agent/agent_models.dart';
+import 'package:venera/agent/agent_context.dart';
 import 'package:venera/agent/agent_store.dart';
 import 'package:venera/agent/agent_tools.dart';
 import 'package:venera/foundation/appdata.dart';
@@ -147,6 +148,8 @@ void main() {
       'ok': 1,
       'skipped': 1,
       'failed': 0,
+      'missing': 0,
+      'already_exists': 0,
     });
     expect(changes, 1);
     final saved = later.getAll().single;
@@ -195,8 +198,255 @@ void main() {
       'ok': 1,
       'skipped': 0,
       'failed': 1,
+      'missing': 0,
+      'already_exists': 0,
     });
     expect(later.getAll().single.id, '123');
+  });
+
+  test(
+    'add tools resolve direct user ids internally and report missing entries',
+    () async {
+      final lookedUp = <String>[];
+      sources.add(
+        TestSource(
+          'jm',
+          idMatcher: RegExp(r'^\d+$'),
+          loadComicInfo: (id) async {
+            lookedUp.add(id);
+            return id == '404'
+                ? const Res.error('未找到漫画')
+                : Res(details('jm', id));
+          },
+        ),
+      );
+      user('将123和404加入稍后再看和目标收藏夹');
+      final result = await tools.execute('later_add', {
+        'comics': ['jm:123', 'jm:404'],
+      }, context);
+      expect(lookedUp, ['123', '404']);
+      expect(result['data']['summary']['ok'], 1);
+      expect(result['data']['summary']['missing'], 1);
+      expect(result['data']['missing'].single['comic_id'], '404');
+      expect(result['data']['missing'].single['message'], contains('未找到漫画'));
+      lookedUp.clear();
+      await tools.execute('fav_add', {
+        'folder': '目标',
+        'comics': ['jm:123'],
+      }, context);
+      final duplicate = await tools.execute('later_add', {
+        'comics': ['jm:123'],
+      }, context);
+      expect(duplicate['data']['summary']['already_exists'], 1);
+      expect(lookedUp, isEmpty);
+      expect(store.showcases(conversation.id).map((g) => g.kind).toSet(), {
+        'favorites',
+        'later',
+      });
+    },
+  );
+
+  test(
+    'remove tools check membership directly and list all missing comics',
+    () async {
+      store.remember(conversation.id, comic);
+      const absent = AgentComic(
+        sourceKey: 'jm',
+        comicId: '456',
+        title: '未加入的漫画',
+      );
+      store.remember(conversation.id, absent);
+      await tools.execute('fav_add', {
+        'folder': '目标',
+        'comics': ['jm:123'],
+      }, context);
+      await tools.execute('later_add', {
+        'comics': ['jm:123'],
+      }, context);
+      for (final name in ['fav_remove', 'later_remove']) {
+        final result = await tools.execute(name, {
+          'comics': ['jm:123', 'jm:456', 'jm:789'],
+          if (name == 'fav_remove') 'folder': '目标',
+        }, context);
+        expect(result['data']['summary']['ok'], 1);
+        expect(result['data']['summary']['missing'], 2);
+        expect((result['data']['missing'] as List).map((m) => m['comic_id']), [
+          '456',
+          '789',
+        ]);
+        expect(result['data']['missing'][0]['title'], '未加入的漫画');
+        expect(result['data']['missing'][0]['reason'], 'NOT_PRESENT');
+      }
+      expect(store.showcases(conversation.id), isEmpty);
+    },
+  );
+
+  test(
+    'operation showcases group by collection and folder and survive reopening',
+    () async {
+      store.remember(conversation.id, comic);
+      favorites.createFolder('另一个收藏夹');
+      for (final folder in ['目标', '另一个收藏夹', '目标']) {
+        await tools.execute('fav_add', {
+          'folder': folder,
+          'comics': ['jm:123'],
+        }, context);
+      }
+      await tools.execute('later_add', {
+        'comics': ['jm:123'],
+      }, context);
+      final groups = store.showcases(conversation.id);
+      expect(groups.length, 3);
+      expect(
+        groups.where((g) => g.kind == 'favorites').map((g) => g.folder).toSet(),
+        {'目标', '另一个收藏夹'},
+      );
+      expect(groups.every((g) => g.comics.length == 1), true);
+      store.addShowcase(conversation.id, [comic], title: '展示一');
+      store.addShowcase(conversation.id, [comic], title: '展示二', replace: true);
+      expect(store.showcases(conversation.id).length, 4);
+      store.close();
+      store = await AgentStore.open('${root.path}/agent');
+      expect(
+        store
+            .showcases(conversation.id)
+            .where((g) => g.kind == 'favorites')
+            .length,
+        2,
+      );
+      final laterGroup = store
+          .showcases(conversation.id)
+          .singleWhere((g) => g.kind == 'later');
+      store.hideShowcase(laterGroup.id);
+      const another = AgentComic(
+        sourceKey: 'jm',
+        comicId: '456',
+        title: '另一部漫画',
+      );
+      store.recordOperationComics(conversation.id, 'later', [another]);
+      expect(
+        store
+            .showcases(conversation.id)
+            .singleWhere((g) => g.kind == 'later')
+            .comics
+            .map((c) => c.comicId),
+        ['456'],
+      );
+    },
+  );
+
+  test(
+    'editing invalidates a covered summary and always clears stale usage',
+    () {
+      user('第一轮');
+      final first = store.messages(conversation.id).single;
+      final answer = AgentMessage(
+        id: 'a',
+        conversationId: conversation.id,
+        role: 'assistant',
+        createdAt: 1,
+        parts: [
+          {'type': 'text', 'text': '已完成'},
+        ],
+      );
+      store.saveMessage(answer);
+      user('第二轮');
+      final nextUser = store.messages(conversation.id).last;
+      store.saveContext(
+        conversation.id,
+        const AgentConversationContext(
+          summary: '第一轮摘要',
+          throughMessageId: 'a',
+          usage: AgentUsage(totalTokens: 500),
+          usageModelId: 'm',
+          compactionCount: 1,
+        ),
+      );
+      store.truncateFrom(nextUser);
+      expect(store.conversationContext(conversation.id).summary, '第一轮摘要');
+      expect(store.conversationContext(conversation.id).usage, isNull);
+      store.truncateFrom(first, include: false);
+      expect(store.conversationContext(conversation.id).hasSummary, false);
+    },
+  );
+
+  test(
+    'version one histories gain operation groups without repeating collection writes',
+    () async {
+      store.remember(conversation.id, comic);
+      user('加入收藏和稍后再看');
+      store.saveMessage(
+        AgentMessage(
+          id: 'old-response',
+          conversationId: conversation.id,
+          role: 'assistant',
+          createdAt: 2,
+          parts: [
+            for (final name in ['fav_add', 'later_add'])
+              {
+                'type': 'tool_call',
+                'id': name,
+                'name': name,
+                'state': 'done',
+                'arguments': {
+                  'comics': ['jm:123'],
+                  if (name == 'fav_add') 'folder': '目标',
+                },
+                'result': {
+                  'ok': true,
+                  'data': {
+                    'results': [
+                      {...comic.ref, 'status': 'added'},
+                    ],
+                  },
+                },
+              },
+          ],
+        ),
+      );
+      store.close();
+      final legacy = sqlite3.open('${root.path}/agent/agent.db');
+      legacy.execute(
+        'DROP TABLE conversation_context; DROP TABLE showcase_operations; PRAGMA user_version = 1;',
+      );
+      legacy.dispose();
+      store = await AgentStore.open('${root.path}/agent');
+      expect(store.showcases(conversation.id).map((g) => g.kind).toSet(), {
+        'favorites',
+        'later',
+      });
+      expect(later.getAll(), isEmpty);
+      expect(favorites.count('目标'), 0);
+      expect(store.messages(conversation.id).length, 2);
+    },
+  );
+
+  test('detail results retain long descriptions and all tags', () async {
+    final long = '完整内容' * 2000;
+    sources.add(
+      TestSource(
+        'jm',
+        idMatcher: RegExp(r'^\d+$'),
+        loadComicInfo: (id) async => Res(
+          ComicDetails.fromJson({
+            'sourceKey': 'jm',
+            'comicId': id,
+            'title': '长标题' * 300,
+            'cover': '',
+            'description': long,
+            'tags': {'分类': List.generate(35, (i) => '标签$i')},
+          }),
+        ),
+      ),
+    );
+    user('查看123');
+    final result = await tools.execute('comic_open_by_id', {
+      'source_key': 'jm',
+      'comic_id': '123',
+    }, context);
+    expect(result['data']['description'], long);
+    expect(result['data']['title'], '长标题' * 300);
+    expect(result['data']['tags'].length, 35);
   });
 
   test('same id in different sources remains distinct in favorites', () async {
@@ -601,12 +851,17 @@ void main() {
       user('第二轮');
       store.remember(conversation.id, comic);
       store.addShowcase(conversation.id, [comic], title: '保留');
+      store.recordOperationComics(conversation.id, 'later', [comic]);
+      store.saveContext(
+        conversation.id,
+        const AgentConversationContext(usage: AgentUsage(totalTokens: 100)),
+      );
       store.saveUndo('undo', conversation.id, [
         {'kind': 'later', 'comic': comic.toJson()},
       ]);
       store.truncateFrom(first, include: false);
       expect(store.messages(conversation.id).length, 1);
-      expect(store.showcases(conversation.id).length, 1);
+      expect(store.showcases(conversation.id).length, 2);
       store.deleteConversation(conversation.id);
       final db = sqlite3.open(
         '${root.path}/agent/agent.db',
@@ -618,6 +873,8 @@ void main() {
         'showcases',
         'showcase_items',
         'undo_records',
+        'showcase_operations',
+        'conversation_context',
       ]) {
         expect(db.select('SELECT COUNT(*) FROM $table;').first.values.first, 0);
       }

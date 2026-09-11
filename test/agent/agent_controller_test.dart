@@ -24,6 +24,7 @@ class ScriptedClient extends AgentClient {
   )
   respond;
   final requests = <String>[];
+  final toolRequests = <List<AgentJson>>[];
   ScriptedClient(this.respond) : super(dio: Dio());
   @override
   Future<AgentResponse> complete({
@@ -36,6 +37,7 @@ class ScriptedClient extends AgentClient {
     required AgentDelta onDelta,
   }) {
     requests.add('${model.id}:$thinkingId');
+    toolRequests.add(tools);
     return respond(model, messages, run, onDelta);
   }
 }
@@ -117,7 +119,8 @@ void main() {
       store.remember(c.conversation.id, comic);
       await c.send('加入稍后再看');
       expect(later.getAll().length, 1);
-      expect(c.showcases.length, 1);
+      expect(c.showcases.where((g) => g.kind == 'discovery').length, 1);
+      expect(c.showcases.where((g) => g.kind == 'later').length, 1);
       expect(c.messages.length, 3);
       expect(c.messages.last.text, contains('完成'));
       expect(store.messages(c.conversation.id).last.state, 'done');
@@ -128,7 +131,8 @@ void main() {
         true,
       );
       expect(later.getAll().length, 1);
-      expect(c.showcases.length, 2);
+      expect(c.showcases.where((g) => g.kind == 'discovery').length, 2);
+      expect(c.showcases.where((g) => g.kind == 'later').length, 1);
       expect(
         c.messages[1].tools.first['result']['data']['summary']['skipped'],
         1,

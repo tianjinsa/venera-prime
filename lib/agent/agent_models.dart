@@ -107,7 +107,7 @@ class AgentModel {
   final String defaultThinking;
   final AgentJson extraBody;
   final Map<String, String> headers;
-  final int maxToolRounds;
+  final int contextWindowTokens;
   final double? temperature;
   const AgentModel({
     required this.id,
@@ -123,7 +123,7 @@ class AgentModel {
     this.defaultThinking = 'default',
     this.extraBody = const {},
     this.headers = const {},
-    this.maxToolRounds = 12,
+    this.contextWindowTokens = 128000,
     this.temperature,
   });
   factory AgentModel.fromJson(AgentJson json) => AgentModel(
@@ -144,7 +144,7 @@ class AgentModel {
     defaultThinking: json['default_thinking'] as String? ?? 'default',
     extraBody: agentObject(json['extra_body'] ?? {}),
     headers: Map<String, String>.from(json['headers'] as Map? ?? {}),
-    maxToolRounds: json['max_tool_rounds'] as int? ?? 12,
+    contextWindowTokens: json['context_window_tokens'] as int? ?? 128000,
     temperature: (json['temperature'] as num?)?.toDouble(),
   );
   Uri get endpoint {
@@ -170,8 +170,8 @@ class AgentModel {
     if (id.isEmpty || name.trim().isEmpty || model.trim().isEmpty) {
       throw const FormatException('请填写显示名称和模型 ID');
     }
-    if (maxToolRounds < 1 || maxToolRounds > 32) {
-      throw const FormatException('工具轮数应为 1–32');
+    if (contextWindowTokens < 1) {
+      throw const FormatException('模型上下文容量需要是正整数');
     }
     if (thinkingLevels.isEmpty ||
         thinkingLevels.any((e) => e.id.isEmpty || e.label.trim().isEmpty) ||
@@ -213,7 +213,7 @@ class AgentModel {
     'default_thinking': defaultThinking,
     'extra_body': extraBody,
     'headers': headers,
-    'max_tool_rounds': maxToolRounds,
+    'context_window_tokens': contextWindowTokens,
     'temperature': temperature,
   };
 }
@@ -334,6 +334,15 @@ class AgentMessage {
       .map((p) => p['text'] as String? ?? '')
       .join();
   Iterable<AgentJson> get tools => parts.where((p) => p['type'] == 'tool_call');
+  String? get followUpTo {
+    if (role != 'user') return null;
+    for (final part in parts) {
+      if (part['follow_up_to'] is String) return part['follow_up_to'] as String;
+    }
+    return null;
+  }
+
+  bool get isFollowUp => followUpTo != null;
   void appendText(String type, String text) {
     if (text.isEmpty) return;
     if (parts.isNotEmpty && parts.last['type'] == type) {
@@ -350,11 +359,15 @@ class AgentShowcase {
   final String note;
   final int createdAt;
   final List<AgentComic> comics;
+  final String kind;
+  final String? folder;
   const AgentShowcase({
     required this.id,
     required this.title,
     required this.note,
     required this.createdAt,
     required this.comics,
+    this.kind = 'discovery',
+    this.folder,
   });
 }

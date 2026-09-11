@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/agent/agent_client.dart';
+import 'package:venera/agent/agent_context.dart';
 import 'package:venera/agent/agent_models.dart';
 import 'package:venera/agent/agent_wire.dart';
 
@@ -83,6 +84,7 @@ void main() {
     );
     expect(result.text, '中文');
     expect(result.reasoning, '考虑');
+    expect(result.usage?.totalTokens, 123);
     expect(result.tools.map((t) => t.id), ['a', 'b']);
     expect(result.tools.first.name, 'fav_check');
     expect(jsonDecode(result.tools.first.arguments), {
@@ -226,7 +228,7 @@ void main() {
     );
   });
 
-  test('wire trims whole turns and pairs tool results with their calls', () {
+  test('wire retains all turns and pairs tool results with their calls', () {
     AgentMessage user(String id) => AgentMessage(
       id: id,
       conversationId: 'c',
@@ -270,27 +272,29 @@ void main() {
       ],
     );
     final history = [user('old'), user('new'), assistant];
-    final wire = agentWire(history, _model, maxTurns: 1);
+    final wire = agentWire(history, _model);
     expect(wire.map((m) => m['role']), [
       'system',
+      'user',
       'user',
       'assistant',
       'tool',
       'tool',
     ]);
-    expect(wire[1]['content'], 'new');
-    expect(wire[2].containsKey('reasoning_content'), false);
-    expect((wire[2]['tool_calls'] as List).map((c) => c['id']), [
+    expect(wire[1]['content'], 'old');
+    expect(wire[2]['content'], 'new');
+    expect(wire[3].containsKey('reasoning_content'), false);
+    expect((wire[3]['tool_calls'] as List).map((c) => c['id']), [
       'call',
       'pending',
     ]);
-    expect(wire[3]['tool_call_id'], 'call');
-    expect(jsonDecode(wire[4]['content'])['error']['code'], 'CANCELLED');
+    expect(wire[4]['tool_call_id'], 'call');
+    expect(jsonDecode(wire[5]['content'])['error']['code'], 'CANCELLED');
     expect(
       jsonDecode(
-        wire[2]['tool_calls'][0]['function']['arguments'],
+        wire[3]['tool_calls'][0]['function']['arguments'],
       )['comics'][0],
-      {'source_key': 'jm', 'comic_id': '1'},
+      {'source_key': 'jm', 'comic_id': '1', 'title': 'redundant'},
     );
     final withReasoning = AgentModel.fromJson({
       ..._model.toJson(),
@@ -305,7 +309,7 @@ void main() {
     );
   });
 
-  test('large tool outputs remain valid JSON', () {
+  test('large tool outputs keep every field and item without truncation', () {
     final value = {
       'ok': true,
       'data': {
@@ -317,9 +321,152 @@ void main() {
       },
     };
     final result = agentToolContent(value);
-    expect(result.length, lessThanOrEqualTo(16000));
-    expect(jsonDecode(result)['truncated'], true);
+    expect(result.length, greaterThan(16000));
+    expect(jsonDecode(result), value);
   });
+
+  test('response text can exceed the previous two megabyte limit', () async {
+    final content = '长' * (2 * 1024 * 1024 + 100);
+    final result = await AgentClient.readResponse(
+      Stream.value(
+        utf8.encode(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {'content': content},
+                'finish_reason': 'stop',
+              },
+            ],
+            'usage': {
+              'prompt_tokens': 10,
+              'completion_tokens': 20,
+              'total_tokens': 30,
+            },
+          }),
+        ),
+      ),
+      AgentRun(),
+      (_, _) {},
+    );
+    expect(result.text, content);
+    expect(result.usage?.totalTokens, 30);
+  });
+
+  test('usage counts cached input once for each supported usage layout', () {
+    for (final raw in [
+      {
+        'prompt_tokens': 1000,
+        'completion_tokens': 100,
+        'total_tokens': 1100,
+        'prompt_tokens_details': {'cached_tokens': 600},
+      },
+      {
+        'input_tokens': 1000,
+        'output_tokens': 100,
+        'input_tokens_details': {'cached_tokens': 600},
+      },
+      {
+        'prompt_cache_hit_tokens': 600,
+        'prompt_cache_miss_tokens': 400,
+        'completion_tokens': 100,
+      },
+    ]) {
+      final usage = AgentUsage.fromResponse(raw)!;
+      expect(usage.totalTokens, 1100);
+      expect(usage.inputTokens, 1000);
+      expect(usage.cachedTokens, 600);
+      expect(AgentUsage.fromResponse(usage.toJson())!.totalTokens, 1100);
+    }
+    final separate = AgentUsage.fromResponse({
+      'input_tokens': 100,
+      'cache_read_input_tokens': 600,
+      'cache_creation_input_tokens': 50,
+      'output_tokens': 50,
+    })!;
+    expect(separate.inputTokens, 750);
+    expect(separate.totalTokens, 800);
+    expect(AgentUsage.fromResponse(null), isNull);
+    expect(AgentUsage.fromResponse({}), isNull);
+    expect(
+      AgentUsage.fromResponse({'prompt_tokens': -1, 'completion_tokens': 3}),
+      isNull,
+    );
+  });
+
+  test(
+    'streaming requests include usage and summary requests cannot run tools',
+    () {
+      final configured = AgentModel.fromJson({
+        ..._model.toJson(),
+        'extra_body': {
+          'tools': [
+            {'fake': true},
+          ],
+          'tool_choice': 'required',
+          'functions': [{}],
+          'stream_options': {'include_usage': false},
+        },
+      });
+      final body = AgentClient.requestBody(
+        model: configured,
+        thinkingId: null,
+        messages: [],
+        tools: [],
+      );
+      expect(body.containsKey('tools'), false);
+      expect(body.containsKey('tool_choice'), false);
+      expect(body.containsKey('functions'), false);
+      expect(body['stream_options']['include_usage'], true);
+    },
+  );
+
+  test(
+    'summary replaces a prefix but retains the current task and supplements verbatim',
+    () {
+      AgentMessage message(
+        String id,
+        String role,
+        String text, {
+        String? followUp,
+      }) => AgentMessage(
+        id: id,
+        conversationId: 'c',
+        role: role,
+        createdAt: 1,
+        parts: [
+          {
+            'type': 'text',
+            'text': text,
+            if (followUp != null) 'follow_up_to': followUp,
+          },
+        ],
+      );
+      final history = [
+        message('old-user', 'user', '旧任务'),
+        message('old-reply', 'assistant', '旧回复'),
+        message('task', 'user', '把123加入目标收藏夹'),
+        message('step1', 'assistant', '已经找到123'),
+        message('supplement', 'user', '不要处理其他漫画', followUp: 'task'),
+        message('step2', 'assistant', '已处理123'),
+        message('latest', 'assistant', '完成'),
+      ];
+      final wire = agentWire(
+        history,
+        _model,
+        context: const AgentConversationContext(
+          summary: '压缩历史',
+          throughMessageId: 'step2',
+        ),
+      );
+      expect(wire.where((m) => m['role'] == 'user').map((m) => m['content']), [
+        '把123加入目标收藏夹',
+        '不要处理其他漫画',
+      ]);
+      expect(wire.last['content'], '完成');
+      expect(wire.any((m) => m['content'] == '旧回复'), false);
+      expect(wire[1]['content'], contains('压缩历史'));
+    },
+  );
 
   test(
     'header timeout cancels an adapter that does not enforce Dio timeouts',
