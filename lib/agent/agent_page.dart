@@ -4,6 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/pages/comic_source_page.dart';
 import 'agent_controller.dart';
+import 'agent_history_view.dart';
+import 'agent_image_view.dart';
+import 'agent_images.dart';
 import 'agent_message_view.dart';
 import 'agent_models.dart';
 import 'agent_settings_page.dart';
@@ -13,7 +16,8 @@ import 'agent_turn_view.dart';
 
 class AgentPage extends StatefulWidget {
   final AgentController? controller;
-  const AgentPage({super.key, this.controller});
+  final Future<List<AgentImageDraft>> Function()? imagePicker;
+  const AgentPage({super.key, this.controller, this.imagePicker});
   @override
   State<AgentPage> createState() => _AgentPageState();
 }
@@ -22,6 +26,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   AgentController? _controller;
   String? _loadError;
   final _draft = TextEditingController();
+  final _draftImages = <AgentImageDraft>[];
+  String? _draftConversation;
+  bool _pickingImages = false;
   final _historySearch = TextEditingController();
   final _scroll = ScrollController();
   final _showcaseScroll = ScrollController();
@@ -62,6 +69,13 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   void _onUpdate() {
     if (!mounted) return;
+    final conversationId = _controller?.conversation.id;
+    if (_draftConversation != conversationId) {
+      _draftConversation = conversationId;
+      _draft.clear();
+      _draftImages.clear();
+      _focusedGroup = null;
+    }
     final follow = !_scroll.hasClients || _scroll.position.extentAfter < 160;
     if (follow) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -120,20 +134,50 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Future<void> _send() async {
     final controller = _controller!;
-    if (controller.isStopping || _draft.text.trim().isEmpty) return;
+    if (controller.isStopping ||
+        _pickingImages ||
+        _draft.text.trim().isEmpty && _draftImages.isEmpty) {
+      return;
+    }
     if (controller.model == null) {
       await _settings();
       return;
     }
     final text = _draft.text;
-    _draft.clear();
+    final images = _draftImages.toList();
+    final conversationId = controller.conversation.id;
+    setState(() {
+      _draft.clear();
+      _draftImages.clear();
+    });
     try {
-      await controller.send(text);
+      await controller.send(text, images: images);
     } catch (e) {
       if (mounted) {
-        _draft.text = text;
+        if (controller.conversation.id == conversationId) {
+          setState(() {
+            _draft.text = _draft.text.isEmpty ? text : '$text\n${_draft.text}';
+            _draftImages.insertAll(0, images);
+          });
+        }
         _error(e);
       }
+    }
+  }
+
+  Future<void> _pickImages() async {
+    if (_pickingImages) return;
+    final conversationId = _controller!.conversation.id;
+    setState(() => _pickingImages = true);
+    try {
+      final images = await (widget.imagePicker ?? pickAgentImages)();
+      if (mounted && _controller!.conversation.id == conversationId) {
+        setState(() => _draftImages.addAll(images));
+      }
+    } catch (e) {
+      _error(e);
+    } finally {
+      if (mounted) setState(() => _pickingImages = false);
     }
   }
 
@@ -173,26 +217,44 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     return result;
   }
 
-  Future<void> _deleteConversation(AgentConversation conversation) async {
+  Future<bool> _deleteConversations(
+    List<AgentConversation> conversations,
+  ) async {
+    final bytes = conversations.fold<int>(
+      0,
+      (total, c) => total + c.storageBytes,
+    );
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除这段对话？'),
-        content: const Text('对话及其展示记录将删除，已经加入收藏和稍后再看的漫画不受影响。'),
+        title: Text(
+          conversations.length == 1
+              ? '删除这段对话？'
+              : '删除 ${conversations.length} 段对话？',
+        ),
+        content: Text(
+          '将一并删除图片、文字、工具运行记录和展示记录，内容约 ${agentFormatBytes(bytes)}。\n\n已经加入收藏和稍后再看的漫画不受影响。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
           ),
           FilledButton(
+            key: const ValueKey('agent-confirm-delete'),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('删除'),
           ),
         ],
       ),
     );
-    if (approved == true) {
-      await _act(() => _controller!.deleteConversation(conversation));
+    if (approved != true || !mounted) return false;
+    try {
+      await _controller!.deleteConversations(conversations);
+      return true;
+    } catch (e) {
+      _error(e);
+      return false;
     }
   }
 
@@ -444,6 +506,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                           child: AgentUserMessageView(
                             message: message,
                             busy: controller.busy,
+                            imageLoader: (message, image) => controller.store
+                                .imageBytes(message.conversationId, image.id),
                             onEdit: () async {
                               final text = await _editText(
                                 '编辑后重发（替换后续回复）',
@@ -468,6 +532,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                         constraints: const BoxConstraints(maxWidth: 860),
                         child: AgentTurnView(
                           messages: messages,
+                          imageLoader: (message, image) => controller.store
+                              .imageBytes(message.conversationId, image.id),
                           running: current && controller.busy,
                           interrupted:
                               current &&
@@ -679,41 +745,82 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               },
             ),
           },
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: TextField(
-                  key: const ValueKey('agent-input'),
-                  controller: _draft,
-                  minLines: 1,
-                  maxLines: 5,
-                  textInputAction: TextInputAction.newline,
-                  decoration: InputDecoration(
-                    hintText: controller.busy ? '补充要求，当前操作结束后处理…' : '输入消息…',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
+              if (_draftImages.isNotEmpty) ...[
+                AgentImageStrip(
+                  key: const ValueKey('agent-draft-images'),
+                  images: _draftImages
+                      .map((image) => image.attachment)
+                      .toList(),
+                  readImage: (image) => _draftImages
+                      .firstWhere((draft) => draft.attachment.id == image.id)
+                      .bytes,
+                  onRemove: (image) => setState(
+                    () => _draftImages.removeWhere(
+                      (draft) => draft.attachment.id == image.id,
                     ),
-                    contentPadding: const EdgeInsets.all(14),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (controller.busy)
-                IconButton.outlined(
-                  key: const ValueKey('agent-stop'),
-                  tooltip: '停止',
-                  onPressed: controller.isStopping ? null : controller.stop,
-                  icon: const Icon(Icons.stop_rounded, size: 20),
-                ),
-              if (controller.busy) const SizedBox(width: 6),
-              IconButton.filled(
-                key: const ValueKey('agent-send'),
-                tooltip: controller.busy
-                    ? '补充消息（Ctrl+Enter）'
-                    : '发送（Ctrl+Enter）',
-                onPressed: controller.isStopping ? null : _send,
-                icon: const Icon(Icons.arrow_upward, size: 20),
+                const SizedBox(height: 8),
+              ],
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  IconButton(
+                    key: const ValueKey('agent-attach-image'),
+                    tooltip: '添加图片',
+                    onPressed: _pickingImages || controller.isStopping
+                        ? null
+                        : _pickImages,
+                    icon: _pickingImages
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(
+                            Icons.add_photo_alternate_outlined,
+                            size: 22,
+                          ),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      key: const ValueKey('agent-input'),
+                      controller: _draft,
+                      minLines: 1,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.newline,
+                      decoration: InputDecoration(
+                        hintText: controller.busy ? '补充要求，当前操作结束后处理…' : '输入消息…',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        contentPadding: const EdgeInsets.all(14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (controller.busy)
+                    IconButton.outlined(
+                      key: const ValueKey('agent-stop'),
+                      tooltip: '停止',
+                      onPressed: controller.isStopping ? null : controller.stop,
+                      icon: const Icon(Icons.stop_rounded, size: 20),
+                    ),
+                  if (controller.busy) const SizedBox(width: 6),
+                  IconButton.filled(
+                    key: const ValueKey('agent-send'),
+                    tooltip: controller.busy
+                        ? '补充消息（Ctrl+Enter）'
+                        : '发送（Ctrl+Enter）',
+                    onPressed: controller.isStopping || _pickingImages
+                        ? null
+                        : _send,
+                    icon: const Icon(Icons.arrow_upward, size: 20),
+                  ),
+                ],
               ),
             ],
           ),
@@ -773,80 +880,22 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Widget _historyPanel({VoidCallback? close}) {
     final controller = _controller!;
-    return Column(
-      children: [
-        ListTile(
-          title: const Text('历史对话'),
-          trailing: close == null
-              ? IconButton(
-                  tooltip: '新对话',
-                  onPressed: () => _act(controller.newConversation),
-                  icon: const Icon(Icons.add),
-                )
-              : IconButton(
-                  tooltip: '关闭',
-                  onPressed: close,
-                  icon: const Icon(Icons.close),
-                ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: TextField(
-            controller: _historySearch,
-            onChanged: controller.searchHistory,
-            decoration: const InputDecoration(
-              hintText: '搜索对话',
-              prefixIcon: Icon(Icons.search),
-              isDense: true,
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: controller.conversations.length,
-            itemBuilder: (_, index) {
-              final conversation = controller.conversations[index];
-              final date = DateTime.fromMillisecondsSinceEpoch(
-                conversation.updatedAt,
-              );
-              return ListTile(
-                selected: conversation.id == controller.conversation.id,
-                title: Text(
-                  conversation.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  '${date.month}/${date.day} · ${conversation.messageCount} 条消息',
-                ),
-                onTap: () {
-                  close?.call();
-                  _focusedGroup = null;
-                  _act(() => controller.selectConversation(conversation));
-                },
-                trailing: PopupMenuButton<String>(
-                  enabled: !controller.busy,
-                  onSelected: (action) async {
-                    if (action == 'delete') {
-                      await _deleteConversation(conversation);
-                    } else {
-                      final text = await _editText('重命名对话', conversation.title);
-                      if (text != null) {
-                        controller.renameConversation(conversation, text);
-                      }
-                    }
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'rename', child: Text('重命名')),
-                    PopupMenuItem(value: 'delete', child: Text('删除')),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+    return AgentHistoryPanel(
+      conversations: controller.conversations,
+      currentId: controller.conversation.id,
+      search: _historySearch,
+      onSearch: controller.searchHistory,
+      onNew: () => _act(controller.newConversation),
+      close: close,
+      onSelect: (conversation) {
+        close?.call();
+        _act(() => controller.selectConversation(conversation));
+      },
+      onRename: (conversation) async {
+        final text = await _editText('重命名对话', conversation.title);
+        if (text != null) controller.renameConversation(conversation, text);
+      },
+      onDelete: _deleteConversations,
     );
   }
 

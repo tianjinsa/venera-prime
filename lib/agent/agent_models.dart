@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:uuid/uuid.dart';
 
 typedef AgentJson = Map<String, dynamic>;
@@ -297,6 +298,7 @@ class AgentConversation {
   final int createdAt;
   int updatedAt;
   int messageCount;
+  int storageBytes;
   AgentConversation({
     required this.id,
     this.title = '新对话',
@@ -305,7 +307,49 @@ class AgentConversation {
     required this.createdAt,
     required this.updatedAt,
     this.messageCount = 0,
+    this.storageBytes = 0,
   });
+}
+
+class AgentImageAttachment {
+  final String id;
+  final String name;
+  final String mimeType;
+  final int byteLength;
+  const AgentImageAttachment({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    required this.byteLength,
+  });
+  factory AgentImageAttachment.fromJson(AgentJson json) => AgentImageAttachment(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    mimeType: json['mime_type'] as String,
+    byteLength: json['byte_length'] as int,
+  );
+  AgentJson toJson() => {
+    'type': 'image',
+    'id': id,
+    'name': name,
+    'mime_type': mimeType,
+    'byte_length': byteLength,
+  };
+}
+
+class AgentImageDraft {
+  final AgentImageAttachment attachment;
+  final Uint8List bytes;
+  const AgentImageDraft(this.attachment, this.bytes);
+}
+
+String agentFormatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 }
 
 class AgentMessage {
@@ -334,6 +378,10 @@ class AgentMessage {
       .map((p) => p['text'] as String? ?? '')
       .join();
   Iterable<AgentJson> get tools => parts.where((p) => p['type'] == 'tool_call');
+  List<AgentImageAttachment> get images => parts
+      .where((p) => p['type'] == 'image')
+      .map(AgentImageAttachment.fromJson)
+      .toList();
   String? get followUpTo {
     if (role != 'user') return null;
     for (final part in parts) {

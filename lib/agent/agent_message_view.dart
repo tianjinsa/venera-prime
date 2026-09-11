@@ -5,17 +5,20 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:venera/utils/app_links.dart';
 import 'agent_disclosure.dart';
+import 'agent_image_view.dart';
 import 'agent_models.dart';
 
 class AgentUserMessageView extends StatelessWidget {
   final AgentMessage message;
   final bool busy;
   final VoidCallback? onEdit;
+  final AgentMessageImageLoader? imageLoader;
   const AgentUserMessageView({
     super.key,
     required this.message,
     required this.busy,
     this.onEdit,
+    this.imageLoader,
   });
   @override
   Widget build(BuildContext context) {
@@ -48,12 +51,21 @@ class AgentUserMessageView extends StatelessWidget {
                         ),
                       ),
                     ),
-                  SelectableText(
-                    message.text,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyMedium?.copyWith(fontSize: 16, height: 1.6),
-                  ),
+                  if (message.images.isNotEmpty) ...[
+                    AgentImageStrip(
+                      images: message.images,
+                      readImage: (image) => imageLoader?.call(message, image),
+                    ),
+                    if (message.text.isNotEmpty) const SizedBox(height: 10),
+                  ],
+                  if (message.text.isNotEmpty)
+                    SelectableText(
+                      message.text,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontSize: 16,
+                        height: 1.6,
+                      ),
+                    ),
                 ],
               ),
             ),
