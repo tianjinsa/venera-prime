@@ -1,8 +1,8 @@
 # Venera Prime Agent 接入设计方案
 
-> 版本：v3（2026-09-11）
+> 版本：v4（2026-09-12）
 > 实施基线：6a62b16（Venera Prime 2.2.1，当前上游最新版）
-> 本次修订：保留最小上游接入范围；优化执行过程折叠；支持运行中补充、上下文压缩和中断恢复；收藏与稍后再看自动分组展示。
+> 本次修订：在分层执行过程、持续对话和上下文压缩的基础上，增加图片输入、会话资源大小统计、资源级联清理和批量删除；继续限制上游接入范围。
 
 ## 1. 目标与范围
 
@@ -12,14 +12,15 @@
 
 - 底部五个 Tab：**主页 / 收藏 / Agent / 探索 / 分类**。宽屏沿用现有侧边导航，Agent 同样位于第三项。
 - 模型配置：地址、模型名、密钥、视觉能力声明、思考深度列表及请求体补丁、是否回传思考内容。
-- 流式对话、停止、失败重试、重新生成、编辑后重发，以及历史会话的新建、搜索、切换、重命名和删除。
+- 流式对话、停止、失败重试、重新生成、编辑后重发，以及历史会话的新建、搜索、切换、重命名和删除。每段历史显示内容占用大小，支持多选和全选当前搜索结果后批量删除。
+- 多张本地图片选择、缩略图、放大预览、发送前移除、纯图片或图文发送；图片随消息持久化，支持补充消息、重试和重启继续识图。
 - 一次用户任务包含多次模型响应和运行中补充消息；正文间的连续思考和工具合为默认折叠的过程组，组内每项详情也可独立展开。完成后只展开最终正文，之前的正文、过程组及补充消息再次整体折叠。
 - 不限制工具轮数、不按字符数截断模型或工具输出。按最近一次真实 token 统计在模型容量90%时自动压缩，也可手动触发；保留原始记录。
 - 19 个工具：源能力、发现、展示、本地收藏、稍后再看；支持批量操作、逐项回执和删除撤销。
 
-保留已有决定：只操作本地收藏；默认全自动；不提供删除收藏夹、清空收藏库、登录、验证码、章节图片读取或图片收藏写入；不做 headless 第二入口。图片收藏/历史工具、视觉输入、分享入口和会话导入导出留到后续。
+保留已有决定：只操作本地收藏；默认全自动；不提供删除收藏夹、清空收藏库、登录、验证码、通过工具获取章节图片或图片收藏写入；不做 headless 第二入口。图片收藏/历史工具、分享入口和会话导入导出留到后续。
 
-视觉能力是模型声明；本期输入为文本，不因为开启声明就自动下载或上传封面。
+视觉能力由模型设置中的“模型支持视觉”声明。选择图片仅加入本机草稿，点击发送后才随请求发给所选模型；不自动下载、上传漫画封面。
 
 ## 2. 上游兼容约束
 
@@ -42,6 +43,7 @@
 | lib/pages/main_page.dart | 接入第三个页面/导航项，映射旧启动页索引 | 五个页面和导航一致，旧设置语义不变 |
 | lib/foundation/favorites.dart | 导入并混入通用批量通知能力 | 单次调用通知行为不变 |
 | lib/foundation/read_later.dart | 同上 | 增删语义与原有表结构不变 |
+| lib/utils/io.dart | 新增12行通用 withFileSelection 包装，复用原有文件选择状态 | 打开系统选图窗口时保持既有生命周期行为，完成/取消后还原状态 |
 | pubspec.yaml / pubspec.lock | 新增 flutter_markdown_plus | 包管理器维护锁文件 |
 
 新增 **lib/foundation/batched_notifications.dart** 不依赖 Agent、不读取数据库，仅在同步操作期间合并通知，可作为独立小补丁提交上游。Agent 适配层在通知窗口内复用原有单项方法。上游有等价接口后只替换适配层。
@@ -86,6 +88,8 @@
 | agent_page.dart | 历史/对话/展示的响应式页面 |
 | agent_settings_page.dart | 模型列表和配置编辑 |
 | agent_message_view.dart | Markdown、思考与工具详情、用户消息 |
+| agent_images.dart / agent_image_view.dart | 跨平台选图、内容格式校验、缩略图和放大预览 |
+| agent_history_view.dart | 对话占用大小、搜索结果多选、批量删除 |
 | agent_turn_view.dart / agent_activity_view.dart / agent_disclosure.dart | 同一任务的历史折叠、正文间过程组、各条目独立展开和状态恢复 |
 | agent_showcase_view.dart | 普通展示、收藏/收藏夹与稍后再看折叠分组 |
 | agent_integration.dart | 主页面入口和旧索引映射 |
@@ -169,7 +173,7 @@ App.dataPath/agent 下保存 config.json、secrets.json（modelId→密钥）和
 
 配置和密钥串行原子写入，不记录密钥、headers 或聊天请求体。Windows 不声称支持 POSIX 0600；使用应用目录/当前用户权限。系统凭据库以后单列，不改平台工程。
 
-SQLite 启用 foreign_keys=ON 和 user_version=2；消息、展示、seen、撤销记录、上下文摘要和操作展示归属关联会话并级联删除。v1 升级新增独立表，并从成功工具回执补齐旧会话的操作展示，不重放收藏/稍后再看的实际操作。展示状态独立于消息，重试不清空面板。未完成消息恢复为 interrupted，排队的补充消息保留；损坏数据报告错误而非静默覆盖。
+SQLite 启用 foreign_keys=ON 和 user_version=3；消息、图片、展示、seen、撤销记录、上下文摘要和操作展示归属关联会话并级联删除。v1 升级从成功工具回执补齐旧会话的操作展示，不重放收藏/稍后再看的实际操作；v2 升级增加 message_images 并启用增量空间回收，保留原消息、模型设置和摘要。展示状态独立于消息，重试不清空面板。未完成消息恢复为 interrupted，排队的补充消息保留；损坏数据报告错误而非静默覆盖。
 
 ### 6.3 请求
 
@@ -180,6 +184,17 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 支持直接返回的非流式 JSON和显式非流式配置；不对所有网络错误盲目自动重试。reasoning_content/reasoning 可显示及存储；默认不回传，按模型开关投影。
 
 协议依据：[Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Streaming events](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)。
+
+### 6.4 图片输入与资源清理
+
+- 复用现有 file_selector 跨平台多选；按文件内容识别 JPEG、PNG、WebP、静态 GIF，并验证可解码。单张图片上限20 MB，保留原图字节，不自动降质；动态图或无效文件明确提示。选择后的草稿提供缩略图、点击放大及移除，允许仅发送图片。
+- `supports_vision=true` 时，user.content 按顺序投影为 text 与 image_url 数组，图片使用匹配 MIME 的 Base64 data URL；文本消息仍保持原有字符串格式。不支持视觉的模型在发送新图片前提示，保留用户草稿；不能静默丢弃上下文中的图片。
+- 消息 JSON 只存图片 ID、文件名、MIME 和字节数；图片二进制保存在 message_images，并以消息为外键级联关联。消息与图片在同一事务提交，不留独立文件或 Base64 存储副本，也不删除用户原先选择的源文件。
+- 运行中补充、重新生成、编辑后重发和关闭后继续均保留相应图片。压缩时保留识图结果；当前任务的用户图片继续随请求发送，较早任务可由摘要替代，但原始图片仍可在历史中查看。
+- 历史每项显示“约 X KB/MB”，按图片字节、消息/工具记录/搜索文本、展示/撤销记录、摘要等 UTF-8 内容合计，不分摊数据库公共索引及结构开销。占用量读取 BLOB 长度，不把全部图片加载进内存。
+- 可逐项多选或全选当前搜索结果，删除前显示数量与内容大小；取消保留选择。批量删除用一个事务清理会话及关联资源，启用 secure_delete 并执行 incremental_vacuum 回收磁盘空间。删除当前任务先停止并等待；删除其他历史不会替换正在流式更新的消息。
+
+接口依据：[OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images)、[Flutter file_selector](https://github.com/flutter/packages/blob/main/packages/file_selector/file_selector/README.md)。模型是否真正支持视觉由服务商决定，能力开关不改变服务商的模型能力。
 
 ## 7. 会话执行与重试
 
@@ -226,7 +241,7 @@ Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新�
 
 Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置），不加载 Markdown 外链图片或 HTML WebView；链接仅允许 http/https 并复用站内处理。流式更新节流，缓存已完成消息，最终正文可选择复制。
 
-历史按标题和消息内容搜索，首条用户消息产生默认标题；删除会话需用户确认。当前模型和思考选择随会话保存。
+历史按标题和消息内容搜索，首条用户消息产生默认标题，纯图片消息使用首张图片的文件名。每项显示消息数与占用大小，支持多选和批量删除确认。当前模型和思考选择随会话保存。
 
 ## 9. 实施与验证
 
@@ -248,25 +263,28 @@ Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置
 - 会话级联删除、重试保留展示、移除持久化、秘密隔离于已有备份清单。
 - 批量上限、去重、写前检查、部分失败、一次通知，同 id 不同源区分，可信数据覆盖伪造 brief。
 - 停止后迟到源响应不能写库，删除撤销不覆盖后来修改。
+- 纯图片/图文/多图片请求格式、视觉能力校验、预览/移除、补充/编辑/重新生成/重启后的图片保留。
+- 图片与消息事务一致性、v2 升级、资源大小统计、批量删除级联和实际磁盘空间回收；搜索全选不会删除未匹配的对话。
 
 没有真实网关密钥时使用本机假 HTTP/假源验证协议和工具闭环，不宣称真实模型与漫画站已完成联调。
 
-### 9.1 本次实施结果（2026-09-11）
+### 9.1 本次实施结果（2026-09-12）
 
-- 本期功能已实现，原有业务文件修改限定为 main_page.dart、favorites.dart、read_later.dart 三处；依赖仅增加 flutter_markdown_plus 及其传递依赖 markdown。
-- Flutter 3.41.4 / Dart 3.11.1：修改范围内的静态分析通过；**80 项测试通过**，其中 Agent 68 项、通用通知1项、原有功能回归11项。最新过程分组调整后再次通过12项页面/设置/展示测试，并额外完成390/1440宽度的2项隔离渲染检查。
+- 本期功能已实现，原有业务文件修改限定为 main_page.dart、favorites.dart、read_later.dart 及 io.dart 的12行通用选文件状态包装；图片功能复用现有依赖。新增依赖仍仅为 flutter_markdown_plus 及其传递依赖 markdown。
+- Flutter 3.41.4 / Dart 3.11.1：修改范围内的静态分析通过；**97 项测试通过**，其中 Agent 85 项、通用通知1项、原有功能回归11项。另完成390/1440宽度的2项隔离渲染检查。
 - 回归覆盖稍后再看、收藏输入、主页布局、原子写入、网络日志、漫画源设置和凭据同步。Agent 测试覆盖真实 MainPage 五项导航、旧启动设置、320/800/1200 宽度，以及详细/简略漫画展示。
 - 360/1200 宽度的同轮执行测试保留3次模型响应、3个思考块、3段正文、4次工具调用及运行中补充，验证跨响应分组、默认折叠、各项独立展开、流式刷新保留选择及完成后重置；已修复折叠状态与内部滚动状态冲突。渲染检查覆盖手机/桌面的默认、组展开、详情展开及完成状态。
 - 自动/手动压缩测试覆盖90%边界、真实 usage 字段解析、缓存不重复计数、摘要失败/取消、编辑失效和重启继续；连续20次工具响应可正常结束。添加/移除工具测试覆盖本地重复项、缺失条目回执、完整长内容以及操作展示分组的持久化迁移。
 - 停止、页面销毁、首响应超时及迟到源结果均有测试；失败工具重试保留后续成功操作的记录；重启后的中断会话提供继续入口。
-- **Windows x64 Debug 已成功构建并启动**，已确认桌面窗口和 Agent 模型设置页正常显示。程序位于 `build/windows/x64/runner/Debug/venera.exe`，运行时需要同目录的 DLL 和 data 文件夹。本次未打包安装器，未构建 Android/iOS/macOS/Linux 产物。
+- 图片与资源管理新增17项测试，覆盖手机/桌面预览、发送、批量删除，及运行中补图、编辑/重试、压缩/重启、插入失败回滚、v2升级和磁盘空间回收。本机 HTTP 服务收到实际客户端发送的多图片 JSON，并验证图片 token usage 的保存；不以模拟响应宣称完成真实模型识图质量验证。390/1440宽度的渲染检查已核对图片草稿、放大预览和历史多选界面。
+- **包含图片和资源管理功能的 Windows x64 Debug 已成功构建并启动**，已确认 Agent 页的图片入口、历史占用大小和管理入口正常显示。程序位于 `build/windows/x64/runner/Debug/venera.exe`，运行时需要同目录的 DLL 和 data 文件夹。本次未打包安装器，未构建 Android/iOS/macOS/Linux 产物。
 - 本机使用目录 junction 准备生成的插件链接，复用已有 Visual Studio 2022 MSVC、Windows SDK 和 Android SDK 附带的 CMake；Flutter 生成配置后直接由 CMake/MSBuild 编译。rhttp 使用已获批准的隔离 Rust stable 工具链；NuGet 复用原插件在构建时下载的副本。没有修改平台工程、系统开发者模式或全局 PATH。
 - 尚未使用真实模型密钥或真实漫画站验证；本机协议测试使用假 HTTP 服务和假源。
 
 本机验证工具位于 `D:\.tool\flutter-3.41.4`，启动脚本为 `D:\.tool\flutter-venera.ps1`，卸载脚本为 `D:\.tool\uninstall-venera-flutter.ps1`。SDK、依赖缓存和测试临时数据不进入 Git。复现本次检查：
 
 ```powershell
-& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/foundation/batched_notifications.dart lib/foundation/favorites.dart lib/foundation/read_later.dart lib/pages/main_page.dart test/agent test/batched_notifications_test.dart
+& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/utils/io.dart lib/foundation/batched_notifications.dart lib/foundation/favorites.dart lib/foundation/read_later.dart lib/pages/main_page.dart test/agent test/batched_notifications_test.dart
 
 $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 & 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart test/atomic_file_test.dart test/network_logging_test.dart test/comic_source_settings_test.dart test/credential_sync_test.dart
@@ -280,8 +298,10 @@ Rust 和 Cargo 缓存位于 `D:\.tool\rust-venera`，版本为 rustc/cargo 1.98.
 
 首次使用：进入中间的 **Agent** → **模型设置** → **添加模型**，填写服务商的 API 地址、模型 ID 和密钥。漫画源使用原应用的源管理；Agent 空白页提供入口。删除会话不会回滚收藏操作；删除收藏或稍后再看条目后，可在对应工具卡片中撤销。
 
+识图使用：为支持视觉的模型开启 **模型支持视觉**，点击输入框左侧 **添加图片**，选择图片后可预览、移除，再随消息发送。资源管理位于 **历史对话 → 管理对话**，可按占用大小选择并批量删除。
+
 ## 10. 后续范围与合并维护
 
-图片收藏/历史只读工具、视觉输入/封面消歧、分享/详情页入口、会话导入导出、组级批量快捷操作为后续扩展；headless、网络收藏、读取内页、删除收藏夹不在本方案范围。
+图片收藏/历史只读工具、封面消歧专用工具、分享/详情页入口、会话导入导出、组级批量快捷操作为后续扩展；headless、网络收藏、通过工具获取章节图片、删除收藏夹不在本方案范围。
 
 每次合并上游先检查第2.2节接入文件，再跑 Agent 协议、存储、集合与导航测试；API变化优先改 lib/agent 内的适配，保持上游代码改动面稳定。

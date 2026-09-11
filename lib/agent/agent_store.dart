@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/utils/atomic_file.dart';
@@ -55,9 +56,16 @@ class AgentStore {
     _db.execute('PRAGMA busy_timeout = 3000;');
     final version =
         _db.select('PRAGMA user_version;').first.values.first as int;
-    if (version > 2) {
+    if (version > 3) {
       throw const FormatException('Agent 数据来自更新版本，请更新应用后再打开');
     }
+    if (version < 3) {
+      // Existing databases need one rebuild to enable releasing deleted image
+      // pages without vacuuming the entire database after every conversation.
+      _db.execute('PRAGMA auto_vacuum = INCREMENTAL;');
+      _db.execute('VACUUM;');
+    }
+    _db.execute('PRAGMA secure_delete = ON;');
     _db.execute('''
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY, title TEXT NOT NULL,
@@ -75,6 +83,11 @@ class AgentStore {
         conversation TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         source_key TEXT NOT NULL, comic_id TEXT NOT NULL, brief TEXT NOT NULL,
         PRIMARY KEY (conversation, source_key, comic_id)
+      );
+      CREATE TABLE IF NOT EXISTS message_images (
+        id TEXT PRIMARY KEY,
+        message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        content BLOB NOT NULL
       );
       CREATE TABLE IF NOT EXISTS showcases (
         id TEXT PRIMARY KEY,
@@ -104,6 +117,7 @@ class AgentStore {
         kind TEXT NOT NULL, folder TEXT NOT NULL DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation, seq);
+      CREATE INDEX IF NOT EXISTS message_images_message ON message_images(message);
       CREATE INDEX IF NOT EXISTS showcases_conversation ON showcases(conversation, created_at);
     ''');
     _db.execute(
@@ -135,7 +149,8 @@ class AgentStore {
       }
     }
     if (version < 2) _backfillOperationShowcases();
-    _db.execute('PRAGMA user_version = 2;');
+    _db.execute('PRAGMA user_version = 3;');
+    _db.execute('PRAGMA incremental_vacuum;');
   }
 
   void _backfillOperationShowcases() {
@@ -261,7 +276,26 @@ class AgentStore {
     return _db
         .select(
           '''
-      SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation=c.id) AS count
+      SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation=c.id) AS count,
+        length(CAST(c.title AS BLOB)) +
+        coalesce((SELECT sum(length(CAST(m.parts AS BLOB)) +
+          length(CAST(m.search_text AS BLOB)) + length(CAST(coalesce(m.error,'') AS BLOB)))
+          FROM messages m WHERE m.conversation=c.id), 0) +
+        coalesce((SELECT sum(length(i.content)) FROM message_images i
+          JOIN messages m ON m.id=i.message WHERE m.conversation=c.id), 0) +
+        coalesce((SELECT sum(length(CAST(brief AS BLOB))) FROM comic_seen
+          WHERE conversation=c.id), 0) +
+        coalesce((SELECT sum(length(CAST(title AS BLOB)) + length(CAST(note AS BLOB)))
+          FROM showcases WHERE conversation=c.id), 0) +
+        coalesce((SELECT sum(length(CAST(i.brief AS BLOB))) FROM showcase_items i
+          JOIN showcases s ON s.id=i.set_id WHERE s.conversation=c.id), 0) +
+        coalesce((SELECT sum(length(CAST(o.kind AS BLOB)) + length(CAST(o.folder AS BLOB)))
+          FROM showcase_operations o JOIN showcases s ON s.id=o.set_id
+          WHERE s.conversation=c.id), 0) +
+        coalesce((SELECT sum(length(CAST(payload AS BLOB))) FROM undo_records
+          WHERE conversation=c.id), 0) +
+        coalesce((SELECT length(CAST(summary AS BLOB)) + length(CAST(coalesce(usage,'') AS BLOB))
+          FROM conversation_context WHERE conversation=c.id), 0) AS storage_bytes
       FROM conversations c
       WHERE c.title LIKE ? OR EXISTS(
         SELECT 1 FROM messages m WHERE m.conversation=c.id AND m.search_text LIKE ?
@@ -279,13 +313,85 @@ class AgentStore {
             createdAt: row['created_at'] as int,
             updatedAt: row['updated_at'] as int,
             messageCount: row['count'] as int,
+            storageBytes: row['storage_bytes'] as int,
           ),
         )
         .toList();
   }
 
-  void deleteConversation(String id) {
-    _db.execute('DELETE FROM conversations WHERE id=?;', [id]);
+  void deleteConversation(String id) => deleteConversations([id]);
+
+  void deleteConversations(Iterable<String> ids) {
+    final selected = ids.toSet();
+    if (selected.isEmpty) return;
+    _db.execute('BEGIN;');
+    try {
+      for (final id in selected) {
+        _db.execute('DELETE FROM conversations WHERE id=?;', [id]);
+      }
+      _db.execute('COMMIT;');
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+    _db.execute('PRAGMA incremental_vacuum;');
+  }
+
+  /// Metadata, text and image bytes are committed together; no loose files or
+  /// Base64 copies remain outside the owning message's cascade.
+  void saveMessageWithImages(
+    AgentMessage message,
+    List<AgentImageDraft> images,
+  ) {
+    _db.execute('BEGIN;');
+    try {
+      saveMessage(message);
+      for (final image in images) {
+        if (!message.images.any((part) => part.id == image.attachment.id) ||
+            image.bytes.length != image.attachment.byteLength) {
+          throw const AgentException('INVALID_IMAGE', '图片附件信息不完整');
+        }
+        _db.execute(
+          'INSERT INTO message_images(id,message,content) VALUES (?,?,?);',
+          [image.attachment.id, message.id, image.bytes],
+        );
+      }
+      _db.execute('COMMIT;');
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  Uint8List? imageBytes(String conversationId, String imageId) {
+    final rows = _db.select(
+      '''
+      SELECT i.content FROM message_images i JOIN messages m ON m.id=i.message
+      WHERE i.id=? AND m.conversation=?;
+    ''',
+      [imageId, conversationId],
+    );
+    return rows.isEmpty ? null : rows.first['content'] as Uint8List;
+  }
+
+  List<AgentImageDraft> messageImages(AgentMessage message) => [
+    for (final image in message.images)
+      AgentImageDraft(
+        image,
+        imageBytes(message.conversationId, image.id) ??
+            (throw AgentException(
+              'IMAGE_MISSING',
+              '图片“${image.name}”无法读取，请重新添加',
+            )),
+      ),
+  ];
+
+  String imageDataUrl(AgentMessage message, AgentImageAttachment image) {
+    final bytes = imageBytes(message.conversationId, image.id);
+    if (bytes == null) {
+      throw AgentException('IMAGE_MISSING', '图片“${image.name}”无法读取，请重新添加');
+    }
+    return 'data:${image.mimeType};base64,${base64Encode(bytes)}';
   }
 
   void saveMessage(AgentMessage message) {
@@ -337,16 +443,22 @@ class AgentStore {
       )
       .toList();
 
-  void truncateFrom(AgentMessage message, {bool include = true}) {
+  void truncateFrom(
+    AgentMessage message, {
+    bool include = true,
+    bool preserveUserMessages = false,
+  }) {
     invalidateContextFrom(message, include: include);
     final comparison = include ? '>=' : '>';
     _db.execute(
       '''
       DELETE FROM messages WHERE conversation=? AND seq $comparison
-        (SELECT seq FROM messages WHERE id=? AND conversation=?);
+        (SELECT seq FROM messages WHERE id=? AND conversation=?)
+        ${preserveUserMessages ? "AND role!='user'" : ''};
     ''',
       [message.conversationId, message.id, message.conversationId],
     );
+    _db.execute('PRAGMA incremental_vacuum;');
   }
 
   AgentConversationContext conversationContext(String conversationId) {

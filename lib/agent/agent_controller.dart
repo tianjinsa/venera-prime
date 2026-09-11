@@ -144,18 +144,28 @@ class AgentController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> deleteConversation(AgentConversation value) async {
-    if (value.id == conversation.id) await stopAndWait();
+  Future<void> deleteConversation(AgentConversation value) =>
+      deleteConversations([value]);
+
+  Future<void> deleteConversations(List<AgentConversation> values) async {
+    final ids = values.map((v) => v.id).toSet();
+    final deletingCurrent = ids.contains(conversation.id);
+    if (deletingCurrent) await stopAndWait();
     if (_disposed) return;
-    store.deleteConversation(value.id);
-    if (value.id == conversation.id) {
+    store.deleteConversations(ids);
+    if (deletingCurrent) {
       final remaining = store.conversations();
       conversation = remaining.isEmpty
           ? store.createConversation(modelId: store.settings.defaultModel?.id)
           : remaining.first;
       _allowSession = false;
+      error = null;
+      reload();
+    } else {
+      // Keep the in-memory streaming message while deleting other histories.
+      conversations = store.conversations(historyQuery);
+      _notify();
     }
-    reload();
   }
 
   void selectModel(String id, {String? thinking}) {
@@ -168,10 +178,13 @@ class AgentController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> send(String text) async {
+  Future<void> send(
+    String text, {
+    List<AgentImageDraft> images = const [],
+  }) async {
     if (_disposed) return;
     final content = text.trim();
-    if (content.isEmpty) return;
+    if (content.isEmpty && images.isEmpty) return;
     if (content.length > 32000) {
       throw const AgentException('INPUT_TOO_LARGE', '消息过长，请分段发送');
     }
@@ -180,6 +193,12 @@ class AgentController extends ChangeNotifier {
     }
     if (isStopping) throw const AgentException('STOPPING', '正在停止，请稍后发送');
     final selected = model!;
+    if (images.isNotEmpty && !selected.supportsVision) {
+      throw const AgentException(
+        'VISION_UNSUPPORTED',
+        '请先在模型设置中开启“模型支持视觉”，并确认该模型能够识图',
+      );
+    }
     final root = (busy || hasUnfinishedTask) && _rootIndex >= 0
         ? messages[_rootIndex].id
         : null;
@@ -193,6 +212,7 @@ class AgentController extends ChangeNotifier {
           'text': content,
           if (root != null) 'follow_up_to': root,
         },
+        for (final image in images) image.attachment.toJson(),
       ],
       modelId: selected.id,
       thinkingId: thinkingId,
@@ -200,15 +220,16 @@ class AgentController extends ChangeNotifier {
       state: busy ? 'queued' : 'done',
     );
     if (messages.isEmpty) {
-      conversation.title = content.runes
-          .take(24)
-          .map(String.fromCharCode)
-          .join();
+      conversation.title =
+          (content.isEmpty ? images.first.attachment.name : content).runes
+              .take(24)
+              .map(String.fromCharCode)
+              .join();
     }
     conversation.modelId = selected.id;
     conversation.thinkingId = thinkingId;
     store.saveConversation(conversation);
-    store.saveMessage(message);
+    store.saveMessageWithImages(message, images);
     messages.add(message);
     if (busy) {
       // A new requirement invalidates unstarted calls, including a pending
@@ -253,7 +274,7 @@ class AgentController extends ChangeNotifier {
     final supplements = messages
         .where((m) => m.followUpTo == lastUser.id)
         .toList();
-    store.truncateFrom(lastUser, include: false);
+    store.truncateFrom(lastUser, include: false, preserveUserMessages: true);
     for (final message in supplements) {
       message.state = 'done';
       store.saveMessage(message);
@@ -263,12 +284,18 @@ class AgentController extends ChangeNotifier {
   }
 
   Future<void> editAndResend(AgentMessage user, String text) async {
-    if (user.role != 'user' || text.trim().isEmpty) return;
+    if (user.role != 'user' || text.trim().isEmpty && user.images.isEmpty) {
+      return;
+    }
     await stopAndWait();
     if (_disposed) return;
+    final images = store.messageImages(user);
+    if (images.isNotEmpty && model?.supportsVision != true) {
+      throw const AgentException('VISION_UNSUPPORTED', '请先选择支持识图的模型');
+    }
     store.truncateFrom(user);
     reload();
-    await send(text);
+    await send(text, images: images);
   }
 
   Future<void> resume() async {
@@ -464,6 +491,7 @@ class AgentController extends ChangeNotifier {
             messages.sublist(0, boundary + 1),
             selected,
             context: previous,
+            imageDataUrl: store.imageDataUrl,
           ),
           {'role': 'user', 'content': agentCompactionPrompt},
         ],
@@ -561,7 +589,12 @@ class AgentController extends ChangeNotifier {
           input.state = 'done';
           store.saveMessage(input);
         }
-        final wire = agentWire(messages, selected, context: contextState);
+        final wire = agentWire(
+          messages,
+          selected,
+          context: contextState,
+          imageDataUrl: store.imageDataUrl,
+        );
         final assistant = AgentMessage(
           id: agentId(),
           conversationId: conversation.id,

@@ -408,8 +408,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
+                key: const ValueKey('agent-model-vision'),
                 title: const Text('模型支持视觉'),
-                subtitle: const Text('保存能力声明；本期聊天仍使用文本输入'),
+                subtitle: const Text('启用图片输入；请确认所选模型和服务商接口支持识图'),
                 value: _vision,
                 onChanged: (v) => setState(() => _vision = v),
               ),

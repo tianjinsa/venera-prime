@@ -22,6 +22,18 @@ class IO {
   static bool get isSelectingFiles => _isSelectingFiles;
 
   static bool _isSelectingFiles = false;
+
+  /// Keep the normal lifecycle handling while a feature uses a native picker.
+  static Future<T> withFileSelection<T>(Future<T> Function() select) async {
+    _isSelectingFiles = true;
+    try {
+      return await select();
+    } finally {
+      Future.delayed(const Duration(milliseconds: 100), () {
+        _isSelectingFiles = false;
+      });
+    }
+  }
 }
 
 class FilePath {
