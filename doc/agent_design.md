@@ -2,7 +2,7 @@
 
 > 版本：v2（2026-09-11）
 > 实施基线：6a62b16（Venera Prime 2.2.1，当前上游最新版）
-> 本次修订：降低持续合并上游的成本；Agent 固定为底部导航中间项。
+> 本次修订：降低持续合并上游的成本；Agent 固定为底部导航中间项；按执行步骤保留多次思考、正文与工具调用。
 
 ## 1. 目标与范围
 
@@ -13,7 +13,7 @@
 - 底部五个 Tab：**主页 / 收藏 / Agent / 探索 / 分类**。宽屏沿用现有侧边导航，Agent 同样位于第三项。
 - 模型配置：地址、模型名、密钥、视觉能力声明、思考深度列表及请求体补丁、是否回传思考内容。
 - 流式对话、停止、失败重试、重新生成、编辑后重发，以及历史会话的新建、搜索、切换、重命名和删除。
-- Markdown 正文、折叠思考块、工具卡片，以及独立的漫画展示栏。
+- 一次用户请求可包含多次模型响应，每次响应独立呈现思考块、Markdown 正文与工具卡片；漫画在独立展示栏中呈现。
 - 19 个工具：源能力、发现、展示、本地收藏、稍后再看；支持批量操作、逐项回执和删除撤销。
 
 保留已有决定：只操作本地收藏；默认全自动；不提供删除收藏夹、清空收藏库、登录、验证码、章节图片读取或图片收藏写入；不做 headless 第二入口。图片收藏/历史工具、视觉输入、分享入口和会话导入导出留到后续。
@@ -76,7 +76,8 @@
 | --- | --- |
 | agent_models.dart | 配置、消息 parts、会话、漫画引用和展示模型 |
 | agent_store.dart | 本机配置/密钥、agent.db、会话与展示持久化 |
-| agent_client.dart | 独立 Dio、SSE 聚合、非流式兼容 |
+| agent_client.dart | 独立 Dio、首响应超时保护、SSE 聚合、非流式兼容 |
+| agent_http_adapter.dart | 复用现有代理/DNS/TLS 设置，将取消信号传给 rhttp |
 | agent_wire.dart | parts 到 Chat Completions 的成对投影 |
 | agent_controller.dart | 会话生命周期、停止/重试、工具循环 |
 | agent_tools.dart | 工具 schema、参数校验、源与集合适配 |
@@ -85,7 +86,7 @@
 | agent_message_view.dart | Markdown、思考块、工具卡片 |
 | agent_integration.dart | 主页面入口和旧索引映射 |
 
-工具在主 isolate 的 async 任务中复用 JS 和管理器实例，不增加 isolate、子进程、服务端或常驻后台任务。新增测试放在 test/agent/。
+工具在主 isolate 的 async 任务中复用 JS 和管理器实例，不增加 isolate、子进程、服务端或常驻后台任务。Agent 测试放在 test/agent/，通用通知测试独立放在 test/batched_notifications_test.dart。
 
 ## 5. 工具与适配契约
 
@@ -140,7 +141,7 @@ fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名�
 
 通用能力只合并通知，不重写 SQL。首期采用**逐项提交、允许部分成功**，不承诺跨文件夹原子事务；写入结束统一通知一次，减少重建及同步触发。避免使用旧批量方法中异步缓存刷新、吞异常或事务内通知的路径。
 
-移动通过受检查的添加/删除实现，先确认目标加入成功，再删源；目标已存在则保留源并跳过。删除前保存完整条目和原文件夹，提供本地撤销按钮；只恢复本次实际删除条目，不覆盖用户后来新加的同身份记录。
+移动通过受检查的添加/删除实现，先确认目标加入成功，再删源；目标已存在则保留源并跳过。删除前保存公开 API 返回的完整元数据、收藏时间和原文件夹，提供本地撤销按钮；只恢复本次实际删除条目，不覆盖用户后来新加的同身份记录。稍后再看的原始加入时间没有公开读取接口，撤销沿用 add 的新加入时间，不为保留排序修改原管理器。
 
 ### 5.5 结果与预算
 
@@ -168,7 +169,7 @@ SQLite 启用 foreign_keys=ON 和 user_version；消息、展示、seen、撤销
 
 ### 6.3 请求
 
-独立 Dio 复用 RHttpAdapter 的代理/DNS/TLS，不使用 AppDio 的15秒超时、正文日志和 Cloudflare 拦截器。连接20秒、发送30秒、帧间隔60秒，CancelToken 取消 HTTP。
+独立 Dio 复用 RHttpAdapter 的代理/DNS/TLS 设置，不使用 AppDio 的15秒超时、正文日志和 Cloudflare 拦截器。连接20秒，提交请求到收到响应头最多60秒，帧间隔60秒。现有 RHttpAdapter 不完整转发 Dio 的取消和超时设置，因此由 AgentHttpAdapter 桥接 rhttp.CancelToken，并由 AgentClient 独立约束首响应等待；不把长时间流式响应误当成总请求超时。
 
 SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DONE]；只处理 choice 0，按 tool_calls.index 聚合 id/name/arguments。收到完整终止后才校验并执行工具；半截 JSON、length 截断或无终止的断流不能执行。
 
@@ -190,7 +191,7 @@ showcase 历史参数压缩为仍符合 schema 的引用数组，不改成工具
 | --- | --- |
 | 重新生成 | 按最后一个 user turn 截断回复，默认沿用原模型/思考；不回滚已执行收藏操作 |
 | 编辑后重发 | 从所选 user turn 截断，保留更早历史，以新文本重跑 |
-| 重试失败工具 | 仅对参数完整、明确失败且没有已知成功副作用的调用，更新原结果并继续；不重放已成功工具 |
+| 重试失败工具 | 仅对参数完整、明确失败且没有已知成功副作用的调用，更新原结果并继续；保留同轮及后续轮次已经成功的工具记录，不重放已成功工具 |
 | 中断后继续 | 从已持久化结果继续或重新请求中断的模型步骤，补齐工具配对，不盲目重放整轮写入 |
 
 批量部分成功不提供整批重试按钮，需对 failed 条目新建调用。下次请求不能混入未闭合的半截工具。
@@ -198,6 +199,8 @@ showcase 历史参数压缩为仍符合 schema 的引用数组，不改成工具
 ## 8. UI 与 Markdown
 
 Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新对话；输入区提供发送和停止。无配置时给出配置入口，无漫画源时指向现有源管理。
+
+对话按 Agent 的实际执行过程呈现：每次模型请求生成一条独立 assistant 记录，在同一用户轮次内标注“第 1 步、第 2 步……”；每条记录按 parts 顺序显示思考、正文和多个工具调用，不把多次请求压成单个思考块或单段最终答案。新的用户消息重新从第 1 步编号。思考块及工具详情独立展开，允许同时打开多个；折叠状态和内部文本滚动位置使用不同的 PageStorageKey，避免恢复状态时发生类型冲突。工具卡片默认显示中文操作名、执行状态和摘要，展开后保留原工具名称、参数与结果。
 
 使用内容区 LayoutBuilder 宽度：≥1024 显示历史+对话+展示；720–1023 显示对话+展示、历史弹层；<720 单栏对话，历史和展示分别打开弹层。不要用包含桌面导航的屏幕宽度判三栏。
 
@@ -218,6 +221,7 @@ Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置
 验证重点：
 
 - 五项导航和旧启动页映射、窄屏/宽屏布局。
+- 同一轮多次模型响应的思考、正文、工具顺序，以及多个思考块和工具详情同时展开。
 - SSE 分片、多工具、非流式、断流不执行、配置不能覆盖协议字段。
 - wire 配对、整轮裁剪、模型/思考保存，失败重试不重放成功副作用。
 - 会话级联删除、重试保留展示、移除持久化、秘密隔离于已有备份清单。
@@ -225,6 +229,34 @@ Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置
 - 停止后迟到源响应不能写库，删除撤销不覆盖后来修改。
 
 没有真实网关密钥时使用本机假 HTTP/假源验证协议和工具闭环，不宣称真实模型与漫画站已完成联调。
+
+### 9.1 本次实施结果（2026-09-11）
+
+- 本期功能已实现，原有业务文件修改限定为 main_page.dart、favorites.dart、read_later.dart 三处；依赖仅增加 flutter_markdown_plus 及其传递依赖 markdown。
+- Flutter 3.41.4 / Dart 3.11.1：修改范围内的静态分析通过；**55 项测试通过**，其中 Agent 43 项、通用通知1项、原有功能回归11项。
+- 回归覆盖稍后再看、收藏输入、主页布局、原子写入、网络日志、漫画源设置和凭据同步。Agent 测试覆盖真实 MainPage 五项导航、旧启动设置、320/800/1200 宽度，以及详细/简略漫画展示。
+- 360/1200 宽度的同轮执行测试保留3次模型响应、3个思考块、3段正文和4次工具调用，验证独立展开及收起后再次展开；已修复折叠状态与内部滚动状态冲突。
+- 停止、页面销毁、首响应超时及迟到源结果均有测试；失败工具重试保留后续成功操作的记录；重启后的中断会话提供继续入口。
+- **Windows x64 Debug 已成功构建并启动**，已确认桌面窗口和 Agent 模型设置页正常显示。程序位于 `build/windows/x64/runner/Debug/venera.exe`，运行时需要同目录的 DLL 和 data 文件夹。本次未打包安装器，未构建 Android/iOS/macOS/Linux 产物。
+- 本机使用目录 junction 准备生成的插件链接，复用已有 Visual Studio 2022 MSVC、Windows SDK 和 Android SDK 附带的 CMake；Flutter 生成配置后直接由 CMake/MSBuild 编译。rhttp 使用已获批准的隔离 Rust stable 工具链；NuGet 复用原插件在构建时下载的副本。没有修改平台工程、系统开发者模式或全局 PATH。
+- 尚未使用真实模型密钥或真实漫画站验证；本机协议测试使用假 HTTP 服务和假源。
+
+本机验证工具位于 `D:\.tool\flutter-3.41.4`，启动脚本为 `D:\.tool\flutter-venera.ps1`，卸载脚本为 `D:\.tool\uninstall-venera-flutter.ps1`。SDK、依赖缓存和测试临时数据不进入 Git。复现本次检查：
+
+```powershell
+& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/foundation/batched_notifications.dart lib/foundation/favorites.dart lib/foundation/read_later.dart lib/pages/main_page.dart test/agent test/batched_notifications_test.dart
+
+$env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
+& 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart test/atomic_file_test.dart test/network_logging_test.dart test/comic_source_settings_test.dart test/credential_sync_test.dart
+```
+
+Rust 和 Cargo 缓存位于 `D:\.tool\rust-venera`，版本为 rustc/cargo 1.98.1，卸载脚本为 `D:\.tool\uninstall-venera-rust.ps1`。本机 Windows 构建脚本 `D:\.tool\venera-flutter-3.41.4-install\build-venera-windows.ps1` 封装了上述工具路径与隔离环境，运行结束后恢复调用进程的环境变量；`D:\.tool` 内的辅助 NuGet 副本和缓存由 Flutter 卸载脚本一并清理。复现构建：
+
+```powershell
+& 'D:\.tool\venera-flutter-3.41.4-install\build-venera-windows.ps1'
+```
+
+首次使用：进入中间的 **Agent** → **模型设置** → **添加模型**，填写服务商的 API 地址、模型 ID 和密钥。漫画源使用原应用的源管理；Agent 空白页提供入口。删除会话不会回滚收藏操作；删除收藏或稍后再看条目后，可在对应工具卡片中撤销。
 
 ## 10. 后续范围与合并维护
 

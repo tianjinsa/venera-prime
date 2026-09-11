@@ -88,6 +88,7 @@ dependencies:
   qr_flutter: ^4.1.0
   mobile_scanner: ^7.2.0
   archive: ^4.0.7
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:
