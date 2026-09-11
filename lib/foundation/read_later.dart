@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:venera/foundation/batched_notifications.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -70,7 +71,7 @@ class ReadLaterComic implements Comic {
   };
 }
 
-class ReadLaterManager with ChangeNotifier {
+class ReadLaterManager with ChangeNotifier, BatchedNotifications {
   static ReadLaterManager? _instance;
   ReadLaterManager._();
   factory ReadLaterManager() => _instance ??= ReadLaterManager._();

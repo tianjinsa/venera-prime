@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
+import 'package:venera/foundation/batched_notifications.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/image_provider/local_favorite_image.dart';
@@ -273,7 +274,7 @@ class FavoriteItemWithUpdateInfo extends FavoriteItem {
       super.hashCode ^ updateTime.hashCode ^ hasNewUpdate.hashCode;
 }
 
-class LocalFavoritesManager with ChangeNotifier {
+class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
   factory LocalFavoritesManager() =>
       cache ?? (cache = LocalFavoritesManager._create());
 
