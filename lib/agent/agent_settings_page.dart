@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'agent_models.dart';
 import 'agent_store.dart';
 
@@ -187,7 +188,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   late bool _vision;
   late bool _reasoning;
   late bool _stream;
-  bool _showKey = false;
+  bool _pastingKey = false;
   bool _saving = false;
   String? _error;
   static const _encoder = JsonEncoder.withIndent('  ');
@@ -272,7 +273,39 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     }
   }
 
+  Future<void> _pasteKey() async {
+    if (_saving || _pastingKey) return;
+    final field = _fields['key']!;
+    final previousText = field.text;
+    setState(() => _pastingKey = true);
+    try {
+      final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      // A delayed clipboard response must not replace a newer manual edit.
+      if (field.text != previousText) return;
+      if (text == null || text.trim().isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('剪贴板中没有可粘贴的文本')));
+        return;
+      }
+      field.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    } catch (_) {
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('无法读取剪贴板，请长按输入框粘贴')));
+      }
+    } finally {
+      if (mounted) setState(() => _pastingKey = false);
+    }
+  }
+
   Future<void> _save() async {
+    if (_saving || _pastingKey) return;
     if (!_form.currentState!.validate()) return;
     setState(() {
       _saving = true;
@@ -346,7 +379,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       minLines: lines,
       maxLines: lines == 1 ? 1 : lines + 5,
       autocorrect: false,
-      enableSuggestions: false,
+      // Android maps disabled suggestions to a visible-password input type.
+      enableSuggestions: true,
       decoration: InputDecoration(
         labelText: label,
         helperText: hint,
@@ -380,22 +414,32 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
               ),
               _field('model', '模型 ID', required: true, hint: '填写服务商提供的准确模型名称'),
               TextFormField(
+                key: const ValueKey('agent-model-key'),
                 controller: _fields['key'],
-                obscureText: !_showKey,
+                keyboardType: TextInputType.text,
                 autocorrect: false,
-                enableSuggestions: false,
-                decoration: InputDecoration(
+                enableSuggestions: true,
+                enableIMEPersonalizedLearning: false,
+                decoration: const InputDecoration(
                   labelText: 'API Key',
                   helperText: '只保存在本机；无需密钥的本地服务可留空',
                   helperMaxLines: 2,
-                  border: const OutlineInputBorder(),
-                  suffixIcon: IconButton(
-                    tooltip: _showKey ? '隐藏密钥' : '显示密钥',
-                    onPressed: () => setState(() => _showKey = !_showKey),
-                    icon: Icon(
-                      _showKey ? Icons.visibility_off : Icons.visibility,
-                    ),
-                  ),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  key: const ValueKey('agent-model-paste-key'),
+                  onPressed: _saving || _pastingKey ? null : _pasteKey,
+                  icon: _pastingKey
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.content_paste),
+                  label: const Text('粘贴 API Key'),
                 ),
               ),
               const SizedBox(height: 12),
@@ -496,7 +540,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 ),
               const SizedBox(height: 16),
               FilledButton.icon(
-                onPressed: _saving ? null : _save,
+                onPressed: _saving || _pastingKey ? null : _save,
                 icon: const Icon(Icons.check),
                 label: Text(_saving ? '保存中…' : '保存模型'),
               ),
