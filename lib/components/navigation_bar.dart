@@ -671,6 +671,7 @@ class _NaviMainViewState extends State<_NaviMainView> {
   @override
   Widget build(BuildContext context) {
     var shouldShowAppBar = state.controller.value < 2;
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Column(
       children: [
         if (shouldShowAppBar) state.buildTop().paddingTop(context.padding.top),
@@ -684,7 +685,9 @@ class _NaviMainViewState extends State<_NaviMainView> {
             ),
           ),
         ),
-        if (shouldShowAppBar)
+        // The page's Scaffold already avoids the full keyboard inset. Keeping
+        // the bottom bar in this Column would subtract its height a second time.
+        if (shouldShowAppBar && !keyboardVisible)
           state.buildBottom().paddingBottom(context.padding.bottom),
       ],
     );

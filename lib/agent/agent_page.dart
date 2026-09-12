@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/pages/comic_source_page.dart';
@@ -31,6 +32,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   bool _pickingImages = false;
   final _historySearch = TextEditingController();
   final _scroll = ScrollController();
+  static const _followThreshold = 160.0;
+  bool _followOutput = true;
+  bool _userScrolling = false;
+  bool _followScheduled = false;
+  final _scrollPointers = <int>{};
+  ScrollDirection _userScrollDirection = ScrollDirection.idle;
   final _showcaseScroll = ScrollController();
   double _width = 0;
   String? _focusedGroup;
@@ -75,15 +82,81 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _draft.clear();
       _draftImages.clear();
       _focusedGroup = null;
+      _followOutput = true;
+      _userScrolling = false;
+      _scrollPointers.clear();
+      _userScrollDirection = ScrollDirection.idle;
     }
-    final follow = !_scroll.hasClients || _scroll.position.extentAfter < 160;
-    if (follow) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _scroll.hasClients) {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
-        }
-      });
+    _scheduleFollow();
+  }
+
+  void _scheduleFollow() {
+    if (!_followOutput ||
+        _userScrolling ||
+        _scrollPointers.isNotEmpty ||
+        _followScheduled) {
+      return;
     }
+    _followScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _followScheduled = false;
+      // A queued frame must not reclaim the scroll position after a drag starts.
+      if (!mounted ||
+          !_followOutput ||
+          _userScrolling ||
+          _scrollPointers.isNotEmpty ||
+          !_scroll.hasClients) {
+        return;
+      }
+      final position = _scroll.position;
+      if (!position.isScrollingNotifier.value && position.extentAfter > 0) {
+        _scroll.jumpTo(position.maxScrollExtent);
+      }
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _onScrollPointerEnd(PointerEvent event) {
+    _scrollPointers.remove(event.pointer);
+    _scheduleFollow();
+  }
+
+  bool _onMessageScroll(ScrollNotification notification) {
+    // Tool details and other nested scroll views do not change chat following.
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _followOutput = false;
+      _userScrolling = true;
+      _userScrollDirection = ScrollDirection.idle;
+    } else if (notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle) {
+      _followOutput = false;
+      _userScrolling = true;
+      _userScrollDirection = notification.direction;
+    } else if (notification is ScrollEndNotification) {
+      if (_userScrolling) {
+        // For this non-reversed list, swiping up advances toward newer messages.
+        // Wait for both the drag and its ballistic scroll to finish before
+        // following again, even when the finger stays inside the bottom zone.
+        _followOutput =
+            _userScrollDirection == ScrollDirection.reverse &&
+            notification.metrics.extentAfter <= _followThreshold;
+        _userScrolling = false;
+        _userScrollDirection = ScrollDirection.idle;
+      }
+      _scheduleFollow();
+    }
+    return false;
+  }
+
+  bool _onMessageMetrics(ScrollMetricsNotification notification) {
+    if (notification.depth == 0 && notification.metrics.axis == Axis.vertical) {
+      _scheduleFollow();
+    }
+    return false;
   }
 
   @override
@@ -486,92 +559,117 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         Expanded(
           child: controller.messages.isEmpty
               ? _empty(model == null)
-              : ListView.builder(
-                  key: const ValueKey('agent-messages'),
-                  controller: _scroll,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 12,
-                  ),
-                  itemCount: entries.length,
-                  itemBuilder: (_, index) {
-                    final messages = entries[index];
-                    final message = messages.first;
-                    if (message.role == 'user' && !message.isFollowUp) {
-                      return Align(
-                        key: ValueKey(message.id),
-                        alignment: Alignment.topCenter,
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 860),
-                          child: AgentUserMessageView(
-                            message: message,
-                            busy: controller.busy,
-                            imageLoader: (message, image) => controller.store
-                                .imageBytes(message.conversationId, image.id),
-                            onEdit: () async {
-                              final text = await _editText(
-                                '编辑后重发（替换后续回复）',
-                                message.text,
-                                multiline: true,
-                              );
-                              if (text != null) {
-                                await _act(
-                                  () => controller.editAndResend(message, text),
-                                );
-                              }
-                            },
-                          ),
+              : Listener(
+                  // Holding a fling is not reported as an active scroll, but
+                  // must still keep streaming output from moving the viewport.
+                  onPointerDown: (event) => _scrollPointers.add(event.pointer),
+                  onPointerUp: _onScrollPointerEnd,
+                  onPointerCancel: _onScrollPointerEnd,
+                  child: NotificationListener<ScrollMetricsNotification>(
+                    onNotification: _onMessageMetrics,
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: _onMessageScroll,
+                      child: ListView.builder(
+                        key: const ValueKey('agent-messages'),
+                        controller: _scroll,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
                         ),
-                      );
-                    }
-                    final current = index == entries.length - 1;
-                    return Align(
-                      key: ValueKey(message.id),
-                      alignment: Alignment.topCenter,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 860),
-                        child: AgentTurnView(
-                          messages: messages,
-                          imageLoader: (message, image) => controller.store
-                              .imageBytes(message.conversationId, image.id),
-                          running: current && controller.busy,
-                          interrupted:
-                              current &&
-                              controller.error != null &&
-                              controller.hasUnfinishedTask,
-                          modelName:
-                              controller.store.settings
-                                  .findModel(message.modelId)
-                                  ?.name ??
-                              '未配置模型',
-                          busy: controller.busy,
-                          onRegenerate: current
-                              ? () => _act(controller.regenerate)
-                              : null,
-                          canRetry: controller.canRetry,
-                          onRetry: (message, call) =>
-                              _act(() => controller.retryTool(message, call)),
-                          onShowcase: (id) => _showcase(id),
-                          hasUndo: (id) => controller.store.hasUndo(
-                            id,
-                            controller.conversation.id,
-                          ),
-                          onUndo: (id) => _act(() async {
-                            final result = await controller.undo(id);
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
-                                  ),
+                        itemCount: entries.length,
+                        itemBuilder: (_, index) {
+                          final messages = entries[index];
+                          final message = messages.first;
+                          if (message.role == 'user' && !message.isFollowUp) {
+                            return Align(
+                              key: ValueKey(message.id),
+                              alignment: Alignment.topCenter,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 860,
                                 ),
-                              );
-                            }
-                          }),
-                        ),
+                                child: AgentUserMessageView(
+                                  message: message,
+                                  busy: controller.busy,
+                                  imageLoader: (message, image) =>
+                                      controller.store.imageBytes(
+                                        message.conversationId,
+                                        image.id,
+                                      ),
+                                  onEdit: () async {
+                                    final text = await _editText(
+                                      '编辑后重发（替换后续回复）',
+                                      message.text,
+                                      multiline: true,
+                                    );
+                                    if (text != null) {
+                                      await _act(
+                                        () => controller.editAndResend(
+                                          message,
+                                          text,
+                                        ),
+                                      );
+                                    }
+                                  },
+                                ),
+                              ),
+                            );
+                          }
+                          final current = index == entries.length - 1;
+                          return Align(
+                            key: ValueKey(message.id),
+                            alignment: Alignment.topCenter,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 860),
+                              child: AgentTurnView(
+                                messages: messages,
+                                imageLoader: (message, image) =>
+                                    controller.store.imageBytes(
+                                      message.conversationId,
+                                      image.id,
+                                    ),
+                                running: current && controller.busy,
+                                interrupted:
+                                    current &&
+                                    controller.error != null &&
+                                    controller.hasUnfinishedTask,
+                                modelName:
+                                    controller.store.settings
+                                        .findModel(message.modelId)
+                                        ?.name ??
+                                    '未配置模型',
+                                busy: controller.busy,
+                                onRegenerate: current
+                                    ? () => _act(controller.regenerate)
+                                    : null,
+                                canRetry: controller.canRetry,
+                                onRetry: (message, call) => _act(
+                                  () => controller.retryTool(message, call),
+                                ),
+                                onShowcase: (id) => _showcase(id),
+                                hasUndo: (id) => controller.store.hasUndo(
+                                  id,
+                                  controller.conversation.id,
+                                ),
+                                onUndo: (id) => _act(() async {
+                                  final result = await controller.undo(id);
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }),
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
+                    ),
+                  ),
                 ),
         ),
         if (controller.confirmation != null)
@@ -802,23 +900,33 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  if (controller.busy)
-                    IconButton.outlined(
-                      key: const ValueKey('agent-stop'),
-                      tooltip: '停止',
-                      onPressed: controller.isStopping ? null : controller.stop,
-                      icon: const Icon(Icons.stop_rounded, size: 20),
-                    ),
-                  if (controller.busy) const SizedBox(width: 6),
-                  IconButton.filled(
-                    key: const ValueKey('agent-send'),
-                    tooltip: controller.busy
-                        ? '补充消息（Ctrl+Enter）'
-                        : '发送（Ctrl+Enter）',
-                    onPressed: controller.isStopping || _pickingImages
-                        ? null
-                        : _send,
-                    icon: const Icon(Icons.arrow_upward, size: 20),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _draft,
+                    builder: (context, value, _) {
+                      final hasContent =
+                          value.text.trim().isNotEmpty ||
+                          _draftImages.isNotEmpty;
+                      final pause = controller.busy && !hasContent;
+                      return IconButton.filled(
+                        key: ValueKey(pause ? 'agent-stop' : 'agent-send'),
+                        tooltip: pause
+                            ? '暂停'
+                            : controller.busy
+                            ? '插入消息（Ctrl+Enter）'
+                            : '发送（Ctrl+Enter）',
+                        onPressed: controller.isStopping
+                            ? null
+                            : pause
+                            ? controller.stop
+                            : _pickingImages || !hasContent
+                            ? null
+                            : _send,
+                        icon: Icon(
+                          pause ? Icons.pause_rounded : Icons.arrow_upward,
+                          size: 20,
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
