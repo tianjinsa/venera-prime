@@ -35,6 +35,48 @@ class AgentShowcasePanel extends StatelessWidget {
     final later = groups.where((g) => g.kind == 'later').toList();
     final focus = discoveries.indexWhere((g) => g.id == focusedGroup);
     if (focus > 0) discoveries.insert(0, discoveries.removeAt(focus));
+    final favoriteFocus = favorites.indexWhere((g) => g.id == focusedGroup);
+    if (favoriteFocus > 0) {
+      favorites.insert(0, favorites.removeAt(favoriteFocus));
+    }
+    final sections = <Widget>[
+      for (final group in discoveries) _discovery(context, group),
+      if (favorites.isNotEmpty)
+        _container(
+          context,
+          'favorites-$conversationId',
+          AgentDisclosure(
+            storageId: 'showcase-favorites-$conversationId',
+            label: '收藏',
+            detail:
+                '${favorites.fold<int>(0, (n, g) => n + g.comics.length)} 本',
+            leading: const Icon(Icons.star_border_rounded),
+            initiallyExpanded: favoriteFocus >= 0,
+            resetToken: favoriteFocus >= 0 ? '$focusRevision' : null,
+            sliver: true,
+            builder: (_) => SliverMainAxisGroup(
+              slivers: [
+                for (final group in favorites) _operation(context, group),
+              ],
+            ),
+          ),
+        ),
+      for (final group in later)
+        _container(context, group.id, _operation(context, group)),
+    ];
+    // "View comics" scrolls to the top. Bring its target section and folder
+    // there as well, even when a large discovery group precedes collections.
+    final focusedSection = favoriteFocus >= 0
+        ? 'favorites-$conversationId'
+        : focusedGroup;
+    if (focusedSection != null) {
+      final sectionIndex = sections.indexWhere(
+        (section) => section.key == ValueKey<String>(focusedSection),
+      );
+      if (sectionIndex > 0) {
+        sections.insert(0, sections.removeAt(sectionIndex));
+      }
+    }
     return Column(
       children: [
         ListTile(
@@ -64,37 +106,14 @@ class AgentShowcasePanel extends StatelessWidget {
                     ),
                   ),
                 )
-              : ListView(
+              : CustomScrollView(
+                  key: ValueKey('agent-showcase-scroll-$conversationId'),
                   controller: scroll,
-                  padding: const EdgeInsets.all(8),
-                  children: [
-                    for (final group in discoveries) _discovery(context, group),
-                    if (favorites.isNotEmpty)
-                      _container(
-                        context,
-                        'favorites-$conversationId',
-                        AgentDisclosure(
-                          storageId: 'showcase-favorites-$conversationId',
-                          label: '收藏',
-                          detail:
-                              '${favorites.fold<int>(0, (n, g) => n + g.comics.length)} 本',
-                          leading: const Icon(Icons.star_border_rounded),
-                          initiallyExpanded: favorites.any(
-                            (g) => g.id == focusedGroup,
-                          ),
-                          resetToken: favorites.any((g) => g.id == focusedGroup)
-                              ? '$focusRevision'
-                              : null,
-                          builder: (_) => Column(
-                            children: [
-                              for (final group in favorites)
-                                _operation(context, group),
-                            ],
-                          ),
-                        ),
-                      ),
-                    for (final group in later)
-                      _container(context, group.id, _operation(context, group)),
+                  slivers: [
+                    SliverPadding(
+                      padding: const EdgeInsets.all(8),
+                      sliver: SliverMainAxisGroup(slivers: sections),
+                    ),
                   ],
                 ),
         ),
@@ -102,25 +121,30 @@ class AgentShowcasePanel extends StatelessWidget {
     );
   }
 
-  Widget _container(BuildContext context, String id, Widget child) => Container(
-    key: ValueKey(id),
-    margin: const EdgeInsets.only(bottom: 12),
-    padding: const EdgeInsets.all(6),
-    decoration: BoxDecoration(
-      color: id == focusedGroup
-          ? Theme.of(
-              context,
-            ).colorScheme.secondaryContainer.withValues(alpha: .35)
-          : Theme.of(context).colorScheme.surfaceContainerLow,
-      border: Border.all(
-        color: Theme.of(
-          context,
-        ).colorScheme.outlineVariant.withValues(alpha: .45),
-      ),
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: child,
-  );
+  Widget _container(BuildContext context, String id, Widget child) =>
+      SliverPadding(
+        key: ValueKey(id),
+        padding: const EdgeInsets.only(bottom: 12),
+        sliver: DecoratedSliver(
+          decoration: BoxDecoration(
+            color: id == focusedGroup
+                ? Theme.of(
+                    context,
+                  ).colorScheme.secondaryContainer.withValues(alpha: .35)
+                : Theme.of(context).colorScheme.surfaceContainerLow,
+            border: Border.all(
+              color: Theme.of(
+                context,
+              ).colorScheme.outlineVariant.withValues(alpha: .45),
+            ),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          sliver: SliverPadding(
+            padding: const EdgeInsets.all(6),
+            sliver: child,
+          ),
+        ),
+      );
 
   Widget _menu(BuildContext context, AgentShowcase group) =>
       PopupMenuButton<String>(
@@ -140,6 +164,7 @@ class AgentShowcasePanel extends StatelessWidget {
 
   Widget _operation(BuildContext context, AgentShowcase group) =>
       AgentDisclosure(
+        key: ValueKey('showcase-disclosure-${group.id}'),
         storageId: 'showcase-${group.id}',
         label: group.kind == 'later' ? '稍后再看' : group.folder ?? group.title,
         detail: '${group.comics.length} 本',
@@ -148,6 +173,7 @@ class AgentShowcasePanel extends StatelessWidget {
         ),
         initiallyExpanded: group.id == focusedGroup,
         resetToken: group.id == focusedGroup ? '$focusRevision' : null,
+        sliver: true,
         builder: (_) => _grid(context, group),
         trailing: SizedBox(width: 30, height: 40, child: _menu(context, group)),
       );
@@ -155,26 +181,29 @@ class AgentShowcasePanel extends StatelessWidget {
   Widget _discovery(BuildContext context, AgentShowcase group) => _container(
     context,
     group.id,
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ListTile(
-          dense: true,
-          contentPadding: const EdgeInsets.only(left: 8),
-          title: Text(
-            group.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+    SliverMainAxisGroup(
+      slivers: [
+        SliverToBoxAdapter(
+          child: ListTile(
+            dense: true,
+            contentPadding: const EdgeInsets.only(left: 8),
+            title: Text(
+              group.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text('${group.comics.length} 本'),
+            trailing: _menu(context, group),
           ),
-          subtitle: Text('${group.comics.length} 本'),
-          trailing: _menu(context, group),
         ),
         if (group.note.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Text(
-              group.note,
-              style: Theme.of(context).textTheme.bodySmall,
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                group.note,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
           ),
         _grid(context, group),
@@ -184,49 +213,55 @@ class AgentShowcasePanel extends StatelessWidget {
 
   Widget _grid(BuildContext context, AgentShowcase group) {
     final detailed = appdata.settings['comicDisplayMode'] == 'detailed';
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
+    return SliverPadding(
       padding: const EdgeInsets.all(4),
-      itemCount: group.comics.length,
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: detailed ? 1 : 2,
-        mainAxisExtent: detailed ? 136 : null,
-        childAspectRatio: .48,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
+      sliver: SliverGrid(
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: detailed ? 1 : 2,
+          mainAxisExtent: detailed ? 136 : null,
+          childAspectRatio: .48,
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+        ),
+        delegate: SliverChildBuilderDelegate(
+          (_, index) {
+            final comic = group.comics[index];
+            final tile = ComicTile(
+              comic: AgentTools.toComic(comic),
+              heroID: Object.hash(group.id, comic.identity),
+            );
+            final remove = IconButton(
+              key: ValueKey('remove-${group.id}-${comic.identity}'),
+              tooltip: '从展示中移除',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+              padding: const EdgeInsets.all(6),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              onPressed: () => hideComic(group.id, comic),
+              icon: const Icon(Icons.close_rounded, size: 15),
+            );
+            return KeyedSubtree(
+              key: ValueKey(comic.identity),
+              child: detailed
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: tile),
+                        remove,
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        Expanded(child: tile),
+                        Align(alignment: Alignment.centerRight, child: remove),
+                      ],
+                    ),
+            );
+          },
+          childCount: group.comics.length,
+          addAutomaticKeepAlives: false,
+        ),
       ),
-      itemBuilder: (_, index) {
-        final comic = group.comics[index];
-        final tile = ComicTile(
-          comic: AgentTools.toComic(comic),
-          heroID: Object.hash(group.id, comic.identity),
-        );
-        final remove = IconButton(
-          key: ValueKey('remove-${group.id}-${comic.identity}'),
-          tooltip: '从展示中移除',
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints.tightFor(width: 32, height: 32),
-          padding: const EdgeInsets.all(6),
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-          onPressed: () => hideComic(group.id, comic),
-          icon: const Icon(Icons.close_rounded, size: 15),
-        );
-        return detailed
-            ? Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: tile),
-                  remove,
-                ],
-              )
-            : Column(
-                children: [
-                  Expanded(child: tile),
-                  Align(alignment: Alignment.centerRight, child: remove),
-                ],
-              );
-      },
     );
   }
 }

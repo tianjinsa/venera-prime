@@ -12,6 +12,9 @@ class AgentDisclosure extends StatefulWidget {
   final String? resetToken;
   final Color? color;
   final Widget? trailing;
+
+  /// When true, [builder] returns a sliver in the surrounding scroll viewport.
+  final bool sliver;
   const AgentDisclosure({
     super.key,
     required this.storageId,
@@ -23,6 +26,7 @@ class AgentDisclosure extends StatefulWidget {
     this.resetToken,
     this.color,
     this.trailing,
+    this.sliver = false,
   });
 
   @override
@@ -78,76 +82,79 @@ class _AgentDisclosureState extends State<AgentDisclosure> {
   Widget build(BuildContext context) {
     final color =
         widget.color ?? Theme.of(context).colorScheme.onSurfaceVariant;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final header = Row(
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Semantics(
-                expanded: _expanded,
-                child: TextButton(
-                  key: ValueKey('toggle-${widget.storageId}'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: color,
-                    minimumSize: const Size(40, 40),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 8,
-                    ),
-                    alignment: Alignment.centerLeft,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                  onPressed: () {
-                    setState(() => _expanded = !_expanded);
-                    _remember();
-                  },
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconTheme(
-                        data: IconThemeData(color: color, size: 15),
-                        child: widget.leading,
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          widget.label,
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                      ),
-                      if (widget.detail?.isNotEmpty == true) ...[
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            widget.detail!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: color.withValues(alpha: .75),
-                            ),
-                          ),
-                        ),
-                      ],
-                      const SizedBox(width: 4),
-                      AnimatedRotation(
-                        turns: _expanded ? .25 : 0,
-                        duration: const Duration(milliseconds: 150),
-                        child: const Icon(Icons.chevron_right, size: 16),
-                      ),
-                    ],
-                  ),
+        Expanded(
+          child: Semantics(
+            expanded: _expanded,
+            child: TextButton(
+              key: ValueKey('toggle-${widget.storageId}'),
+              style: TextButton.styleFrom(
+                foregroundColor: color,
+                minimumSize: const Size(40, 40),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                alignment: Alignment.centerLeft,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
                 ),
               ),
+              onPressed: () {
+                setState(() => _expanded = !_expanded);
+                _remember();
+              },
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconTheme(
+                    data: IconThemeData(color: color, size: 15),
+                    child: widget.leading,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      widget.label,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                  if (widget.detail?.isNotEmpty == true) ...[
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        widget.detail!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: color.withValues(alpha: .75),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 4),
+                  AnimatedRotation(
+                    turns: _expanded ? .25 : 0,
+                    duration: const Duration(milliseconds: 150),
+                    child: const Icon(Icons.chevron_right, size: 16),
+                  ),
+                ],
+              ),
             ),
-            if (widget.trailing != null) widget.trailing!,
-          ],
+          ),
         ),
-        if (_expanded) widget.builder(context),
+        if (widget.trailing != null) widget.trailing!,
       ],
+    );
+    if (widget.sliver) {
+      return SliverMainAxisGroup(
+        slivers: [
+          SliverToBoxAdapter(child: header),
+          if (_expanded) widget.builder(context),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [header, if (_expanded) widget.builder(context)],
     );
   }
 }
