@@ -1,34 +1,87 @@
+import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:mime/mime.dart';
 import 'package:venera/utils/io.dart' show IO;
 import 'agent_models.dart';
 
 const agentImageMaxBytes = 20 * 1024 * 1024;
 
-Future<List<AgentImageDraft>> pickAgentImages() async {
-  final files = await IO.withFileSelection(
-    () => openFiles(
-      acceptedTypeGroups: const [
-        XTypeGroup(
-          label: '图片',
-          extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-          mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-          uniformTypeIdentifiers: [
-            'public.jpeg',
-            'public.png',
-            'org.webmproject.webp',
-            'com.compuserve.gif',
-          ],
-        ),
-      ],
-    ),
-  );
-  final images = <AgentImageDraft>[];
-  for (final file in files) {
-    images.add(await readAgentImage(file));
+const _imagePickerChannel = MethodChannel('venera/method_channel');
+
+Future<List<AgentImageDraft>> pickAgentImages() =>
+    IO.withFileSelection(() async {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        return _pickAndroidImages();
+      }
+      final files = await openFiles(
+        acceptedTypeGroups: const [
+          XTypeGroup(
+            label: '图片',
+            extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+            mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+            uniformTypeIdentifiers: [
+              'public.jpeg',
+              'public.png',
+              'org.webmproject.webp',
+              'com.compuserve.gif',
+            ],
+          ),
+        ],
+      );
+      return [for (final file in files) await readAgentImage(file)];
+    });
+
+Future<List<AgentImageDraft>> _pickAndroidImages() async {
+  List<dynamic>? selected;
+  try {
+    selected = await _imagePickerChannel.invokeListMethod<dynamic>(
+      'pickAgentImages',
+    );
+  } on PlatformException catch (e) {
+    throw AgentException(e.code, e.message ?? '无法读取所选图片');
   }
-  return images;
+  if (selected == null || selected.isEmpty) return [];
+  final paths = [
+    for (final image in selected.whereType<Map>())
+      if (image['path'] is String) image['path'] as String,
+  ];
+  try {
+    final files = selected.map((value) {
+      final image = value as Map;
+      return _SelectedImage(image['path'] as String, image['name'] as String);
+    }).toList();
+    return [for (final file in files) await readAgentImage(file)];
+  } finally {
+    // Android only returns private, freshly copied cache files. Never keep a
+    // temporary original after validation, including when another image fails.
+    for (final path in paths) {
+      try {
+        await File(path).delete();
+      } on FileSystemException {
+        // A cleared cache must not hide the original picker/validation result.
+      }
+    }
+    try {
+      await _imagePickerChannel.invokeMethod<void>('releaseAgentImages', {
+        'paths': paths,
+      });
+    } on MissingPluginException {
+      // Activity/engine detach performs native cleanup even without this reply.
+    } on PlatformException {
+      // A cleanup acknowledgement must not replace a read/validation result.
+    }
+  }
+}
+
+class _SelectedImage extends XFile {
+  _SelectedImage(super.path, this.name);
+
+  // XFile's native implementation ignores its optional name argument.
+  @override
+  final String name;
 }
 
 Future<AgentImageDraft> readAgentImage(XFile file) async {
