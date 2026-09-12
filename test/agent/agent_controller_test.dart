@@ -205,6 +205,121 @@ void main() {
     },
   );
 
+  for (final policy in ['never', 'destructive', 'all']) {
+    test(
+      'image-only tool calls retain the $policy write confirmation policy',
+      () async {
+        const vision = AgentModel(
+          id: 'vision',
+          name: '识图模型',
+          baseUrl: 'https://example.invalid/v1',
+          model: 'test',
+          supportsVision: true,
+        );
+        await store.saveSettings(
+          AgentSettings(models: [vision], confirmPolicy: policy),
+          {},
+        );
+        favorites.createFolder('目标');
+        final lookedUp = <String>[];
+        sources.add(
+          TestSource(
+            'jm',
+            loadComicInfo: (id) async {
+              lookedUp.add(id);
+              return Res(details('jm', id));
+            },
+          ),
+        );
+        var requests = 0;
+        final client = ScriptedClient((_, wire, _, _) async {
+          requests++;
+          final content =
+              wire.singleWhere((m) => m['role'] == 'user')['content'] as List;
+          expect(content, hasLength(1));
+          expect(content.single['type'], 'image_url');
+          if (requests == 1) {
+            return const AgentResponse('', '', [
+              AgentToolCall(
+                'later-add',
+                'later_add',
+                '{"comics":["jm:339981","jm:1258084"]}',
+              ),
+              AgentToolCall(
+                'fav-add',
+                'fav_add',
+                '{"folder":"目标","comics":["jm:339981","jm:1258084"]}',
+              ),
+              AgentToolCall(
+                'later-remove',
+                'later_remove',
+                '{"comics":["jm:339981"]}',
+              ),
+              AgentToolCall(
+                'fav-remove',
+                'fav_remove',
+                '{"folder":"目标","comics":["jm:339981"]}',
+              ),
+            ]);
+          }
+          expect(wire.where((m) => m['role'] == 'tool'), hasLength(4));
+          return const AgentResponse('已处理图片中的漫画', '', []);
+        });
+        controller = AgentController(store, client: client, tools: tools);
+        final c = controller!;
+        final confirmations = <String>[];
+        final answered = <AgentConfirmation>{};
+        c.addListener(() {
+          final pending = c.confirmation;
+          if (pending == null || !answered.add(pending)) return;
+          confirmations.add(pending.name);
+          if (pending.name == 'later_add') {
+            expect(lookedUp, isEmpty);
+            expect(later.getAll(), isEmpty);
+          }
+          if (pending.name == 'fav_add') expect(favorites.count('目标'), 0);
+          if (pending.name == 'later_remove') {
+            expect(later.getAll(), hasLength(2));
+          }
+          if (pending.name == 'fav_remove') expect(favorites.count('目标'), 2);
+          c.answerConfirmation(true);
+        });
+        final imageBytes = File('assets/app_icon.png').readAsBytesSync();
+        await c.send(
+          '',
+          images: [
+            AgentImageDraft(
+              AgentImageAttachment(
+                id: 'comic-ids',
+                name: '漫画截图.png',
+                mimeType: 'image/png',
+                byteLength: imageBytes.length,
+              ),
+              imageBytes,
+            ),
+          ],
+        );
+        expect(confirmations, switch (policy) {
+          'all' => ['later_add', 'fav_add', 'later_remove', 'fav_remove'],
+          'destructive' => ['later_remove', 'fav_remove'],
+          _ => <String>[],
+        });
+        expect(lookedUp, ['339981', '1258084']);
+        expect(later.getAll().single.id, '1258084');
+        expect(favorites.getFolderComics('目标').single.id, '1258084');
+        expect(c.messages.first.text, isEmpty);
+        expect(c.messages.first.images, hasLength(1));
+        expect(
+          c.messages
+              .expand((m) => m.tools)
+              .every((tool) => tool['result']['ok'] == true),
+          true,
+        );
+        expect(c.error, isNull);
+      },
+    );
+  }
+
   test(
     'stop followed by a late source completion cannot write or mutate the conversation',
     () async {

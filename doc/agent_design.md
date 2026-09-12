@@ -6,7 +6,7 @@
 
 ## 1. 目标与范围
 
-在应用内接入用户配置的 OpenAI Chat Completions 兼容模型，通过工具搜索漫画、查看详情、批量管理本地收藏和稍后再看。用户提供 jm id 或漫画名时，先取得真实漫画信息，再执行操作；漫画在独立展示栏呈现。
+在应用内接入用户配置的 OpenAI Chat Completions 兼容模型，通过工具搜索漫画、查看详情、批量管理本地收藏和稍后再看。已知源和漫画 ID（含图片识别结果）时可直接调用目标工具，由工具自行取得所需资料；只有漫画名称时通过搜索定位。漫画在独立展示栏呈现。
 
 本期交付：
 
@@ -41,6 +41,7 @@
 | 文件 | 必要修改 | 合并上游时验证 |
 | --- | --- | --- |
 | lib/pages/main_page.dart | 接入第三个页面/导航项，映射旧启动页索引 | 五个页面和导航一致，旧设置语义不变 |
+| lib/components/navigation_bar.dart | 键盘显示时收起底栏，不重复占用页面高度 | 输入框紧邻键盘，收起键盘后恢复底栏，桌面侧栏不受影响 |
 | lib/foundation/favorites.dart | 导入并混入通用批量通知能力 | 单次调用通知行为不变 |
 | lib/foundation/read_later.dart | 同上 | 增删语义与原有表结构不变 |
 | lib/utils/io.dart | 新增12行通用 withFileSelection 包装，复用原有文件选择状态 | 打开系统选图窗口时保持既有生命周期行为，完成/取消后还原状态 |
@@ -50,7 +51,7 @@
 
 ### 2.3 启动页兼容
 
-旧 initialPage 保存 0=主页、1=收藏、2=探索、3=分类。MainPage 接入边界映射 **0→0、1→1、2→3、3→4**，非法值回退主页，不迁移或重写旧配置。Agent 可视索引固定为 2。通用 NaviPane 的响应式断点、桌面栏和底部栏保持原样。
+旧 initialPage 保存 0=主页、1=收藏、2=探索、3=分类。MainPage 接入边界映射 **0→0、1→1、2→3、3→4**，非法值回退主页，不迁移或重写旧配置。Agent 可视索引固定为 2。通用 NaviPane 保留响应式断点和桌面栏；底部栏在键盘显示期间收起。
 
 ## 3. 已核对的应用接口
 
@@ -60,7 +61,7 @@
 | 源能力 | ComicSource.all()/find()，按运行时能力枚举，不硬编码源数量 |
 | 详情 | loadComicInfo 类型允许 null，解析器通常生成包装函数；既检查 null，也检查 Res.error 后再取 data |
 | 搜索 | 优先 loadPage，仅有 loadNext 时用游标；省略 options 按 defaultValue 补齐 |
-| id 直达 | 源 idMatcher 匹配后将用户原始输入原样传入；结果采用源规范 id，并保留输入别名 |
+| id 直达 | 显式 source_key、comic_id 直接传给源，不要求 idMatcher 或用户文本匹配；结果采用源规范 id，并保留输入别名。comic_resolve 的 idMatcher 只负责区分查询名称和 ID |
 | URL | 仅对 linkHandler.domains 精确匹配的 URL 调用 linkToId，不从任意 URL 猜数字 id |
 | 身份 | source_key + comic_id；经 ComicType.fromKey 转换，兼容 local 与 Unknown:<int> |
 | 收藏 | folderNames、count、getFolderComics、searchInFolder、find、getComic、addComic、deleteComicWithId、createFolder |
@@ -107,7 +108,7 @@
 | 发现 | search_source | source_key、keyword、page/cursor、options → items、has_more、next_cursor |
 | 发现 | comic_open_by_id | source_key、comic_id → 详情与收藏/稍后再看状态 |
 | 发现 | comic_resolve | query、可选 source_key、limit → 候选和 resolved_by；歧义返回可选源 |
-| 发现 | comic_get | 可信引用 → 详情，排除内页和 thumbnails |
+| 发现 | comic_get | source_key、comic_id → 详情，排除内页和 thumbnails |
 | 展示 | showcase_comics | comics 数组、title、note、append/replace → 分组和跳过原因 |
 | 收藏 | fav_list_folders | 文件夹与实时 count |
 | 收藏 | fav_list | folder、page、page_size → items、total、has_more |
@@ -124,11 +125,15 @@
 
 fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名称，多个文件夹时 folder=null，以 folders 为准。later_check 的 marker=-1/1。
 
-### 5.2 可信身份
+### 5.2 漫画身份和元数据
 
-引用使用 {source_key,comic_id}，或在第一个冒号处切分的 source_key:comic_id，保留 URL 型 id 的其余内容。查询结果记入会话 seen 表，展示及零网络写入只采信缓存的真实元数据，不采信模型提供的 title/cover/tags。
+引用使用 {source_key,comic_id}，或在第一个冒号处切分的 source_key:comic_id，保留 URL 型 id 的其余内容。工具按参数独立执行，不扫描用户历史文本核验 ID 来源，也不要求先调用搜索、解析、详情或状态工具。文本、图片识别和其他上下文中获得的 ID 使用同一接口。
 
-用户明确给出源和原始 ID 时，可直接调用添加工具；工具内部匹配 idMatcher，并仅在没有会话或本地元数据时加载详情。已有搜索/本地元数据无需访问详情验证漫画是否仍在线。工具先检查目标列表是否已有条目，重复添加直接跳过；移除只检查本地列表，不依赖源是否可用。模型不必先调用 comic_get、comic_open_by_id、fav_check 或 later_check。只有名称或来源不明确时才先搜索/澄清；传完整 brief 不能绕过引用校验。
+收藏、稍后再看和展示优先复用会话或本地列表元数据，没有资料时自行请求源详情，每次最多并发4个。查询结果记入会话 seen 表；不采用模型在引用对象中附带的 title/cover/tags。已有资料无需重新验证漫画是否在线。添加先检查目标列表，重复项直接跳过；移除只检查本地列表，不依赖源是否可用。单条不存在、源不支持详情或请求失败均逐项返回原因，其余条目继续处理；展示全部失败时保留已有分组。
+
+源和 ID 已明确时，comic_open_by_id 和 comic_get 直接请求详情，不用 idMatcher 阻挡。comic_resolve 保留名称搜索、ID 格式判别和受支持域名的 URL 解析，来源不明确时返回候选源。写入授权统一遵循控制器的 never、destructive、all 配置，不另设 ID 来源确认。
+
+本地列表、搜索、状态、移除、移动和创建收藏夹不初始化漫画源，只初始化所需的本地管理器。添加或展示先使用已有缓存，只有缺资料时才按需打开其他本地列表或请求源详情；重复添加和已缓存的展示不会打开无关数据库。comic_open_by_id 的 include_status=false 不初始化本地列表。收藏夹可直接创建，同名已存在返回 skipped/ALREADY_EXISTS；添加和移动指定的目标收藏夹不存在仍返回 FOLDER_NOT_FOUND，不隐式创建其他资源。
 
 详情直接映射对象字段，避免已有 JSON 往返字段不一致。系统提示词明确漫画名、描述、标签、源错误和工具返回均是数据，不能把其中的指令当用户授权。
 
@@ -136,7 +141,8 @@ fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名�
 
 - 页码正整数；本地 page_size 默认20、上限50。
 - 页码源按 max_page 或实际响应判断终点，未知总页数如实保留；不按源名猜单页能力。
-- 游标从 null 开始，只允许同会话/源/关键词/选项返回过的游标，不支持跳页和跨查询复用。
+- 源游标直接交给源读取，不用进程内“曾返回过”的白名单验证来源；历史或重启后恢复的合法游标无需先重查第一页。源负责判断游标是否有效。
+- continuation 直接读取本机缓存余量，不再初始化或请求漫画源；必须能定位同一查询的实际缓存，过期或错用时返回 INVALID_CURSOR。
 - 源返回大量条目时缓存本页剩余数据，提供继续读取标记，不静默丢条目。
 - 本地读取后分页；跨收藏夹逐个 searchInFolder，避免旧 search() 命中200条提前结束。保留所在文件夹。
 - 首期可能全量读取大收藏夹；后续根据性能证据决定是否增加上游通用分页接口。
@@ -153,7 +159,7 @@ fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名�
 
 ### 5.5 完整结果
 
-统一 {ok:true,data:...} 或 {ok:false,error:{code,message}}；批量部分失败通过逐项结果表达。常见码：SOURCE_NOT_FOUND、NO_SEARCH_SUPPORT、ID_NOT_DIRECT、AMBIGUOUS_SOURCE、INVALID_ARGUMENT、INVALID_CURSOR、NOT_FOUND、FOLDER_NOT_FOUND、FOLDER_EXISTS、BATCH_TOO_LARGE、HALLUCINATED_REF、TIMEOUT、CANCELLED。
+统一 {ok:true,data:...} 或 {ok:false,error:{code,message}}；批量部分失败通过逐项结果表达。常见码：SOURCE_NOT_FOUND、NO_SEARCH_SUPPORT、NO_DETAIL_SUPPORT、NO_LINK_SUPPORT、INVALID_ARGUMENT、INVALID_CURSOR、NOT_FOUND、SOURCE_REQUEST_FAILED、FOLDER_NOT_FOUND、FOLDER_EXISTS、BATCH_TOO_LARGE、TIMEOUT、CANCELLED。源仅返回错误文本时以 NOT_FOUND 表示未取得详情并保留原错误，不据此断言漫画不存在；抛出的请求异常与超时分别返回 SOURCE_REQUEST_FAILED 和 TIMEOUT。
 
 模型正文、思考、工具参数和返回字段不再因软件设定的字符数或响应总长度而停止接收、截短或替换。完整返回合法 JSON，描述、标签、章节目录与推荐条目原样保留；搜索和列表仍提供明确分页，不静默丢弃条目。上下文大小由第7.1节的摘要机制处理。服务商自身的输出上限仍可能结束响应，界面明确提示该情况并保留已收到的内容，不执行不完整工具。
 
@@ -229,7 +235,9 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 
 ## 8. UI 与 Markdown
 
-Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新对话；输入区提供发送和停止。无配置时给出配置入口，无漫画源时指向现有源管理。
+Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新对话。输入区只有一个主要操作按钮：空闲时发送，运行中草稿有文字或图片时插入消息，没有内容时暂停；输入变化即时切换，并保留仅图片发送。无配置时给出配置入口，无漫画源时指向现有源管理。
+
+手机键盘显示时收起底部导航栏，由页面的 Scaffold 处理键盘避让，避免导航栏继续占高导致输入框与键盘之间留白。进入会话默认跟随最新消息；用户拖动、惯性滚动及按住列表期间暂停跟随，只有向最新消息方向上滑并在距底部160逻辑像素以内停下才恢复。向历史方向滑动或停在底部区域以外保持当前位置，流式更新不能抢占；嵌套工具详情滚动不改变消息列表的跟随状态。
 
 每次模型请求仍有独立 assistant 记录，但同一任务仅显示一次 Agent 标题。运行中正文按顺序直接呈现；两段正文之间的连续思考和工具合成一个默认收起的“执行过程”组，显示思考/工具数量。分组跨模型响应边界合并，遇到正文或用户补充消息才分隔。展开组后列出各项，思考内容与工具参数/结果仍各自默认折叠，可单独或同时展开多个。过程组采用柔和背景、细边框和较淡的小字号文字，与16px正文区分，兼顾明暗主题。
 
@@ -239,7 +247,7 @@ Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新�
 
 漫画只出现在展示栏，复用 ComicTile 的详情导航和长按菜单。主动搜索/推荐保留普通展示组；收藏和稍后再看的添加结果按两个操作类型默认折叠，“收藏”内再按收藏夹折叠。分组以会话+类型+收藏夹复用并去重，点击工具的“查看漫画”可定位并展开对应组。单漫画移除用独立的小按钮列/行，不覆盖封面或标题；整组操作置于省略号菜单。移除只改变展示状态；关闭或重启后不复活，后续新操作仅重新显示本次涉及的漫画。删除会话级联清理所有展示。
 
-Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置），不加载 Markdown 外链图片或 HTML WebView；链接仅允许 http/https 并复用站内处理。流式更新节流，缓存已完成消息，最终正文可选择复制。
+Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置），不加载 Markdown 外链图片或 HTML WebView；链接仅允许 http/https 并复用站内处理。使用 SelectionArea 包裹非 selectable 的 MarkdownBody，避免每段 SelectableText 的内层滚动争夺触摸手势，保留长按选择、复制和链接点击。流式更新节流，缓存已完成消息。
 
 历史按标题和消息内容搜索，首条用户消息产生默认标题，纯图片消息使用首张图片的文件名。每项显示消息数与占用大小，支持多选和批量删除确认。当前模型和思考选择随会话保存。
 
@@ -268,7 +276,7 @@ Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置
 
 没有真实网关密钥时使用本机假 HTTP/假源验证协议和工具闭环，不宣称真实模型与漫画站已完成联调。
 
-### 9.1 本次实施结果（2026-09-12）
+### 9.1 首次实现与图片功能验证记录（2026-09-12）
 
 - 本期功能已实现，原有业务文件修改限定为 main_page.dart、favorites.dart、read_later.dart 及 io.dart 的12行通用选文件状态包装；图片功能复用现有依赖。新增依赖仍仅为 flutter_markdown_plus 及其传递依赖 markdown。
 - Flutter 3.41.4 / Dart 3.11.1：修改范围内的静态分析通过；**97 项测试通过**，其中 Agent 85 项、通用通知1项、原有功能回归11项。另完成390/1440宽度的2项隔离渲染检查。
@@ -299,6 +307,22 @@ Rust 和 Cargo 缓存位于 `D:\.tool\rust-venera`，版本为 rustc/cargo 1.98.
 首次使用：进入中间的 **Agent** → **模型设置** → **添加模型**，填写服务商的 API 地址、模型 ID 和密钥。漫画源使用原应用的源管理；Agent 空白页提供入口。删除会话不会回滚收藏操作；删除收藏或稍后再看条目后，可在对应工具卡片中撤销。
 
 识图使用：为支持视觉的模型开启 **模型支持视觉**，点击输入框左侧 **添加图片**，选择图片后可预览、移除，再随消息发送。资源管理位于 **历史对话 → 管理对话**，可按占用大小选择并批量删除。
+
+### 9.2 移动交互与工具契约修复（2026-09-12）
+
+- 修复键盘显示时底栏多占高度；运行中只保留随草稿切换的插入/暂停按钮。Markdown 改用统一选择区域，流式跟随区分用户滚动方向、底部距离、惯性滚动和手指按住状态。
+- 审计全部19个工具，去掉用户文本、已见引用和源游标来源校验；漫画资料按需在工具内部补齐，重复添加、已有展示资料及本地操作不初始化无关资源，缓存续读不访问源。写前确认策略和逐项错误回执保留。
+- 修改范围静态分析通过；**122项相关测试通过**，其中 Agent 115项、批量通知/稍后再看/收藏输入/主页布局7项。移动交互新增14项回归，包含 Android/iOS 的实际文本字形拖动、斜向拖动、长按复制、链接点击，以及键盘、按钮和跟随滚动场景。
+- 工具测试使用假漫画源和模拟模型调用，覆盖仅图片消息下 never/destructive/all 三种确认策略。未进行真实手机、真实视觉模型或漫画站联调；本次修复未重新构建发布产物。
+
+本次检查命令：
+
+```powershell
+& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/components/navigation_bar.dart test/agent
+
+$env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
+& 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart
+```
 
 ## 10. 后续范围与合并维护
 
