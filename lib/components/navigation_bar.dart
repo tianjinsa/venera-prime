@@ -35,6 +35,7 @@ class NaviPane extends StatefulWidget {
     required this.pageBuilder,
     this.initialPage = 0,
     this.onPageChanged,
+    this.mobileTitleAccessory,
     required this.observer,
     required this.navigatorKey,
     super.key,
@@ -47,6 +48,9 @@ class NaviPane extends StatefulWidget {
   final Widget Function(int page) pageBuilder;
 
   final void Function(int index)? onPageChanged;
+
+  /// Optional content between the title and actions in bottom-navigation mode.
+  final Widget? mobileTitleAccessory;
 
   final int initialPage;
 
@@ -212,10 +216,7 @@ class NaviPaneState extends State<NaviPane>
             ],
           );
           if (sideInsets != EdgeInsets.zero) {
-            content = Padding(
-              padding: sideInsets,
-              child: content,
-            );
+            content = Padding(padding: sideInsets, child: content);
           }
           return content;
         },
@@ -275,7 +276,12 @@ class NaviPaneState extends State<NaviPane>
               widget.paneItems[currentPage].label,
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-            const Spacer(),
+            if (widget.mobileTitleAccessory != null) ...[
+              const SizedBox(width: 8),
+              Expanded(child: widget.mobileTitleAccessory!),
+              const SizedBox(width: 4),
+            ] else
+              const Spacer(),
             for (var action in widget.paneActions)
               Tooltip(
                 message: action.label,

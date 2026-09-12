@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:venera/utils/app_links.dart';
+import 'agent_attachment_view.dart';
 import 'agent_disclosure.dart';
 import 'agent_image_view.dart';
 import 'agent_models.dart';
@@ -13,12 +14,14 @@ class AgentUserMessageView extends StatelessWidget {
   final bool busy;
   final VoidCallback? onEdit;
   final AgentMessageImageLoader? imageLoader;
+  final AgentMessageTextFileLoader? fileLoader;
   const AgentUserMessageView({
     super.key,
     required this.message,
     required this.busy,
     this.onEdit,
     this.imageLoader,
+    this.fileLoader,
   });
   @override
   Widget build(BuildContext context) {
@@ -51,10 +54,13 @@ class AgentUserMessageView extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (message.images.isNotEmpty) ...[
-                    AgentImageStrip(
+                  if (message.images.isNotEmpty ||
+                      message.files.isNotEmpty) ...[
+                    AgentAttachmentStrip(
                       images: message.images,
+                      files: message.files,
                       readImage: (image) => imageLoader?.call(message, image),
+                      readFile: (file) => fileLoader?.call(message, file),
                     ),
                     if (message.text.isNotEmpty) const SizedBox(height: 10),
                   ],

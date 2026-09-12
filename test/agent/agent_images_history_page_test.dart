@@ -65,10 +65,14 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const ValueKey('agent-attach-image')));
+        await tester.tap(find.byKey(const ValueKey('agent-attach')));
+        await tester.pumpAndSettle();
+        expect(picks, 0);
+        expect(find.text('上传文件'), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('agent-upload-images')));
         await tester.pumpAndSettle();
         expect(
-          find.byKey(const ValueKey('agent-draft-images')),
+          find.byKey(const ValueKey('agent-draft-attachments')),
           findsOneWidget,
         );
         expect(find.byKey(const ValueKey('image-first')), findsOneWidget);
@@ -89,7 +93,10 @@ void main() {
             requests.single.firstWhere((m) => m['role'] == 'user')['content']
                 as List;
         expect(content.single['type'], 'image_url');
-        expect(find.byKey(const ValueKey('agent-draft-images')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('agent-draft-attachments')),
+          findsNothing,
+        );
         expect(controller.messages.first.images.single.id, 'second');
         expect(find.byKey(const ValueKey('image-second')), findsOneWidget);
         expect(
@@ -99,12 +106,14 @@ void main() {
 
         controller.selectModel(textModel.id);
         await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const ValueKey('agent-attach-image')));
+        await tester.tap(find.byKey(const ValueKey('agent-attach')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('agent-upload-images')));
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const ValueKey('agent-send')));
         await tester.pumpAndSettle();
         expect(
-          find.byKey(const ValueKey('agent-draft-images')),
+          find.byKey(const ValueKey('agent-draft-attachments')),
           findsOneWidget,
         );
         expect(find.byKey(const ValueKey('image-next')), findsOneWidget);
@@ -206,7 +215,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(find.text('删除 2 段对话？'), findsOneWidget);
-          expect(find.textContaining('图片、文字、工具运行记录'), findsOneWidget);
+          expect(find.textContaining('图片、文件、文字、工具运行记录'), findsOneWidget);
           await tester.tap(find.text('取消'));
           await tester.pumpAndSettle();
           expect(store.conversations(), hasLength(3));

@@ -21,6 +21,7 @@ class AgentController extends ChangeNotifier {
   late AgentConversation conversation;
   List<AgentConversation> conversations = [];
   List<AgentMessage> messages = [];
+  List<AgentMessage> _pendingMessages = [];
   List<AgentShowcase> showcases = [];
   String historyQuery = '';
   String? error;
@@ -57,6 +58,7 @@ class AgentController extends ChangeNotifier {
       store.settings.defaultModel;
   String? get thinkingId => model?.thinking(conversation.thinkingId).id;
   bool get isStopping => busy && _run?.isCancelled == true;
+  List<AgentMessage> get pendingMessages => List.unmodifiable(_pendingMessages);
   AgentUsage? get usage =>
       contextState.usageModelId == model?.id ? contextState.usage : null;
   bool get hasUnfinishedTask =>
@@ -97,6 +99,7 @@ class AgentController extends ChangeNotifier {
   void reload() {
     if (_disposed) return;
     messages = store.messages(conversation.id);
+    _pendingMessages = store.pendingMessages(conversation.id);
     showcases = store.showcases(conversation.id);
     contextState = store.conversationContext(conversation.id);
     conversations = store.conversations(historyQuery);
@@ -181,10 +184,12 @@ class AgentController extends ChangeNotifier {
   Future<void> send(
     String text, {
     List<AgentImageDraft> images = const [],
+    List<AgentTextDraft> files = const [],
+    AgentSendMode mode = AgentSendMode.insert,
   }) async {
     if (_disposed) return;
     final content = text.trim();
-    if (content.isEmpty && images.isEmpty) return;
+    if (content.isEmpty && images.isEmpty && files.isEmpty) return;
     if (content.length > 32000) {
       throw const AgentException('INPUT_TOO_LARGE', '消息过长，请分段发送');
     }
@@ -199,7 +204,10 @@ class AgentController extends ChangeNotifier {
         '请先在模型设置中开启“模型支持视觉”，并确认该模型能够识图',
       );
     }
-    final root = (busy || hasUnfinishedTask) && _rootIndex >= 0
+    final root =
+        mode == AgentSendMode.insert &&
+            (busy || hasUnfinishedTask) &&
+            _rootIndex >= 0
         ? messages[_rootIndex].id
         : null;
     final message = AgentMessage(
@@ -213,23 +221,38 @@ class AgentController extends ChangeNotifier {
           if (root != null) 'follow_up_to': root,
         },
         for (final image in images) image.attachment.toJson(),
+        for (final file in files) file.attachment.toJson(),
       ],
       modelId: selected.id,
       thinkingId: thinkingId,
       createdAt: agentNow(),
-      state: busy ? 'queued' : 'done',
+      state: mode == AgentSendMode.queue
+          ? 'pending_task'
+          : busy
+          ? 'queued'
+          : 'done',
     );
-    if (messages.isEmpty) {
-      conversation.title =
-          (content.isEmpty ? images.first.attachment.name : content).runes
-              .take(24)
-              .map(String.fromCharCode)
-              .join();
+    if (messages.isEmpty && _pendingMessages.isEmpty) {
+      final title = content.isNotEmpty
+          ? content
+          : images.isNotEmpty
+          ? images.first.attachment.name
+          : files.first.attachment.name;
+      conversation.title = title.runes.take(24).map(String.fromCharCode).join();
     }
     conversation.modelId = selected.id;
     conversation.thinkingId = thinkingId;
     store.saveConversation(conversation);
-    store.saveMessageWithImages(message, images);
+    store.saveMessageWithAttachments(message, images: images, files: files);
+    if (mode == AgentSendMode.queue) {
+      _pendingMessages.add(message);
+      _notify();
+      // A paused or failed task owns its place until the user resumes it.
+      if (busy || hasUnfinishedTask) return;
+      final next = _activateNextPending();
+      if (next != null) await _start(next.model, next.thinking);
+      return;
+    }
     messages.add(message);
     if (busy) {
       // A new requirement invalidates unstarted calls, including a pending
@@ -241,6 +264,39 @@ class AgentController extends ChangeNotifier {
       return;
     }
     await _start(selected, message.thinkingId);
+  }
+
+  void cancelQueuedMessage(String id) {
+    if (_disposed || !_pendingMessages.any((message) => message.id == id)) {
+      return;
+    }
+    store.cancelQueuedMessage(conversation.id, id);
+    _pendingMessages.removeWhere((message) => message.id == id);
+    conversations = store.conversations(historyQuery);
+    _notify();
+  }
+
+  ({AgentModel model, String? thinking})? _activateNextPending() {
+    if (_pendingMessages.isEmpty) return null;
+    final pending = _pendingMessages.first;
+    final selected = store.settings.findModel(pending.modelId);
+    if (selected == null) {
+      throw const AgentException('NO_MODEL', '排队消息的模型已删除，请取消该消息后重新发送');
+    }
+    selected.validate();
+    if (pending.images.isNotEmpty && !selected.supportsVision) {
+      throw const AgentException('VISION_UNSUPPORTED', '排队消息包含图片，请开启该模型的视觉支持');
+    }
+    final message = store.activateNextQueuedMessage(conversation.id);
+    if (message == null) {
+      _pendingMessages = [];
+      return null;
+    }
+    _pendingMessages.removeWhere((pending) => pending.id == message.id);
+    messages.add(message);
+    conversation.modelId = message.modelId;
+    conversation.thinkingId = message.thinkingId;
+    return (model: selected, thinking: message.thinkingId);
   }
 
   void stop() {
@@ -284,23 +340,48 @@ class AgentController extends ChangeNotifier {
   }
 
   Future<void> editAndResend(AgentMessage user, String text) async {
-    if (user.role != 'user' || text.trim().isEmpty && user.images.isEmpty) {
+    if (user.role != 'user' ||
+        text.trim().isEmpty && user.images.isEmpty && user.files.isEmpty) {
+      return;
+    }
+    if (_disposed) return;
+    if (user.isPendingTask) {
+      // Editing an unstarted task must not interrupt the task ahead of it or
+      // truncate history. Its attachments and FIFO position remain intact.
+      final index = _pendingMessages.indexWhere(
+        (message) => message.id == user.id,
+      );
+      if (index < 0) return;
+      if (text.trim().length > 32000) {
+        throw const AgentException('INPUT_TOO_LARGE', '消息过长，请分段发送');
+      }
+      final pending = _pendingMessages[index];
+      pending.parts.removeWhere((part) => part['type'] == 'text');
+      pending.parts.insert(0, {'type': 'text', 'text': text.trim()});
+      store.saveMessage(pending);
+      _notify();
       return;
     }
     await stopAndWait();
     if (_disposed) return;
     final images = store.messageImages(user);
+    final files = store.messageTextFiles(user);
     if (images.isNotEmpty && model?.supportsVision != true) {
       throw const AgentException('VISION_UNSUPPORTED', '请先选择支持识图的模型');
     }
     store.truncateFrom(user);
     reload();
-    await send(text, images: images);
+    await send(text, images: images, files: files);
   }
 
   Future<void> resume() async {
     await stopAndWait();
     if (_disposed) return;
+    if (!hasUnfinishedTask && _pendingMessages.isNotEmpty) {
+      final next = _activateNextPending();
+      if (next != null) await _start(next.model, next.thinking);
+      return;
+    }
     if (model == null || messages.every((m) => m.role != 'user')) return;
     await _start(model!, thinkingId);
   }
@@ -490,6 +571,7 @@ class AgentController extends ChangeNotifier {
             selected,
             context: previous,
             imageDataUrl: store.imageDataUrl,
+            textFileContent: store.textFileContent,
           ),
           {'role': 'user', 'content': agentCompactionPrompt},
         ],
@@ -542,7 +624,7 @@ class AgentController extends ChangeNotifier {
     error = null;
     contextNotice = null;
     _notify();
-    final task = _generate(
+    final task = _generateTasks(
       selected,
       thinking,
       run,
@@ -554,7 +636,57 @@ class AgentController extends ChangeNotifier {
     await task;
   }
 
-  Future<void> _generate(
+  Future<void> _generateTasks(
+    AgentModel selected,
+    String? thinking,
+    AgentRun run, {
+    AgentMessage? retryMessage,
+    AgentJson? retryCall,
+    bool compactOnly = false,
+  }) async {
+    try {
+      var completed = await _generate(
+        selected,
+        thinking,
+        run,
+        retryMessage: retryMessage,
+        retryCall: retryCall,
+        compactOnly: compactOnly,
+      );
+      while (completed && !_disposed && !run.isCancelled) {
+        // An insertion delivered at the completion boundary still belongs to
+        // the current task. It takes priority over starting any queued task.
+        if (!_hasQueuedInput) {
+          final next = _activateNextPending();
+          if (next == null) return;
+          selected = next.model;
+          thinking = next.thinking;
+          _notify();
+        }
+        completed = await _generate(selected, thinking, run);
+      }
+    } catch (e) {
+      _recordFailure(e, run);
+    } finally {
+      busy = false;
+      compacting = false;
+      compactionQueued = false;
+      _run = null;
+      _activeMessage = null;
+      _checkpointTimer?.cancel();
+      _checkpointTimer = null;
+      if (!_disposed) {
+        _notifyTimer?.cancel();
+        _notifyTimer = null;
+        confirmation = null;
+        conversations = store.conversations(historyQuery);
+        showcases = store.showcases(conversation.id);
+        _notify();
+      }
+    }
+  }
+
+  Future<bool> _generate(
     AgentModel selected,
     String? thinking,
     AgentRun run, {
@@ -565,7 +697,7 @@ class AgentController extends ChangeNotifier {
     try {
       if (compactOnly) {
         await _compact(selected, thinking, run);
-        if (!_hasQueuedInput) return;
+        if (!_hasQueuedInput) return false;
       }
       if (retryMessage != null && retryCall != null) {
         _activeMessage = retryMessage;
@@ -592,6 +724,7 @@ class AgentController extends ChangeNotifier {
           selected,
           context: contextState,
           imageDataUrl: store.imageDataUrl,
+          textFileContent: store.textFileContent,
         );
         final assistant = AgentMessage(
           id: agentId(),
@@ -653,34 +786,24 @@ class AgentController extends ChangeNotifier {
           if (compactionQueued || _shouldCompact(selected)) {
             await _compact(selected, thinking, run);
           }
-          if (!_hasQueuedInput) return;
+          if (!_hasQueuedInput) return true;
         }
       }
     } catch (e) {
-      if (_disposed) return;
-      final interrupted = run.isCancelled;
-      error = interrupted
-          ? '已停止等待。已完成的操作已保存，源请求可能仍在结束中。'
-          : e is AgentException
-          ? e.message
-          : '本轮未完成，请检查配置或重试。';
-      _markInterrupted(interrupted ? 'interrupted' : 'failed');
-    } finally {
-      busy = false;
-      compacting = false;
-      compactionQueued = false;
-      _activeMessage = null;
-      _checkpointTimer?.cancel();
-      _checkpointTimer = null;
-      if (!_disposed) {
-        _notifyTimer?.cancel();
-        _notifyTimer = null;
-        confirmation = null;
-        conversations = store.conversations(historyQuery);
-        showcases = store.showcases(conversation.id);
-        _notify();
-      }
+      _recordFailure(e, run);
+      return false;
     }
+  }
+
+  void _recordFailure(Object e, AgentRun run) {
+    if (_disposed) return;
+    final interrupted = run.isCancelled;
+    error = interrupted
+        ? '已停止等待。已完成的操作已保存，源请求可能仍在结束中。'
+        : e is AgentException
+        ? e.message
+        : '本轮未完成，请检查配置或重试。';
+    _markInterrupted(interrupted ? 'interrupted' : 'failed');
   }
 
   void _markInterrupted(String state) {

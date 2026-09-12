@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'agent_attachment_view.dart';
 import 'agent_activity_view.dart';
 import 'agent_disclosure.dart';
 import 'agent_image_view.dart';
@@ -14,6 +15,7 @@ class AgentTurnView extends StatelessWidget {
   final bool busy;
   final bool interrupted;
   final AgentMessageImageLoader? imageLoader;
+  final AgentMessageTextFileLoader? fileLoader;
   final VoidCallback? onRegenerate;
   final bool Function(AgentMessage, AgentJson) canRetry;
   final void Function(AgentMessage, AgentJson) onRetry;
@@ -28,6 +30,7 @@ class AgentTurnView extends StatelessWidget {
     required this.busy,
     this.interrupted = false,
     this.imageLoader,
+    this.fileLoader,
     this.onRegenerate,
     required this.canRetry,
     required this.onRetry,
@@ -104,6 +107,7 @@ class AgentTurnView extends StatelessWidget {
             message: message,
             busy: busy,
             imageLoader: imageLoader,
+            fileLoader: fileLoader,
           ),
         );
         continue;
