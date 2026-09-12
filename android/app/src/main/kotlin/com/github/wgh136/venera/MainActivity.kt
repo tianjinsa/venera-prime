@@ -31,6 +31,7 @@ import io.flutter.plugins.GeneratedPluginRegistrant
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : FlutterFragmentActivity() {
@@ -46,6 +47,19 @@ class MainActivity : FlutterFragmentActivity() {
 
     private var textShareHandler: ((String) -> Unit)? = null
 
+    private class AgentImagePickRequest(val result: MethodChannel.Result) {
+        val cancelled = AtomicBoolean(false)
+    }
+
+    private var nativeMethodChannel: MethodChannel? = null
+    private var pendingAgentImagePick: AgentImagePickRequest? = null
+    private var agentImagePickerOpen = false
+    private val agentImageCopies = mutableSetOf<String>()
+    // Consume restored results even when Activity recreation lost the request.
+    private val agentImagePickerLauncher = registerForActivityResult(
+        AgentImagePickerContract()
+    ) { uris -> onPickedAgentImages(uris) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -56,6 +70,18 @@ class MainActivity : FlutterFragmentActivity() {
                     handleSharedText(text)
             }
         }
+    }
+
+    override fun onDestroy() {
+        cancelAgentImageRequests()
+        super.onDestroy()
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        cancelAgentImageRequests()
+        nativeMethodChannel?.setMethodCallHandler(null)
+        nativeMethodChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -105,12 +131,19 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
-        MethodChannel(
+        val methodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "venera/method_channel"
-        ).setMethodCallHandler { call, res ->
+        )
+        nativeMethodChannel = methodChannel
+        methodChannel.setMethodCallHandler { call, res ->
             when (call.method) {
                 "getProxy" -> res.success(getProxy())
+                "pickAgentImages" -> pickAgentImages(res)
+                "releaseAgentImages" -> {
+                    releaseAgentImages(call.argument<List<String>>("paths") ?: emptyList())
+                    res.success(null)
+                }
                 "setScreenOn" -> {
                     val set = call.argument<Boolean>("set") ?: false
                     if (set) {
@@ -423,6 +456,110 @@ class MainActivity : FlutterFragmentActivity() {
                     result.error("copy error", e.message, null)
                 }
             }.start()
+        }
+    }
+
+    private fun pickAgentImages(result: MethodChannel.Result) {
+        if (isFinishing || isDestroyed || nativeMethodChannel == null) {
+            replyAgentImageError(result, "IMAGE_PICK_CANCELLED", "图片选择已取消，请重新选择")
+            return
+        }
+        if (pendingAgentImagePick != null || agentImagePickerOpen) {
+            replyAgentImageError(result, "IMAGE_PICK_IN_PROGRESS", "请先完成当前的图片选择")
+            return
+        }
+        val request = AgentImagePickRequest(result)
+        pendingAgentImagePick = request
+        try {
+            agentImagePickerOpen = true
+            agentImagePickerLauncher.launch(Unit)
+        } catch (e: Exception) {
+            agentImagePickerOpen = false
+            failAgentImagePick(request, "IMAGE_PICK_FAILED", "无法打开图片选择器：${e.message}")
+        }
+    }
+
+    private fun onPickedAgentImages(uris: List<Uri>) {
+        agentImagePickerOpen = false
+        val request = pendingAgentImagePick ?: return
+        if (uris.isEmpty()) {
+            completeAgentImagePick(request, emptyList())
+            return
+        }
+        val resolver = contentResolver
+        val directory = cacheDir
+        Thread {
+            try {
+                val images = copyAgentImages(resolver, directory, uris, request.cancelled::get)
+                runOnUiThread { completeAgentImagePick(request, images) }
+            } catch (e: AgentImagePickerException) {
+                runOnUiThread { failAgentImagePick(request, e.code, e.message) }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    failAgentImagePick(request, "IMAGE_READ_FAILED", "无法读取所选图片：${e.message}")
+                }
+            }
+        }.start()
+    }
+
+    private fun completeAgentImagePick(
+        request: AgentImagePickRequest,
+        images: List<Map<String, String>>
+    ) {
+        val paths = images.mapNotNull { it["path"] }
+        // This callback may have been queued immediately before engine detach.
+        // Track the copies first so either outcome removes every copied file.
+        agentImageCopies.addAll(paths)
+        if (pendingAgentImagePick !== request || request.cancelled.get()) {
+            releaseAgentImages(paths)
+            return
+        }
+        pendingAgentImagePick = null
+        try {
+            // Keep ownership until Dart finishes reading, including if the
+            // engine disappears after this reply but before Dart's cleanup.
+            request.result.success(images)
+        } catch (e: Exception) {
+            releaseAgentImages(paths)
+            Log.w("Venera", "Unable to return selected images", e)
+        }
+    }
+
+    private fun failAgentImagePick(request: AgentImagePickRequest, code: String, message: String?) {
+        if (pendingAgentImagePick !== request || request.cancelled.get()) return
+        pendingAgentImagePick = null
+        replyAgentImageError(request.result, code, message)
+    }
+
+    private fun cancelAgentImageRequests() {
+        val request = pendingAgentImagePick
+        pendingAgentImagePick = null
+        if (request != null) {
+            request.cancelled.set(true)
+            replyAgentImageError(request.result, "IMAGE_PICK_CANCELLED", "图片选择已取消，请重新选择")
+        }
+        releaseAgentImages(agentImageCopies.toList())
+    }
+
+    private fun releaseAgentImages(paths: List<String>) {
+        for (path in paths) {
+            // Only native-owned copies can be removed through this channel.
+            if (!agentImageCopies.contains(path)) continue
+            try {
+                val copy = File(path)
+                if (!copy.exists() || copy.delete()) agentImageCopies.remove(path)
+            } catch (e: Exception) {
+                Log.w("Venera", "Unable to remove a temporary selected image", e)
+            }
+        }
+    }
+
+    private fun replyAgentImageError(result: MethodChannel.Result, code: String, message: String?) {
+        try {
+            result.error(code, message, null)
+        } catch (e: Exception) {
+            // Cleanup still completes if a detached engine rejects the reply.
+            Log.w("Venera", "Unable to return image picker failure", e)
         }
     }
 }
