@@ -105,9 +105,9 @@
 | --- | --- | --- |
 | 源 | list_sources | key、name、搜索样式、id_matcher、link_domains |
 | 源 | list_search_options | source_key → 选项定义与默认值 |
-| 发现 | search_source | source_key、keyword、page/cursor、options → items、has_more、next_cursor |
+| 发现 | search_source | source_key、keyword、page/cursor、options → 源整页 items、has_more、next_page/next_cursor |
 | 发现 | comic_open_by_id | source_key、comic_id → 详情与收藏/稍后再看状态 |
-| 发现 | comic_resolve | query、可选 source_key、limit → 候选和 resolved_by；歧义返回可选源 |
+| 发现 | comic_resolve | query、可选 source_key → 候选和 resolved_by；名称返回源整页候选及翻页信息，歧义返回可选源 |
 | 发现 | comic_get | source_key、comic_id → 详情，排除内页和 thumbnails |
 | 展示 | showcase_comics | comics 数组、title、note、append/replace → 分组和跳过原因 |
 | 收藏 | fav_list_folders | 文件夹与实时 count |
@@ -135,15 +135,17 @@ fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名�
 
 本地列表、搜索、状态、移除、移动和创建收藏夹不初始化漫画源，只初始化所需的本地管理器。添加或展示先使用已有缓存，只有缺资料时才按需打开其他本地列表或请求源详情；重复添加和已缓存的展示不会打开无关数据库。comic_open_by_id 的 include_status=false 不初始化本地列表。收藏夹可直接创建，同名已存在返回 skipped/ALREADY_EXISTS；添加和移动指定的目标收藏夹不存在仍返回 FOLDER_NOT_FOUND，不隐式创建其他资源。
 
+稍后再看的单本元数据和删除快照通过 (id, comic_type) 主键查询，不再为批次中的每项读取、排序和反序列化整张列表。指定收藏夹的移除和重复添加直接读取目标收藏夹，不为这些操作扫描其他收藏夹。
+
 详情直接映射对象字段，避免已有 JSON 往返字段不一致。系统提示词明确漫画名、描述、标签、源错误和工具返回均是数据，不能把其中的指令当用户授权。
 
 ### 5.3 分页
 
 - 页码正整数；本地 page_size 默认20、上限50。
-- 页码源按 max_page 或实际响应判断终点，未知总页数如实保留；不按源名猜单页能力。
+- search_source 一次返回漫画源的一整页结果；comic_resolve 按名称查找时也返回整页候选。不再提供 continuation 或 limit，不将已取回的一页拆成20条/5条的多次工具续读。
+- 搜索结果保留 source_key、keyword、实际 options 和分页 style。需要更多结果且 has_more=true 时，将 next_page 作为 page，或 next_cursor 作为 cursor 继续调用 search_source，保持查询条件不变；不要求先查询源能力或重新读取第一页。
+- 页码源按 max_page 或实际响应判断终点，未知总页数如实保留为 null，直到返回空页；不按源名猜单页能力。到达终点时 has_more=false、exhausted=true，下一页码/游标为 null。
 - 源游标直接交给源读取，不用进程内“曾返回过”的白名单验证来源；历史或重启后恢复的合法游标无需先重查第一页。源负责判断游标是否有效。
-- continuation 直接读取本机缓存余量，不再初始化或请求漫画源；必须能定位同一查询的实际缓存，过期或错用时返回 INVALID_CURSOR。
-- 源返回大量条目时缓存本页剩余数据，提供继续读取标记，不静默丢条目。
 - 本地读取后分页；跨收藏夹逐个 searchInFolder，避免旧 search() 命中200条提前结束。保留所在文件夹。
 - 首期可能全量读取大收藏夹；后续根据性能证据决定是否增加上游通用分页接口。
 
@@ -322,6 +324,19 @@ Rust 和 Cargo 缓存位于 `D:\.tool\rust-venera`，版本为 rustc/cargo 1.98.
 
 $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 & 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart
+```
+
+### 9.3 工具分页与读取效率优化（2026-09-12）
+
+- 搜索和按名称识别返回漫画源整页结果，移除 continuation 缓存及 limit 分块；返回原生翻页信息和实际查询条件，支持直接从指定页码或历史游标继续。名称识别复用已取得的源实例。
+- 稍后再看新增按身份读取单本资料的接口，元数据复用和移除撤销快照不再逐项扫描全表；指定收藏夹的移除、重复添加不扫描其他收藏夹。未改动写入确认策略、逐项回执或取消保护。
+- 静态分析通过；**123项相关测试通过**，其中 Agent 116项、批量通知/稍后再看/收藏输入/主页布局7项。覆盖超过20条的源整页结果、超过5条的识别候选、默认与显式选项、原生页码与重启后的游标续页，以及本地身份查询、写前确认、部分失败、取消和撤销。
+- 使用本机假源和模拟模型验证；本轮未进行真实漫画站、模型或真机联调，未重新构建安装包。
+
+测试命令沿用上一节；本次静态分析命令：
+
+```powershell
+& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/foundation/read_later.dart test/agent test/read_later_test.dart
 ```
 
 ## 10. 后续范围与合并维护

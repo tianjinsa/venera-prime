@@ -739,7 +739,7 @@ void main() {
   );
 
   test(
-    'resolve limits preserve remaining candidates and reject unsupported URL domains',
+    'resolve returns a complete search page and rejects unsupported URL domains',
     () async {
       var calls = 0;
       sources.add(
@@ -769,16 +769,17 @@ void main() {
       );
       final first = await tools.execute('comic_resolve', {
         'query': 'book',
-        'limit': 2,
       }, context);
-      expect(first['data']['candidates'].length, 2);
+      expect(first['ok'], true);
+      expect(first['data']['candidates'].length, 8);
       expect(first['data'].containsKey('items'), false);
-      final remaining = await tools.execute('search_source', {
-        'source_key': 'single',
-        'keyword': 'book',
-        'continuation': first['data']['continuation'],
-      }, context);
-      expect(remaining['data']['items'].length, 6);
+      expect(first['data'].containsKey('continuation'), false);
+      expect(first['data']['resolved_by'], 'search');
+      expect(first['data']['source_key'], 'single');
+      expect(first['data']['keyword'], 'book');
+      expect(first['data']['options'], isEmpty);
+      expect(first['data']['has_more'], false);
+      expect(first['data']['exhausted'], true);
       expect(calls, 1);
       final unsupported = await tools.execute('comic_resolve', {
         'query': 'https://unsupported.invalid/123',
@@ -883,7 +884,7 @@ void main() {
   );
 
   test(
-    'search fills defaults and preserves overflow with a scoped continuation',
+    'search returns every native page item and reuses its metadata for adding',
     () async {
       List<String>? options;
       var sourceInitializations = 0;
@@ -928,23 +929,103 @@ void main() {
         'keyword': 'name',
       }, context);
       expect(options, ['new']);
-      expect(first['data']['items'].length, 20);
-      expect(first['data']['has_more'], true);
-      final token = first['data']['continuation'];
-      final second = await tools.execute('search_source', {
-        'source_key': 'jm',
-        'keyword': 'name',
-        'continuation': token,
+      expect(first['ok'], true);
+      expect(
+        (first['data']['items'] as List).map((item) => item['comic_id']),
+        List.generate(23, (i) => '$i'),
+      );
+      expect(first['data'].containsKey('continuation'), false);
+      expect(first['data']['style'], 'page');
+      expect(first['data']['page'], 1);
+      expect(first['data']['max_page'], 1);
+      expect(first['data']['options'], ['new']);
+      expect(first['data']['next_page'], isNull);
+      expect(first['data']['next_cursor'], isNull);
+      expect(first['data']['has_more'], false);
+      expect(first['data']['exhausted'], true);
+      final added = await tools.execute('later_add', {
+        'comics': ['jm:22'],
       }, context);
-      expect(second['data']['items'].length, 3);
-      expect(second['data']['has_more'], false);
-      final invalid = await tools.execute('search_source', {
-        'source_key': 'jm',
-        'keyword': 'different',
-        'continuation': token,
-      }, context);
-      expect(invalid['error']['code'], 'INVALID_CURSOR');
+      expect(added['data']['summary']['ok'], 1);
+      expect(later.getAll().single.title, 'Comic 22');
       expect(sourceInitializations, 1);
+    },
+  );
+
+  test(
+    'native page numbers and explicit options work without prior calls',
+    () async {
+      final received = <AgentJson>[];
+      sources.add(
+        TestSource(
+          'pages',
+          searchPageData: SearchPageData(
+            [
+              SearchOptions(
+                LinkedHashMap.of({'new': '最新', 'old': '最早'}),
+                '排序',
+                'select',
+                'new',
+              ),
+            ],
+            (keyword, page, options) async {
+              received.add({
+                'keyword': keyword,
+                'page': page,
+                'options': options,
+              });
+              return Res([
+                Comic(
+                  'Page $page',
+                  '',
+                  '$page',
+                  '',
+                  [],
+                  '',
+                  'pages',
+                  null,
+                  null,
+                ),
+              ], subData: 3);
+            },
+            null,
+          ),
+        ),
+      );
+      final first = await tools.execute('search_source', {
+        'source_key': 'pages',
+        'keyword': 'book',
+        'page': 2,
+        'options': ['old'],
+      }, context);
+      expect(first['ok'], true);
+      final data = first['data'];
+      expect(data['page'], 2);
+      expect(data['max_page'], 3);
+      expect(data['next_page'], 3);
+      expect(data['has_more'], true);
+      final last = await tools.execute('search_source', {
+        'source_key': data['source_key'],
+        'keyword': data['keyword'],
+        'options': data['options'],
+        'page': data['next_page'],
+      }, context);
+      expect(last['data']['items'].single['comic_id'], '3');
+      expect(last['data']['next_page'], isNull);
+      expect(last['data']['has_more'], false);
+      expect(last['data']['exhausted'], true);
+      expect(received, [
+        {
+          'keyword': 'book',
+          'page': 2,
+          'options': ['old'],
+        },
+        {
+          'keyword': 'book',
+          'page': 3,
+          'options': ['old'],
+        },
+      ]);
     },
   );
 
@@ -962,9 +1043,23 @@ void main() {
           ) async {
             received.add(cursor);
             if (cursor == 'expired') return const Res.error('游标已过期');
-            return Res([
-              Comic('A', '', 'id', '', [], '', 'cursor', null, null),
-            ], subData: cursor == null ? 'opaque:next' : null);
+            return Res(
+              List.generate(
+                cursor == null ? 25 : 1,
+                (i) => Comic(
+                  'Comic $i',
+                  '',
+                  '$i',
+                  '',
+                  [],
+                  '',
+                  'cursor',
+                  null,
+                  null,
+                ),
+              ),
+              subData: cursor == null ? 'opaque:next' : null,
+            );
           }),
         ),
       );
@@ -979,7 +1074,12 @@ void main() {
         'source_key': 'cursor',
         'keyword': 'q',
       }, context);
+      expect(first['data']['items'].length, 25);
+      expect(first['data'].containsKey('continuation'), false);
+      expect(first['data']['style'], 'cursor');
+      expect(first['data']['next_page'], isNull);
       expect(first['data']['next_cursor'], 'opaque:next');
+      expect(first['data']['has_more'], true);
       // Simulate restarting the tools while continuing a saved conversation.
       final restarted = AgentTools(
         store,
@@ -991,7 +1091,7 @@ void main() {
       final second = await restarted.execute('search_source', {
         'source_key': 'cursor',
         'keyword': 'q',
-        'cursor': 'opaque:next',
+        'cursor': first['data']['next_cursor'],
       }, context);
       expect(second['data']['has_more'], false);
       final expired = await restarted.execute('search_source', {

@@ -14,13 +14,6 @@ class AgentToolContext {
   const AgentToolContext(this.conversationId, this.run);
 }
 
-class _SearchRemainder {
-  final String queryKey;
-  final List<AgentComic> items;
-  final AgentJson metadata;
-  _SearchRemainder(this.queryKey, this.items, this.metadata);
-}
-
 class AgentTools {
   final AgentStore store;
   final LocalFavoritesManager favorites;
@@ -28,7 +21,6 @@ class AgentTools {
   final Future<void> Function() initializeSources;
   final List<ComicSource> Function() sources;
   final Duration sourceTimeout;
-  final _remainders = <String, _SearchRemainder>{};
 
   AgentTools(
     this.store, {
@@ -99,13 +91,12 @@ class AgentTools {
     ),
     _schema(
       'search_source',
-      '直接搜索单个源，无需先查询源或选项；省略 options 使用默认值。分页源用 page，游标源传 cursor；continuation 读取本页缓存余量',
+      '直接搜索单个源并返回源的一整页结果，无需先查询源或选项；省略 options 使用默认值。下一页按返回的 next_page 或 next_cursor 继续，保持源、关键词和选项不变',
       {
         'source_key': _string,
         'keyword': _string,
         'page': _integer,
         'cursor': _string,
-        'continuation': _string,
         'options': {'type': 'array', 'items': _string},
       },
       ['source_key', 'keyword'],
@@ -122,8 +113,8 @@ class AgentTools {
     ),
     _schema(
       'comic_resolve',
-      '将名称、源 id 或站内 URL 解析成候选，可使用图片识别出的内容；不明确的源应询问用户',
-      {'query': _string, 'source_key': _string, 'limit': _integer},
+      '将名称、源 id 或站内 URL 解析成候选，可使用图片识别出的内容；名称搜索返回源的一整页候选及翻页信息，可用 search_source 继续；不明确的源应询问用户',
+      {'query': _string, 'source_key': _string},
       ['query'],
     ),
     _schema(
@@ -589,7 +580,7 @@ class AgentTools {
   Future<AgentJson> _search(
     AgentJson a,
     AgentToolContext c, {
-    int pageSize = 20,
+    ComicSource? resolvedSource,
   }) async {
     final sourceKey = _text(a, 'source_key');
     final keyword = _text(a, 'keyword');
@@ -598,24 +589,7 @@ class AgentTools {
         (rawOptions is! List || rawOptions.any((v) => v is! String))) {
       throw const AgentException('INVALID_ARGUMENT', 'options 需要字符串数组');
     }
-    final continuation = a['continuation'];
-    if (continuation != null) {
-      final rest = _remainders[continuation];
-      final key = rest == null
-          ? null
-          : jsonEncode([
-              c.conversationId,
-              sourceKey,
-              keyword,
-              rawOptions ?? (jsonDecode(rest.queryKey) as List)[3],
-            ]);
-      if (rest == null || rest.queryKey != key) {
-        throw const AgentException('INVALID_CURSOR', '本页续读标记已失效，请重新搜索');
-      }
-      _remainders.remove(continuation);
-      return _searchSlice(rest, size: pageSize);
-    }
-    final source = await _source(sourceKey, c);
+    final source = resolvedSource ?? await _source(sourceKey, c);
     final search = source.searchPageData;
     if (search == null ||
         (search.loadPage == null && search.loadNext == null)) {
@@ -631,7 +605,6 @@ class AgentTools {
         'options 需要 ${definitions.length} 项；省略 options 则自动使用默认值',
       );
     }
-    final key = jsonEncode([c.conversationId, source.key, keyword, options]);
     final page = _number(a, 'page', 1, 10000);
     final cursor = a['cursor'];
     if (cursor != null && cursor is! String) {
@@ -668,48 +641,28 @@ class AgentTools {
             (result.subData as String).isNotEmpty
         ? result.subData as String
         : null;
-    return _searchSlice(
-      _SearchRemainder(key, items, {
-        'style': isCursor ? 'cursor' : 'page',
-        'page': isCursor ? null : page,
-        'max_page': maxPage,
-        'has_more': isCursor
-            ? next != null
-            : maxPage != null
-            ? page < maxPage
-            : items.isNotEmpty,
-        'next_cursor': next,
-      }),
-      size: pageSize,
-    );
-  }
-
-  AgentJson _searchSlice(_SearchRemainder page, {int size = 20}) {
-    final visible = page.items.take(size).toList();
-    final rest = page.items.skip(size).toList();
-    String? continuation;
-    if (rest.isNotEmpty) {
-      continuation = agentId();
-      if (_remainders.length >= 32) _remainders.remove(_remainders.keys.first);
-      _remainders[continuation] = _SearchRemainder(
-        page.queryKey,
-        rest,
-        page.metadata,
-      );
-    }
+    final hasMore = isCursor
+        ? next != null
+        : maxPage != null
+        ? page < maxPage
+        : items.isNotEmpty;
     return {
-      ...page.metadata,
-      'items': visible.map(_briefJson).toList(),
-      'continuation': continuation,
-      if (continuation != null) 'next_cursor': null,
-      'has_more': continuation != null || page.metadata['has_more'] == true,
-      'exhausted': continuation == null && page.metadata['has_more'] != true,
+      'source_key': source.key,
+      'keyword': keyword,
+      'options': options,
+      'style': isCursor ? 'cursor' : 'page',
+      'page': isCursor ? null : page,
+      'max_page': maxPage,
+      'next_page': !isCursor && hasMore ? page + 1 : null,
+      'next_cursor': next,
+      'has_more': hasMore,
+      'exhausted': !hasMore,
+      'items': items.map(_briefJson).toList(),
     };
   }
 
   Future<AgentJson> _resolve(AgentJson a, AgentToolContext c) async {
     final query = _text(a, 'query');
-    final limit = _number(a, 'limit', 5, 20);
     final List<ComicSource> available;
     if (a.containsKey('source_key')) {
       available = [await _source(_text(a, 'source_key'), c)];
@@ -766,7 +719,7 @@ class AgentTools {
     final result = await _search(
       {'source_key': available.single.key, 'keyword': query},
       c,
-      pageSize: limit,
+      resolvedSource: available.single,
     );
     final candidates = result.remove('items') as List;
     return {...result, 'resolved_by': 'search', 'candidates': candidates};
@@ -945,12 +898,11 @@ class AgentTools {
       }
     }
     if (later.isInitialized) {
-      for (final comic in later.getAll()) {
-        if (comic.id == ref.$2 && comic.type == type) {
-          final value = fromComic(comic);
-          store.remember(c.conversationId, value);
-          return value;
-        }
+      final comic = later.getComic(ref.$2, type);
+      if (comic != null) {
+        final value = fromComic(comic);
+        store.remember(c.conversationId, value);
+        return value;
       }
     }
     return null;
@@ -1011,11 +963,19 @@ class AgentTools {
               ? favorites.comicExists(folder!, ref.$2, type)
               : later.contains(ref.$2, type);
           if (exists) {
-            final comic = _localMetadata(ref, c);
-            if (comic != null) prepared[i] = comic;
+            var comic = store.seen(c.conversationId, ref.$1, ref.$2);
+            if (comic == null) {
+              comic = fromComic(
+                name == 'fav_add'
+                    ? favorites.getComic(folder!, ref.$2, type)
+                    : later.getComic(ref.$2, type)!,
+              );
+              store.remember(c.conversationId, comic);
+            }
+            prepared[i] = comic;
             results[i] = {
               ..._identity(ref),
-              if (comic != null) 'title': comic.title,
+              'title': comic.title,
               'status': 'skipped',
               'reason': 'ALREADY_EXISTS',
               if (folder != null) 'folder': folder,
@@ -1088,10 +1048,11 @@ class AgentTools {
                 if (!added) 'reason': 'ALREADY_EXISTS',
               });
             case 'fav_remove':
-              final targets = favorites
-                  .find(ref.$2, type)
-                  .where((f) => folder == null || f == folder)
-                  .toList();
+              final targets = folder == null
+                  ? favorites.find(ref.$2, type)
+                  : favorites.comicExists(folder, ref.$2, type)
+                  ? [folder]
+                  : <String>[];
               if (targets.isEmpty) {
                 row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
                 store.removeOperationComic(
@@ -1130,11 +1091,8 @@ class AgentTools {
                 'folders': targets,
               });
             case 'later_remove':
-              final items = later
-                  .getAll()
-                  .where((item) => item.id == ref.$2 && item.type == type)
-                  .toList();
-              if (items.isEmpty) {
+              final item = later.getComic(ref.$2, type);
+              if (item == null) {
                 row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
                 store.removeOperationComic(
                   c.conversationId,
@@ -1145,11 +1103,8 @@ class AgentTools {
                 break;
               }
               if (later.remove(ref.$2, type)) {
-                row['title'] = items.first.title;
-                undo.add({
-                  'kind': 'later',
-                  'comic': fromComic(items.first).toJson(),
-                });
+                row['title'] = item.title;
+                undo.add({'kind': 'later', 'comic': fromComic(item).toJson()});
                 store.saveUndo(undoId, c.conversationId, undo);
                 row['status'] = 'removed';
                 store.removeOperationComic(

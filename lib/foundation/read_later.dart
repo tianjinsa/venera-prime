@@ -165,6 +165,14 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
     return rows.map(ReadLaterComic.fromRow).toList();
   }
 
+  ReadLaterComic? getComic(String id, ComicType type) {
+    final rows = _db.select(
+      'SELECT * FROM read_later WHERE id = ? AND comic_type = ? LIMIT 1;',
+      [id, type.value],
+    );
+    return rows.isEmpty ? null : ReadLaterComic.fromRow(rows.first);
+  }
+
   bool contains(String id, ComicType type) {
     return _db.select(
       'SELECT 1 FROM read_later WHERE id = ? AND comic_type = ? LIMIT 1;',
