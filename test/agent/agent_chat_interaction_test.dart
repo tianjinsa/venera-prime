@@ -109,6 +109,19 @@ void main() {
     await tester.pump();
   }
 
+  Future<void> insertDraft(WidgetTester tester) async {
+    await tester.tap(send);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+    expect(find.text('插入消息'), findsOneWidget);
+    expect(find.text('排队消息'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('agent-send-insert')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+  }
+
   Future<ScrollPosition> startLongReply(WidgetTester tester) async {
     await pumpAgent(tester);
     await tester.enterText(input, '列出漫画');
@@ -187,7 +200,7 @@ void main() {
     await tester.pump();
     expect(send, findsOneWidget);
     expect(pause, findsNothing);
-    expect(find.byTooltip('插入消息（Ctrl+Enter）'), findsOneWidget);
+    expect(find.byTooltip('选择发送方式'), findsOneWidget);
     await tester.enterText(input, ' \n ');
     await tester.pump();
     expect(pause, findsOneWidget);
@@ -196,20 +209,25 @@ void main() {
     // Text-controller updates (including restoring drafts) also switch actions.
     tester.widget<TextField>(input).controller!.text = '改为只整理收藏';
     await tester.pump();
-    await tester.tap(send);
-    await tester.pump();
+    await insertDraft(tester);
     expect(controller.messages.last.text, '改为只整理收藏');
     expect(controller.messages.last.state, 'queued');
     expect(pause, findsOneWidget);
     expect(send, findsNothing);
 
     // An image-only follow-up remains sendable with the same single action.
-    await tester.tap(find.byKey(const ValueKey('agent-attach-image')));
+    await tester.tap(find.byKey(const ValueKey('agent-attach')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('agent-upload-images')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
     await tester.pump();
     expect(send, findsOneWidget);
     expect(pause, findsNothing);
-    await tester.tap(send);
-    await tester.pump();
+    await insertDraft(tester);
     expect(controller.messages.last.images.single.id, 'draft');
     expect(pause, findsOneWidget);
     expect(send, findsNothing);

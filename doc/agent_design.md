@@ -1,8 +1,8 @@
 # Venera Prime Agent 接入设计方案
 
-> 版本：v4（2026-09-12）
+> 版本：v5（2026-09-12）
 > 实施基线：6a62b16（Venera Prime 2.2.1，当前上游最新版）
-> 本次修订：在分层执行过程、持续对话和上下文压缩的基础上，增加图片输入、会话资源大小统计、资源级联清理和批量删除；继续限制上游接入范围。
+> 本次修订：完善手机输入和顶部模型信息，改用 Android 相册选图，增加纯文本附件与独立任务队列；工具按参数直接执行，内部按需补齐资料。
 
 ## 1. 目标与范围
 
@@ -13,7 +13,8 @@
 - 底部五个 Tab：**主页 / 收藏 / Agent / 探索 / 分类**。宽屏沿用现有侧边导航，Agent 同样位于第三项。
 - 模型配置：地址、模型名、密钥、视觉能力声明、思考深度列表及请求体补丁、是否回传思考内容。
 - 流式对话、停止、失败重试、重新生成、编辑后重发，以及历史会话的新建、搜索、切换、重命名和删除。每段历史显示内容占用大小，支持多选和全选当前搜索结果后批量删除。
-- 多张本地图片选择、缩略图、放大预览、发送前移除、纯图片或图文发送；图片随消息持久化，支持补充消息、重试和重启继续识图。
+- 共用附件菜单选择图片或 TXT、CSV、JSON 等纯文本文件，提供预览、移除与仅附件发送；附件随消息持久化，支持补充消息、排队、重试和重启恢复。
+- 运行中可选择插入消息，在下一次模型请求处理；或排队消息，等待前一任务完整完成后依次启动。
 - 一次用户任务包含多次模型响应和运行中补充消息；正文间的连续思考和工具合为默认折叠的过程组，组内每项详情也可独立展开。完成后只展开最终正文，之前的正文、过程组及补充消息再次整体折叠。
 - 不限制工具轮数、不按字符数截断模型或工具输出。按最近一次真实 token 统计在模型容量90%时自动压缩，也可手动触发；保留原始记录。
 - 19 个工具：源能力、发现、展示、本地收藏、稍后再看；支持批量操作、逐项回执和删除撤销。
@@ -29,22 +30,23 @@
 ### 2.1 规则
 
 1. 新功能集中在 **lib/agent/**，单向依赖现有应用接口；原有源解析器、JS 引擎、漫画源脚本不认识 Agent。
-2. 原文件只承担必要接入，不做全仓格式化、搬迁、重命名或无关重构，不改版本号和平台工程。
+2. 原文件只承担必要接入，不做全仓格式化、搬迁、重命名或无关重构，不改版本号。Android 相册选择通过现有 method channel 接入，原生逻辑放在独立文件，不增加依赖。
 3. 模型设置入口放在 Agent 页自己的工具栏，不扩展 SettingsPage 的平行数组/switch，不改 appdata 默认配置和同步白名单。
 4. Agent 页打开时懒初始化自己的存储，退出时停止当前生成，重新进入从存储恢复。应用和 headless 启动链路不变。
 5. 收藏/稍后再看写入使用原管理器公开 API，不直接连接原数据库写入，不复制表结构、标签翻译或计数逻辑。
-6. 首期在适配层读取后分页，不为了 Agent 给两个管理器增加多组查询接口；大库性能是明确的后续优化点。
+6. 适配层复用本地状态和已有资料，读取限定到实际需要的漫画和收藏夹；稍后再看按身份查单项，不为重复添加或单项移除扫描整个集合。
 7. 中文提交信息，设计、通用通知能力、Agent 实现可以独立审查；不提交 SDK、缓存和无关的未跟踪文件。
 
 ### 2.2 原文件接入清单
 
 | 文件 | 必要修改 | 合并上游时验证 |
 | --- | --- | --- |
-| lib/pages/main_page.dart | 接入第三个页面/导航项，映射旧启动页索引 | 五个页面和导航一致，旧设置语义不变 |
-| lib/components/navigation_bar.dart | 键盘显示时收起底栏，不重复占用页面高度 | 输入框紧邻键盘，收起键盘后恢复底栏，桌面侧栏不受影响 |
+| lib/pages/main_page.dart | 接入第三个页面/导航项、手机顶部模型信息，映射旧启动页索引 | 五个页面和导航一致，旧设置语义不变 |
+| lib/components/navigation_bar.dart | 键盘显示时收起底栏，提供手机标题栏附加区域 | 输入框紧邻键盘，Agent 顶部信息布局正常，桌面侧栏不受影响 |
 | lib/foundation/favorites.dart | 导入并混入通用批量通知能力 | 单次调用通知行为不变 |
-| lib/foundation/read_later.dart | 同上 | 增删语义与原有表结构不变 |
+| lib/foundation/read_later.dart | 批量通知、按源和 ID 查询单项 | 增删语义与原有表结构不变，单项读取不扫描全表 |
 | lib/utils/io.dart | 新增12行通用 withFileSelection 包装，复用原有文件选择状态 | 打开系统选图窗口时保持既有生命周期行为，完成/取消后还原状态 |
+| android/app/src/main/kotlin/com/github/wgh136/venera/MainActivity.kt | 接入独立 AgentImagePicker 的选图、取消及临时资源释放 | 原有文件选择和 method channel 行为不变，关闭 Activity/引擎时清理临时副本 |
 | pubspec.yaml / pubspec.lock | 新增 flutter_markdown_plus | 包管理器维护锁文件 |
 
 新增 **lib/foundation/batched_notifications.dart** 不依赖 Agent、不读取数据库，仅在同步操作期间合并通知，可作为独立小补丁提交上游。Agent 适配层在通知窗口内复用原有单项方法。上游有等价接口后只替换适配层。
@@ -65,7 +67,7 @@
 | URL | 仅对 linkHandler.domains 精确匹配的 URL 调用 linkToId，不从任意 URL 猜数字 id |
 | 身份 | source_key + comic_id；经 ComicType.fromKey 转换，兼容 local 与 Unknown:<int> |
 | 收藏 | folderNames、count、getFolderComics、searchInFolder、find、getComic、addComic、deleteComicWithId、createFolder |
-| 稍后再看 | getAll、contains、add、remove、restore；在 Agent 内把详情适配成 Comic |
+| 稍后再看 | getAll、getComic、contains、add、remove、restore；在 Agent 内把详情适配成 Comic |
 | UI 刷新 | 管理器 ChangeNotifier 通知已有页面 |
 | 同步 | DataSync 监听收藏和源变更，并合并上传期间的等待任务；没有直接监听 ReadLaterManager |
 | 备份 | exportAppData 使用显式文件清单，独立 Agent 目录不进入现有手动备份/WebDAV |
@@ -84,12 +86,15 @@
 | agent_client.dart | 独立 Dio、首响应超时保护、SSE 聚合、非流式兼容 |
 | agent_http_adapter.dart | 复用现有代理/DNS/TLS 设置，将取消信号传给 rhttp |
 | agent_wire.dart | parts 的完整成对投影、摘要边界与当前用户要求保留 |
-| agent_controller.dart | 会话生命周期、停止/重试、工具循环、补充消息与上下文压缩 |
+| agent_controller.dart | 会话生命周期、停止/重试、工具循环、插入/排队消息与上下文压缩 |
 | agent_tools.dart | 工具 schema、参数校验、源与集合适配 |
 | agent_page.dart | 历史/对话/展示的响应式页面 |
 | agent_settings_page.dart | 模型列表和配置编辑 |
 | agent_message_view.dart | Markdown、思考与工具详情、用户消息 |
 | agent_images.dart / agent_image_view.dart | 跨平台选图、内容格式校验、缩略图和放大预览 |
+| agent_files.dart / agent_attachment_view.dart | 纯文本文件选择、严格解码、共用附件预览 |
+| agent_model_header.dart | 手机外层顶部栏的模型/思考信息与展开选择面板 |
+| agent_queue_view.dart | 待运行任务的数量、顺序、附件预览、取消与继续 |
 | agent_history_view.dart | 对话占用大小、搜索结果多选、批量删除 |
 | agent_turn_view.dart / agent_activity_view.dart / agent_disclosure.dart | 同一任务的历史折叠、正文间过程组、各条目独立展开和状态恢复 |
 | agent_showcase_view.dart | 普通展示、收藏/收藏夹与稍后再看折叠分组 |
@@ -171,6 +176,8 @@ fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名�
 
 每个模型保存 id、name、base_url、model、supports_vision、thinking_levels[{id,label,params}]、default_thinking、include_reasoning_in_context、extra_body、headers、context_window_tokens、可选 temperature 和流式开关。上下文容量默认128000，由用户按实际模型修改。移除最大工具轮数字段，旧配置中的该字段被忽略，不再写回。默认思考深度从上方 JSON 列表动态生成下拉选项；选项删除时回退到首项，无效 JSON 时禁用下拉并提示修正。
 
+模型编辑页的输入框均使用普通文本输入配置，不设置 obscureText 或关闭 suggestions 触发 Android 的密码输入类型。API Key 提供粘贴按钮，粘贴后整体替换并保留完整内容；该字段关闭 IME 个性化学习，不主动切换安全输入法。
+
 请求合并顺序：extra_body → 当前思考 params → 协议字段。model/messages/tools/tool_choice/stream 由客户端最后写入，防止配置绕开工具白名单。思考补丁按模型配置，不声称某厂商参数适用所有网关。
 
 支持标准 base URL 或完整 chat/completions URL，只允许 http/https，不允许 userInfo 和 fragment。默认 confirm_policy=never，也提供 destructive（删除/移动）与 all；仅用户开启后才确认。停止必须解除待确认状态。
@@ -181,7 +188,7 @@ App.dataPath/agent 下保存 config.json、secrets.json（modelId→密钥）和
 
 配置和密钥串行原子写入，不记录密钥、headers 或聊天请求体。Windows 不声称支持 POSIX 0600；使用应用目录/当前用户权限。系统凭据库以后单列，不改平台工程。
 
-SQLite 启用 foreign_keys=ON 和 user_version=3；消息、图片、展示、seen、撤销记录、上下文摘要和操作展示归属关联会话并级联删除。v1 升级从成功工具回执补齐旧会话的操作展示，不重放收藏/稍后再看的实际操作；v2 升级增加 message_images 并启用增量空间回收，保留原消息、模型设置和摘要。展示状态独立于消息，重试不清空面板。未完成消息恢复为 interrupted，排队的补充消息保留；损坏数据报告错误而非静默覆盖。
+SQLite 启用 foreign_keys=ON 和 user_version=4；消息、图片、文本附件、展示、seen、撤销记录、上下文摘要和操作展示归属关联会话并级联删除。v1 升级从成功工具回执补齐旧会话的操作展示，不重放收藏/稍后再看的实际操作；v2 升级增加 message_images 并启用增量空间回收；v3 升级只增加 message_text_files，不重复执行完整 VACUUM，保留原消息、模型设置和摘要。展示状态独立于消息，重试不清空面板。未完成消息恢复为 interrupted；插入消息和待开始的独立任务均保留，重开后由用户继续；损坏数据报告错误而非静默覆盖。
 
 ### 6.3 请求
 
@@ -195,14 +202,22 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 
 ### 6.4 图片输入与资源清理
 
-- 复用现有 file_selector 跨平台多选；按文件内容识别 JPEG、PNG、WebP、静态 GIF，并验证可解码。单张图片上限20 MB，保留原图字节，不自动降质；动态图或无效文件明确提示。选择后的草稿提供缩略图、点击放大及移除，允许仅发送图片。
+- Android 优先使用系统或回移植 Photo Picker；不可用时使用 image/* 的 ACTION_GET_CONTENT 选择器，让已安装的相册能够提供图片，不退回 ACTION_OPEN_DOCUMENT。其他平台复用现有 file_selector 多选。按文件内容识别 JPEG、PNG、WebP、静态 GIF，并验证可解码。单张图片上限20 MB，保留原图字节，不自动降质；动态图或无效文件明确提示。
+- 输入框左侧“添加附件”展开“上传图片 / 上传文件”。图片和文本文件共用一行可横向滚动的预览，支持移除、仅附件发送及混合发送。Android 选图只生成应用私有临时副本，读取后释放；异常、取消及 Activity/引擎销毁也清理副本，不删除相册原图。
 - `supports_vision=true` 时，user.content 按顺序投影为 text 与 image_url 数组，图片使用匹配 MIME 的 Base64 data URL；文本消息仍保持原有字符串格式。不支持视觉的模型在发送新图片前提示，保留用户草稿；不能静默丢弃上下文中的图片。
 - 消息 JSON 只存图片 ID、文件名、MIME 和字节数；图片二进制保存在 message_images，并以消息为外键级联关联。消息与图片在同一事务提交，不留独立文件或 Base64 存储副本，也不删除用户原先选择的源文件。
 - 运行中补充、重新生成、编辑后重发和关闭后继续均保留相应图片。压缩时保留识图结果；当前任务的用户图片继续随请求发送，较早任务可由摘要替代，但原始图片仍可在历史中查看。
-- 历史每项显示“约 X KB/MB”，按图片字节、消息/工具记录/搜索文本、展示/撤销记录、摘要等 UTF-8 内容合计，不分摊数据库公共索引及结构开销。占用量读取 BLOB 长度，不把全部图片加载进内存。
+- 历史每项显示“约 X KB/MB”，按图片和文本附件字节、消息/工具记录/搜索文本、展示/撤销记录、摘要等 UTF-8 内容合计，包含排队消息，不分摊数据库公共索引及结构开销。占用量读取 BLOB 长度，不把全部附件加载进内存。
 - 可逐项多选或全选当前搜索结果，删除前显示数量与内容大小；取消保留选择。批量删除用一个事务清理会话及关联资源，启用 secure_delete 并执行 incremental_vacuum 回收磁盘空间。删除当前任务先停止并等待；删除其他历史不会替换正在流式更新的消息。
 
 接口依据：[OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images)、[Flutter file_selector](https://github.com/flutter/packages/blob/main/packages/file_selector/file_selector/README.md)。模型是否真正支持视觉由服务商决定，能力开关不改变服务商的模型能力。
+
+### 6.5 纯文本附件
+
+- 支持 TXT、CSV、JSON、Markdown、XML、YAML、日志和配置等纯文本；选择器提供“所有文件”，允许其他扩展名或无扩展名的文本。按实际字节判断，拒绝二进制、PDF、Office 和富文本文件，不能只改扩展名混入。
+- 单个文件上限20 MB，完整保留原始字节。严格解码 UTF-8（可带 BOM）和带 BOM 的 UTF-16 LE/BE；不支持的编码明确报错，不替换乱码、不截断。预览按需排版长文本，完整原文随用户消息发送，纯文本模型也可读取。
+- 文件元数据存消息 parts，字节存 message_text_files，和消息、图片同事务提交。补充、排队、编辑、重试和重启均保留附件；压缩保留当前任务原文，历史附件始终可预览；删除会话或取消待运行消息时级联清理。
+- 文件名经过 JSON 转义，内容用不与原文冲突的分隔符包裹，并明确标为待分析数据。文件中出现的角色、工具调用或指令不成为额外用户授权。
 
 ## 7. 会话执行与重试
 
@@ -214,7 +229,9 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 
 每轮持有 generation token；停止、切会话或 dispose 使旧 token 失效，同时取消 HTTP 和确认等待。源脚本没有取消 API，停止只能放弃等待，但迟到结果不得更新会话、展示或收藏。同一控制器只允许一轮运行。
 
-运行中发送消息不停止当前任务，使用 user part 的 follow_up_to 指向最初用户请求，并立即以 queued 状态保存。当前操作可结束，未开始的调用以 INPUT_UPDATED 记录“尚未执行”，解除旧确认等待；下一次模型请求纳入补充后再判断操作。即使上一请求已经生成最终正文，只要有补充消息仍继续处理。重启后发送新消息会作为未完成任务的补充继续，已成功的工具回执与部分生成正文保留。
+运行中“插入消息”不停止当前任务，使用 user part 的 follow_up_to 指向最初用户请求，并立即以 queued 状态保存。当前操作可结束，未开始的调用以 INPUT_UPDATED 记录“尚未执行”，解除旧确认等待；下一次模型请求纳入补充后再判断操作。即使上一请求已经生成最终正文，只要有补充消息仍继续处理。重启后直接发送新消息会作为未完成任务的补充继续，已成功的工具回执与部分生成正文保留。
+
+“排队消息”以 pending_task 状态和发送时的模型/思考设置持久化。待运行消息不进入当前上下文、摘要或任务分组，也不解除当前写入确认。当前任务完成所有工具及插入要求后，队首消息在事务中移动到已开始历史末尾，成为新的独立任务；多个任务按 FIFO 在同一个执行生命周期中串行完成。暂停、失败或单独压缩不启动后续任务。关闭重开后保留队列且不自动执行，点击继续优先恢复未完成任务；没有未完成任务时开始队首。取消只删除尚未开始的消息和附件，编辑、重新生成及工具重试不会误删队列。
 
 ### 7.1 上下文压缩
 
@@ -237,7 +254,9 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 
 ## 8. UI 与 Markdown
 
-Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新对话。输入区只有一个主要操作按钮：空闲时发送，运行中草稿有文字或图片时插入消息，没有内容时暂停；输入变化即时切换，并保留仅图片发送。无配置时给出配置入口，无漫画源时指向现有源管理。
+Agent 工具栏提供模型设置、历史、展示、新对话。手机布局沿用外层导航的600逻辑像素断点，把模型和思考深度放到“Agent”标题旁；收起时只有信息展示，点击展开面板后才可分别选择，运行中保持禁用。宽屏保留原下拉选择。顶部桥接仅在设置、选择或运行状态变化时刷新，不随每个输出片段重建。
+
+输入区只有一个主要操作按钮：空闲时发送；运行中草稿有文字、图片或文件时，点击展开“插入消息 / 排队消息”；没有内容时暂停。Ctrl/Cmd+Enter 沿用插入行为。输入提示简化为“输入消息…”，空对话描述移除示例句。队列默认只占一行，显示数量并可展开查看顺序、预览附件或取消；暂停后的继续入口不依赖错误是否存在。无配置时给出配置入口，无漫画源时指向现有源管理。
 
 手机键盘显示时收起底部导航栏，由页面的 Scaffold 处理键盘避让，避免导航栏继续占高导致输入框与键盘之间留白。进入会话默认跟随最新消息；用户拖动、惯性滚动及按住列表期间暂停跟随，只有向最新消息方向上滑并在距底部160逻辑像素以内停下才恢复。向历史方向滑动或停在底部区域以外保持当前位置，流式更新不能抢占；嵌套工具详情滚动不改变消息列表的跟随状态。
 
@@ -251,7 +270,7 @@ Agent 工具栏提供模型设置、模型/思考选择、历史、展示、新�
 
 Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置），不加载 Markdown 外链图片或 HTML WebView；链接仅允许 http/https 并复用站内处理。使用 SelectionArea 包裹非 selectable 的 MarkdownBody，避免每段 SelectableText 的内层滚动争夺触摸手势，保留长按选择、复制和链接点击。流式更新节流，缓存已完成消息。
 
-历史按标题和消息内容搜索，首条用户消息产生默认标题，纯图片消息使用首张图片的文件名。每项显示消息数与占用大小，支持多选和批量删除确认。当前模型和思考选择随会话保存。
+历史按标题和消息内容搜索，首条用户消息产生默认标题，仅附件消息使用首个图片或文件的名称。每项显示消息数与占用大小，支持多选和批量删除确认。当前模型和思考选择随会话保存。
 
 ## 9. 实施与验证
 
@@ -275,6 +294,9 @@ Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置
 - 停止后迟到源响应不能写库，删除撤销不覆盖后来修改。
 - 纯图片/图文/多图片请求格式、视觉能力校验、预览/移除、补充/编辑/重新生成/重启后的图片保留。
 - 图片与消息事务一致性、v2 升级、资源大小统计、批量删除级联和实际磁盘空间回收；搜索全选不会删除未匹配的对话。
+- 普通输入配置与完整密钥粘贴；手机外层顶部信息、展开选择、运行中禁用和宽屏布局。
+- TXT/CSV/JSON、UTF-8/UTF-16 的完整原文，伪装二进制拒绝、混合附件事务、v3 升级和附件生命周期。
+- 任务队列 FIFO、最后时刻插入、多轮工具完成、写确认隔离、暂停/失败/重启、取消、重试和压缩隔离。
 
 没有真实网关密钥时使用本机假 HTTP/假源验证协议和工具闭环，不宣称真实模型与漫画站已完成联调。
 
@@ -308,7 +330,7 @@ Rust 和 Cargo 缓存位于 `D:\.tool\rust-venera`，版本为 rustc/cargo 1.98.
 
 首次使用：进入中间的 **Agent** → **模型设置** → **添加模型**，填写服务商的 API 地址、模型 ID 和密钥。漫画源使用原应用的源管理；Agent 空白页提供入口。删除会话不会回滚收藏操作；删除收藏或稍后再看条目后，可在对应工具卡片中撤销。
 
-识图使用：为支持视觉的模型开启 **模型支持视觉**，点击输入框左侧 **添加图片**，选择图片后可预览、移除，再随消息发送。资源管理位于 **历史对话 → 管理对话**，可按占用大小选择并批量删除。
+附件使用：为支持视觉的模型开启 **模型支持视觉**，点击输入框左侧 **添加附件 → 上传图片**；纯文本文件选择 **上传文件**。附件可预览、移除，再随消息发送。资源管理位于 **历史对话 → 管理对话**，可按占用大小选择并批量删除。
 
 ### 9.2 移动交互与工具契约修复（2026-09-12）
 
@@ -337,6 +359,23 @@ $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 
 ```powershell
 & 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/foundation/read_later.dart test/agent test/read_later_test.dart
+```
+
+### 9.4 附件、任务队列与手机顶部栏（2026-09-12）
+
+- 模型编辑页使用普通输入配置，提供完整 API Key 粘贴；Android 使用 Photo Picker 或可选择相册的图片选择器，并处理临时副本的成功、异常和生命周期释放。
+- 图片/文件共用附件菜单和预览行；纯文本附件持久化为原始字节，完整进入模型请求，支持单独发送、插入、排队、编辑、重试、压缩和重启。
+- 运行中发送菜单区分插入与排队；独立任务按 FIFO 执行，暂停/失败后保留，继续时先恢复当前任务。手机外层标题栏显示模型/思考，展开后选择；输入提示与空页文案已精简。
+- Flutter 3.41.4 / Dart 3.11.1：**186 项相关测试通过**，其中 Agent 179 项、批量通知/稍后再看/收藏输入/主页布局7项；修改范围静态分析和 diff 检查通过。新增覆盖普通输入及密钥粘贴、图片选择通道与副本释放、文本编码和二进制拒绝、v3→v4 迁移、混合附件、队列执行与恢复、顶部栏/队列面板和320宽度布局。
+- 测试使用本地数据、模拟模型/漫画源和模拟 Android MethodChannel。Android 离线构建在原生源码编译前因缺少已用 Gradle 插件 `org.gradle.kotlin.kotlin-dsl:6.2.0` 的缓存而停止，**尚未完成本轮 Android 编译及真机验证**；没有为此安装工具或依赖。本轮未重新构建其他平台发布产物，未使用真实模型密钥或漫画站联调。
+
+复现本轮检查：
+
+```powershell
+& 'D:\.tool\flutter-venera.ps1' analyze --no-pub lib/agent lib/components/navigation_bar.dart lib/pages/main_page.dart lib/foundation/read_later.dart test/agent test/read_later_test.dart
+
+$env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
+& 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart
 ```
 
 ## 10. 后续范围与合并维护

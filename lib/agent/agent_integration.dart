@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
 export 'agent_page.dart';
+export 'agent_model_header.dart';
 
 const agentTabIndex = 2;
 final agentPaneItem = PaneItemEntry(

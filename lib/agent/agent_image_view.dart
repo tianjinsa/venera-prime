@@ -23,7 +23,7 @@ class AgentImageStrip extends StatelessWidget {
       scrollDirection: Axis.horizontal,
       itemCount: images.length,
       separatorBuilder: (_, _) => const SizedBox(width: 8),
-      itemBuilder: (_, index) => _AgentImageTile(
+      itemBuilder: (_, index) => AgentImageTile(
         key: ValueKey('image-${images[index].id}'),
         image: images[index],
         readImage: () => readImage(images[index]),
@@ -33,21 +33,21 @@ class AgentImageStrip extends StatelessWidget {
   );
 }
 
-class _AgentImageTile extends StatefulWidget {
+class AgentImageTile extends StatefulWidget {
   final AgentImageAttachment image;
   final Uint8List? Function() readImage;
   final VoidCallback? onRemove;
-  const _AgentImageTile({
+  const AgentImageTile({
     super.key,
     required this.image,
     required this.readImage,
     this.onRemove,
   });
   @override
-  State<_AgentImageTile> createState() => _AgentImageTileState();
+  State<AgentImageTile> createState() => _AgentImageTileState();
 }
 
-class _AgentImageTileState extends State<_AgentImageTile> {
+class _AgentImageTileState extends State<AgentImageTile> {
   Uint8List? _bytes;
   ImageProvider? _thumbnail;
 

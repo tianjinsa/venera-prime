@@ -22,6 +22,7 @@ class MainPage extends StatefulWidget {
 
 class _MainPageState extends State<MainPage> {
   late final NaviObserver _observer;
+  final _agentModelHeader = AgentModelHeaderBridge();
 
   GlobalKey<NavigatorState>? _navigatorKey;
 
@@ -46,10 +47,19 @@ class _MainPageState extends State<MainPage> {
     super.initState();
   }
 
-  final _pages = [
+  @override
+  void dispose() {
+    _agentModelHeader.dispose();
+    super.dispose();
+  }
+
+  late final _pages = [
     const HomePage(),
     const FavoritesPage(key: PageStorageKey('favorites')),
-    const AgentPage(key: PageStorageKey('agent')),
+    AgentPage(
+      key: const PageStorageKey('agent'),
+      modelHeaderBridge: _agentModelHeader,
+    ),
     const ExplorePage(key: PageStorageKey('explore')),
     const CategoriesPage(key: PageStorageKey('categories')),
   ];
@@ -62,6 +72,9 @@ class _MainPageState extends State<MainPage> {
       initialPage: index,
       observer: _observer,
       navigatorKey: _navigatorKey!,
+      mobileTitleAccessory: index == agentTabIndex
+          ? AgentModelHeader(bridge: _agentModelHeader)
+          : null,
       paneItems: [
         PaneItemEntry(
           label: 'Home'.tl,

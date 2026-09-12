@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import 'package:uuid/uuid.dart';
 
 typedef AgentJson = Map<String, dynamic>;
+
+enum AgentSendMode { insert, queue }
+
 const agentToolLabels = {
   'list_sources': '查看漫画源',
   'list_search_options': '读取搜索选项',
@@ -343,6 +346,42 @@ class AgentImageDraft {
   const AgentImageDraft(this.attachment, this.bytes);
 }
 
+class AgentTextAttachment {
+  final String id;
+  final String name;
+  final String mimeType;
+  final int byteLength;
+  final String encoding;
+  const AgentTextAttachment({
+    required this.id,
+    required this.name,
+    required this.mimeType,
+    required this.byteLength,
+    this.encoding = 'utf-8',
+  });
+  factory AgentTextAttachment.fromJson(AgentJson json) => AgentTextAttachment(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    mimeType: json['mime_type'] as String,
+    byteLength: json['byte_length'] as int,
+    encoding: json['encoding'] as String? ?? 'utf-8',
+  );
+  AgentJson toJson() => {
+    'type': 'file',
+    'id': id,
+    'name': name,
+    'mime_type': mimeType,
+    'byte_length': byteLength,
+    'encoding': encoding,
+  };
+}
+
+class AgentTextDraft {
+  final AgentTextAttachment attachment;
+  final Uint8List bytes;
+  const AgentTextDraft(this.attachment, this.bytes);
+}
+
 String agentFormatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -382,6 +421,10 @@ class AgentMessage {
       .where((p) => p['type'] == 'image')
       .map(AgentImageAttachment.fromJson)
       .toList();
+  List<AgentTextAttachment> get files => parts
+      .where((p) => p['type'] == 'file')
+      .map(AgentTextAttachment.fromJson)
+      .toList();
   String? get followUpTo {
     if (role != 'user') return null;
     for (final part in parts) {
@@ -391,6 +434,11 @@ class AgentMessage {
   }
 
   bool get isFollowUp => followUpTo != null;
+
+  /// A separate future task, never part of the current model context.
+  /// `queued` continues to mean an insertion into the task already running.
+  bool get isPendingTask => role == 'user' && state == 'pending_task';
+
   void appendText(String type, String text) {
     if (text.isEmpty) return;
     if (parts.isNotEmpty && parts.last['type'] == type) {

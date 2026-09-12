@@ -4,21 +4,34 @@ import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/pages/comic_source_page.dart';
+import 'agent_attachment_view.dart';
 import 'agent_controller.dart';
+import 'agent_files.dart';
 import 'agent_history_view.dart';
-import 'agent_image_view.dart';
 import 'agent_images.dart';
 import 'agent_message_view.dart';
+import 'agent_model_header.dart';
 import 'agent_models.dart';
+import 'agent_queue_view.dart';
 import 'agent_settings_page.dart';
 import 'agent_showcase_view.dart';
 import 'agent_store.dart';
 import 'agent_turn_view.dart';
 
+enum _AgentAttachmentType { images, files }
+
 class AgentPage extends StatefulWidget {
   final AgentController? controller;
   final Future<List<AgentImageDraft>> Function()? imagePicker;
-  const AgentPage({super.key, this.controller, this.imagePicker});
+  final Future<List<AgentTextDraft>> Function()? filePicker;
+  final AgentModelHeaderBridge? modelHeaderBridge;
+  const AgentPage({
+    super.key,
+    this.controller,
+    this.imagePicker,
+    this.filePicker,
+    this.modelHeaderBridge,
+  });
   @override
   State<AgentPage> createState() => _AgentPageState();
 }
@@ -28,8 +41,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   String? _loadError;
   final _draft = TextEditingController();
   final _draftImages = <AgentImageDraft>[];
+  final _draftFiles = <AgentTextDraft>[];
   String? _draftConversation;
-  bool _pickingImages = false;
+  bool _pickingAttachments = false;
   final _historySearch = TextEditingController();
   final _scroll = ScrollController();
   static const _followThreshold = 160.0;
@@ -64,6 +78,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         _controller = controller;
         _loadError = null;
       });
+      widget.modelHeaderBridge?.bind(controller);
       _onUpdate();
     } catch (_) {
       if (mounted) {
@@ -81,6 +96,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _draftConversation = conversationId;
       _draft.clear();
       _draftImages.clear();
+      _draftFiles.clear();
       _focusedGroup = null;
       _followOutput = true;
       _userScrolling = false;
@@ -165,8 +181,20 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   @override
+  void didUpdateWidget(covariant AgentPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final controller = _controller;
+    if (controller != null &&
+        oldWidget.modelHeaderBridge != widget.modelHeaderBridge) {
+      oldWidget.modelHeaderBridge?.unbind(controller);
+      widget.modelHeaderBridge?.bind(controller);
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_controller != null) widget.modelHeaderBridge?.unbind(_controller!);
     _controller?.removeListener(_onUpdate);
     _controller?.dispose();
     _draft.dispose();
@@ -205,11 +233,13 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     if (mounted) controller.reload();
   }
 
-  Future<void> _send() async {
+  Future<void> _send({AgentSendMode mode = AgentSendMode.insert}) async {
     final controller = _controller!;
     if (controller.isStopping ||
-        _pickingImages ||
-        _draft.text.trim().isEmpty && _draftImages.isEmpty) {
+        _pickingAttachments ||
+        _draft.text.trim().isEmpty &&
+            _draftImages.isEmpty &&
+            _draftFiles.isEmpty) {
       return;
     }
     if (controller.model == null) {
@@ -218,19 +248,22 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
     final text = _draft.text;
     final images = _draftImages.toList();
+    final files = _draftFiles.toList();
     final conversationId = controller.conversation.id;
     setState(() {
       _draft.clear();
       _draftImages.clear();
+      _draftFiles.clear();
     });
     try {
-      await controller.send(text, images: images);
+      await controller.send(text, images: images, files: files, mode: mode);
     } catch (e) {
       if (mounted) {
         if (controller.conversation.id == conversationId) {
           setState(() {
             _draft.text = _draft.text.isEmpty ? text : '$text\n${_draft.text}';
             _draftImages.insertAll(0, images);
+            _draftFiles.insertAll(0, files);
           });
         }
         _error(e);
@@ -238,19 +271,27 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _pickImages() async {
-    if (_pickingImages) return;
+  Future<void> _pickAttachments(_AgentAttachmentType type) async {
+    if (_pickingAttachments || _controller!.isStopping) return;
     final conversationId = _controller!.conversation.id;
-    setState(() => _pickingImages = true);
+    setState(() => _pickingAttachments = true);
     try {
-      final images = await (widget.imagePicker ?? pickAgentImages)();
-      if (mounted && _controller!.conversation.id == conversationId) {
-        setState(() => _draftImages.addAll(images));
+      switch (type) {
+        case _AgentAttachmentType.images:
+          final images = await (widget.imagePicker ?? pickAgentImages)();
+          if (mounted && _controller!.conversation.id == conversationId) {
+            setState(() => _draftImages.addAll(images));
+          }
+        case _AgentAttachmentType.files:
+          final files = await (widget.filePicker ?? pickAgentTextFiles)();
+          if (mounted && _controller!.conversation.id == conversationId) {
+            setState(() => _draftFiles.addAll(files));
+          }
       }
     } catch (e) {
       _error(e);
     } finally {
-      if (mounted) setState(() => _pickingImages = false);
+      if (mounted) setState(() => _pickingAttachments = false);
     }
   }
 
@@ -306,7 +347,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               : '删除 ${conversations.length} 段对话？',
         ),
         content: Text(
-          '将一并删除图片、文字、工具运行记录和展示记录，内容约 ${agentFormatBytes(bytes)}。\n\n已经加入收藏和稍后再看的漫画不受影响。',
+          '将一并删除图片、文件、文字、工具运行记录和展示记录，内容约 ${agentFormatBytes(bytes)}。\n\n已经加入收藏和稍后再看的漫画不受影响。',
         ),
         actions: [
           TextButton(
@@ -497,7 +538,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             ],
           ),
         ),
-        if (model != null)
+        if (model != null &&
+            !(widget.modelHeaderBridge != null &&
+                agentUsesMobileModelHeader(context)))
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Row(
@@ -596,6 +639,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                                         message.conversationId,
                                         image.id,
                                       ),
+                                  fileLoader: (message, file) =>
+                                      controller.store.textFileBytes(
+                                        message.conversationId,
+                                        file.id,
+                                      ),
                                   onEdit: () async {
                                     final text = await _editText(
                                       '编辑后重发（替换后续回复）',
@@ -627,6 +675,11 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                                     controller.store.imageBytes(
                                       message.conversationId,
                                       image.id,
+                                    ),
+                                fileLoader: (message, file) =>
+                                    controller.store.textFileBytes(
+                                      message.conversationId,
+                                      file.id,
                                     ),
                                 running: current && controller.busy,
                                 interrupted:
@@ -687,11 +740,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                 Wrap(
                   spacing: 8,
                   children: [
-                    TextButton.icon(
-                      onPressed: () => _act(controller.resume),
-                      icon: const Icon(Icons.play_arrow, size: 16),
-                      label: const Text('继续'),
-                    ),
+                    if (controller.pendingMessages.isEmpty)
+                      TextButton.icon(
+                        onPressed: () => _act(controller.resume),
+                        icon: const Icon(Icons.play_arrow, size: 16),
+                        label: const Text('继续'),
+                      ),
                     PopupMenuButton<String>(
                       tooltip: '重试回复',
                       onSelected: (value) => _act(
@@ -716,6 +770,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               ],
             ),
           ),
+        AgentQueueStatus(
+          controller: controller,
+          onResume: () => _act(controller.resume),
+          onCancel: (id) =>
+              _act(() async => controller.cancelQueuedMessage(id)),
+        ),
         if (model != null) _contextStatus(),
         _composer(),
       ],
@@ -741,9 +801,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 12),
           Text(
-            noModel
-                ? '配置模型后，即可通过对话搜索漫画、整理收藏和稍后再看。'
-                : '告诉我漫画名称或源 ID，以及你想进行的操作。\n例如：在 jm 搜索指定漫画，并加入稍后再看。',
+            noModel ? '配置模型后，即可通过对话搜索漫画、整理收藏和稍后再看。' : '告诉我漫画名称或源 ID，以及你想进行的操作。',
             textAlign: TextAlign.center,
           ),
           if (noModel) ...[
@@ -846,18 +904,27 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (_draftImages.isNotEmpty) ...[
-                AgentImageStrip(
-                  key: const ValueKey('agent-draft-images'),
+              if (_draftImages.isNotEmpty || _draftFiles.isNotEmpty) ...[
+                AgentAttachmentStrip(
+                  key: const ValueKey('agent-draft-attachments'),
                   images: _draftImages
                       .map((image) => image.attachment)
                       .toList(),
+                  files: _draftFiles.map((file) => file.attachment).toList(),
                   readImage: (image) => _draftImages
                       .firstWhere((draft) => draft.attachment.id == image.id)
                       .bytes,
-                  onRemove: (image) => setState(
+                  readFile: (file) => _draftFiles
+                      .firstWhere((draft) => draft.attachment.id == file.id)
+                      .bytes,
+                  onRemoveImage: (image) => setState(
                     () => _draftImages.removeWhere(
                       (draft) => draft.attachment.id == image.id,
+                    ),
+                  ),
+                  onRemoveFile: (file) => setState(
+                    () => _draftFiles.removeWhere(
+                      (draft) => draft.attachment.id == file.id,
                     ),
                   ),
                 ),
@@ -866,22 +933,38 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  IconButton(
-                    key: const ValueKey('agent-attach-image'),
-                    tooltip: '添加图片',
-                    onPressed: _pickingImages || controller.isStopping
-                        ? null
-                        : _pickImages,
-                    icon: _pickingImages
+                  PopupMenuButton<_AgentAttachmentType>(
+                    key: const ValueKey('agent-attach'),
+                    tooltip: '添加附件',
+                    enabled: !_pickingAttachments && !controller.isStopping,
+                    onSelected: _pickAttachments,
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        key: ValueKey('agent-upload-images'),
+                        value: _AgentAttachmentType.images,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.photo_library_outlined),
+                          title: Text('上传图片'),
+                        ),
+                      ),
+                      PopupMenuItem(
+                        key: ValueKey('agent-upload-files'),
+                        value: _AgentAttachmentType.files,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(Icons.description_outlined),
+                          title: Text('上传文件'),
+                        ),
+                      ),
+                    ],
+                    icon: _pickingAttachments
                         ? const SizedBox(
                             width: 18,
                             height: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Icon(
-                            Icons.add_photo_alternate_outlined,
-                            size: 22,
-                          ),
+                        : const Icon(Icons.attach_file, size: 22),
                   ),
                   Expanded(
                     child: TextField(
@@ -891,7 +974,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
                       decoration: InputDecoration(
-                        hintText: controller.busy ? '补充要求，当前操作结束后处理…' : '输入消息…',
+                        hintText: '输入消息…',
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(16),
                         ),
@@ -905,20 +988,54 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                     builder: (context, value, _) {
                       final hasContent =
                           value.text.trim().isNotEmpty ||
-                          _draftImages.isNotEmpty;
+                          _draftImages.isNotEmpty ||
+                          _draftFiles.isNotEmpty;
                       final pause = controller.busy && !hasContent;
+                      if (controller.busy && hasContent) {
+                        final scheme = Theme.of(context).colorScheme;
+                        return PopupMenuButton<AgentSendMode>(
+                          key: const ValueKey('agent-send'),
+                          tooltip: '选择发送方式',
+                          enabled:
+                              !controller.isStopping && !_pickingAttachments,
+                          onSelected: (mode) => _send(mode: mode),
+                          style: IconButton.styleFrom(
+                            backgroundColor: scheme.primary,
+                            foregroundColor: scheme.onPrimary,
+                          ),
+                          icon: const Icon(Icons.arrow_upward, size: 20),
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              key: ValueKey('agent-send-insert'),
+                              value: AgentSendMode.insert,
+                              child: ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(Icons.input_rounded),
+                                title: Text('插入消息'),
+                                subtitle: Text('随下一次请求处理'),
+                              ),
+                            ),
+                            PopupMenuItem(
+                              key: ValueKey('agent-send-queue'),
+                              value: AgentSendMode.queue,
+                              child: ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: Icon(Icons.playlist_add_rounded),
+                                title: Text('排队消息'),
+                                subtitle: Text('当前任务完成后处理'),
+                              ),
+                            ),
+                          ],
+                        );
+                      }
                       return IconButton.filled(
                         key: ValueKey(pause ? 'agent-stop' : 'agent-send'),
-                        tooltip: pause
-                            ? '暂停'
-                            : controller.busy
-                            ? '插入消息（Ctrl+Enter）'
-                            : '发送（Ctrl+Enter）',
+                        tooltip: pause ? '暂停' : '发送（Ctrl+Enter）',
                         onPressed: controller.isStopping
                             ? null
                             : pause
                             ? controller.stop
-                            : _pickingImages || !hasContent
+                            : _pickingAttachments || !hasContent
                             ? null
                             : _send,
                         icon: Icon(

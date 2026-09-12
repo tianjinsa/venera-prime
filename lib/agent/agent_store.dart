@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/utils/atomic_file.dart';
+import 'agent_files.dart';
 import 'agent_models.dart';
 import 'agent_context.dart';
 
@@ -56,7 +57,7 @@ class AgentStore {
     _db.execute('PRAGMA busy_timeout = 3000;');
     final version =
         _db.select('PRAGMA user_version;').first.values.first as int;
-    if (version > 3) {
+    if (version > 4) {
       throw const FormatException('Agent 数据来自更新版本，请更新应用后再打开');
     }
     if (version < 3) {
@@ -85,6 +86,11 @@ class AgentStore {
         PRIMARY KEY (conversation, source_key, comic_id)
       );
       CREATE TABLE IF NOT EXISTS message_images (
+        id TEXT PRIMARY KEY,
+        message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        content BLOB NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS message_text_files (
         id TEXT PRIMARY KEY,
         message TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
         content BLOB NOT NULL
@@ -118,6 +124,7 @@ class AgentStore {
       );
       CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation, seq);
       CREATE INDEX IF NOT EXISTS message_images_message ON message_images(message);
+      CREATE INDEX IF NOT EXISTS message_text_files_message ON message_text_files(message);
       CREATE INDEX IF NOT EXISTS showcases_conversation ON showcases(conversation, created_at);
     ''');
     _db.execute(
@@ -149,7 +156,7 @@ class AgentStore {
       }
     }
     if (version < 2) _backfillOperationShowcases();
-    _db.execute('PRAGMA user_version = 3;');
+    _db.execute('PRAGMA user_version = 4;');
     _db.execute('PRAGMA incremental_vacuum;');
   }
 
@@ -283,6 +290,8 @@ class AgentStore {
           FROM messages m WHERE m.conversation=c.id), 0) +
         coalesce((SELECT sum(length(i.content)) FROM message_images i
           JOIN messages m ON m.id=i.message WHERE m.conversation=c.id), 0) +
+        coalesce((SELECT sum(length(f.content)) FROM message_text_files f
+          JOIN messages m ON m.id=f.message WHERE m.conversation=c.id), 0) +
         coalesce((SELECT sum(length(CAST(brief AS BLOB))) FROM comic_seen
           WHERE conversation=c.id), 0) +
         coalesce((SELECT sum(length(CAST(title AS BLOB)) + length(CAST(note AS BLOB)))
@@ -337,23 +346,63 @@ class AgentStore {
     _db.execute('PRAGMA incremental_vacuum;');
   }
 
-  /// Metadata, text and image bytes are committed together; no loose files or
-  /// Base64 copies remain outside the owning message's cascade.
+  /// Compatibility entry point for callers that only attach images.
   void saveMessageWithImages(
     AgentMessage message,
     List<AgentImageDraft> images,
-  ) {
+  ) => saveMessageWithAttachments(message, images: images);
+
+  /// Metadata, text and all attachment bytes commit in one transaction.
+  /// Each attachment belongs to one message and follows its deletion cascade.
+  void saveMessageWithAttachments(
+    AgentMessage message, {
+    List<AgentImageDraft> images = const [],
+    List<AgentTextDraft> files = const [],
+  }) {
     _db.execute('BEGIN;');
     try {
+      final existing = _db.select(
+        'SELECT conversation FROM messages WHERE id=?;',
+        [message.id],
+      );
+      if (existing.isNotEmpty &&
+          existing.single['conversation'] != message.conversationId) {
+        throw const AgentException('INVALID_ATTACHMENT', '不能更改附件所属的对话');
+      }
+      if (message.images.length != images.length) {
+        throw const AgentException('INVALID_IMAGE', '图片附件信息不完整');
+      }
+      if (message.files.length != files.length) {
+        throw const AgentException('INVALID_TEXT_FILE', '文本附件信息不完整');
+      }
       saveMessage(message);
       for (final image in images) {
-        if (!message.images.any((part) => part.id == image.attachment.id) ||
+        if (!message.images.any(
+              (part) =>
+                  jsonEncode(part.toJson()) ==
+                  jsonEncode(image.attachment.toJson()),
+            ) ||
             image.bytes.length != image.attachment.byteLength) {
           throw const AgentException('INVALID_IMAGE', '图片附件信息不完整');
         }
         _db.execute(
           'INSERT INTO message_images(id,message,content) VALUES (?,?,?);',
           [image.attachment.id, message.id, image.bytes],
+        );
+      }
+      for (final file in files) {
+        if (!message.files.any(
+              (part) =>
+                  jsonEncode(part.toJson()) ==
+                  jsonEncode(file.attachment.toJson()),
+            ) ||
+            file.bytes.length != file.attachment.byteLength) {
+          throw const AgentException('INVALID_TEXT_FILE', '文本附件信息不完整');
+        }
+        decodeAgentTextFile(file.bytes, encoding: file.attachment.encoding);
+        _db.execute(
+          'INSERT INTO message_text_files(id,message,content) VALUES (?,?,?);',
+          [file.attachment.id, message.id, file.bytes],
         );
       }
       _db.execute('COMMIT;');
@@ -394,6 +443,49 @@ class AgentStore {
     return 'data:${image.mimeType};base64,${base64Encode(bytes)}';
   }
 
+  Uint8List? textFileBytes(String conversationId, String fileId) {
+    final rows = _db.select(
+      '''
+      SELECT f.content FROM message_text_files f JOIN messages m ON m.id=f.message
+      WHERE f.id=? AND m.conversation=?;
+    ''',
+      [fileId, conversationId],
+    );
+    return rows.isEmpty ? null : rows.single['content'] as Uint8List;
+  }
+
+  Uint8List _messageTextFileBytes(
+    AgentMessage message,
+    AgentTextAttachment file,
+  ) {
+    final rows = _db.select(
+      '''
+      SELECT f.content FROM message_text_files f JOIN messages m ON m.id=f.message
+      WHERE f.id=? AND m.conversation=? AND m.id=?;
+    ''',
+      [file.id, message.conversationId, message.id],
+    );
+    if (rows.isEmpty) {
+      throw AgentException('FILE_MISSING', '文件“${file.name}”无法读取，请重新添加');
+    }
+    final bytes = rows.single['content'] as Uint8List;
+    if (bytes.length != file.byteLength) {
+      throw AgentException('INVALID_TEXT_FILE', '文件“${file.name}”信息不完整，请重新添加');
+    }
+    return bytes;
+  }
+
+  List<AgentTextDraft> messageTextFiles(AgentMessage message) => [
+    for (final file in message.files)
+      AgentTextDraft(file, _messageTextFileBytes(message, file)),
+  ];
+
+  String textFileContent(AgentMessage message, AgentTextAttachment file) =>
+      decodeAgentTextFile(
+        _messageTextFileBytes(message, file),
+        encoding: file.encoding,
+      );
+
   void saveMessage(AgentMessage message) {
     _db.execute(
       '''
@@ -422,38 +514,95 @@ class AgentStore {
     ]);
   }
 
+  AgentMessage _readMessage(Row row) => AgentMessage(
+    id: row['id'] as String,
+    conversationId: row['conversation'] as String,
+    role: row['role'] as String,
+    parts: (jsonDecode(row['parts'] as String) as List)
+        .map(agentObject)
+        .toList(),
+    modelId: row['model_id'] as String?,
+    thinkingId: row['thinking_id'] as String?,
+    state: row['state'] as String,
+    error: row['error'] as String?,
+    createdAt: row['created_at'] as int,
+  );
+
   List<AgentMessage> messages(String conversationId) => _db
-      .select('SELECT * FROM messages WHERE conversation=? ORDER BY seq;', [
-        conversationId,
-      ])
-      .map(
-        (row) => AgentMessage(
-          id: row['id'] as String,
-          conversationId: conversationId,
-          role: row['role'] as String,
-          parts: (jsonDecode(row['parts'] as String) as List)
-              .map(agentObject)
-              .toList(),
-          modelId: row['model_id'] as String?,
-          thinkingId: row['thinking_id'] as String?,
-          state: row['state'] as String,
-          error: row['error'] as String?,
-          createdAt: row['created_at'] as int,
-        ),
+      .select(
+        '''SELECT * FROM messages WHERE conversation=?
+        AND NOT (role='user' AND state='pending_task') ORDER BY seq;''',
+        [conversationId],
       )
+      .map(_readMessage)
       .toList();
+
+  List<AgentMessage> pendingMessages(String conversationId) => _db
+      .select(
+        '''SELECT * FROM messages WHERE conversation=?
+        AND role='user' AND state='pending_task' ORDER BY seq;''',
+        [conversationId],
+      )
+      .map(_readMessage)
+      .toList();
+
+  /// Start exactly one future task, after every already-started message.
+  /// Updating the sequence leaves the ID and attachment ownership unchanged.
+  AgentMessage? activateNextQueuedMessage(String conversationId) {
+    _db.execute('BEGIN;');
+    try {
+      final rows = _db.select(
+        '''SELECT * FROM messages WHERE conversation=?
+        AND role='user' AND state='pending_task' ORDER BY seq LIMIT 1;''',
+        [conversationId],
+      );
+      if (rows.isEmpty) {
+        _db.execute('COMMIT;');
+        return null;
+      }
+      final message = _readMessage(rows.single)..state = 'done';
+      _db.execute(
+        '''UPDATE messages SET
+          seq=(SELECT coalesce(max(seq),0)+1 FROM messages), state='done'
+        WHERE id=?;''',
+        [message.id],
+      );
+      _db.execute(
+        '''UPDATE conversations SET model_id=?,thinking_id=?,updated_at=?
+        WHERE id=?;''',
+        [message.modelId, message.thinkingId, agentNow(), conversationId],
+      );
+      _db.execute('COMMIT;');
+      return message;
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
+  /// The state guard prevents an old UI action from deleting a started task.
+  void cancelQueuedMessage(String conversationId, String id) {
+    _db.execute(
+      '''DELETE FROM messages WHERE id=? AND conversation=?
+      AND role='user' AND state='pending_task';''',
+      [id, conversationId],
+    );
+    _db.execute('PRAGMA incremental_vacuum;');
+  }
 
   void truncateFrom(
     AgentMessage message, {
     bool include = true,
     bool preserveUserMessages = false,
   }) {
+    if (message.isPendingTask) return;
     invalidateContextFrom(message, include: include);
     final comparison = include ? '>=' : '>';
     _db.execute(
       '''
       DELETE FROM messages WHERE conversation=? AND seq $comparison
         (SELECT seq FROM messages WHERE id=? AND conversation=?)
+        AND NOT (role='user' AND state='pending_task')
         ${preserveUserMessages ? "AND role!='user'" : ''};
     ''',
       [message.conversationId, message.id, message.conversationId],
@@ -502,6 +651,7 @@ class AgentStore {
 
   /// An edited/retried message must not survive as stale facts in a summary.
   void invalidateContextFrom(AgentMessage message, {bool include = true}) {
+    if (message.isPendingTask) return;
     final comparison = include ? '>=' : '>';
     _db.execute(
       '''
