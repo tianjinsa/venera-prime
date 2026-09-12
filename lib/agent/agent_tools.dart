@@ -28,7 +28,6 @@ class AgentTools {
   final Future<void> Function() initializeSources;
   final List<ComicSource> Function() sources;
   final Duration sourceTimeout;
-  final _cursors = <String, Set<String>>{};
   final _remainders = <String, _SearchRemainder>{};
 
   AgentTools(
@@ -70,7 +69,7 @@ class AgentTools {
       ],
     },
     'description':
-        '使用工具返回、本地已有或用户明确提供的源/漫画ID。添加和移除可直接调用，工具自动检查状态并在需要时取得元数据，不需要先查询详情或检查存在性',
+        '提供 source_key 和 comic_id，支持文本或图片识别出的ID。工具自行读取本地资料或请求源详情，无需先搜索、解析或检查存在性；逐项返回失败原因',
   };
   static AgentJson _schema(
     String name,
@@ -91,7 +90,7 @@ class AgentTools {
     },
   };
   static final schemas = <AgentJson>[
-    _schema('list_sources', '查看已安装源及其能力；先确认源再操作', {}),
+    _schema('list_sources', '查看已安装源及其能力；源不明确时使用', {}),
     _schema(
       'list_search_options',
       '查询单源的搜索选项与默认值',
@@ -100,7 +99,7 @@ class AgentTools {
     ),
     _schema(
       'search_source',
-      '在一个源搜索。分页源用 page，游标源原样回传 next_cursor；continuation 读取本页剩余条目',
+      '直接搜索单个源，无需先查询源或选项；省略 options 使用默认值。分页源用 page，游标源传 cursor；continuation 读取本页缓存余量',
       {
         'source_key': _string,
         'keyword': _string,
@@ -113,7 +112,7 @@ class AgentTools {
     ),
     _schema(
       'comic_open_by_id',
-      '用户给出的原始 id 直达；需匹配源 id_matcher',
+      '按源和原始 comic_id 直接获取详情及状态，无需先搜索或解析',
       {
         'source_key': _string,
         'comic_id': _string,
@@ -123,19 +122,19 @@ class AgentTools {
     ),
     _schema(
       'comic_resolve',
-      '将用户给出的名称、源 id 或站内 URL 解析成真实候选；不明确的源应询问用户',
+      '将名称、源 id 或站内 URL 解析成候选，可使用图片识别出的内容；不明确的源应询问用户',
       {'query': _string, 'source_key': _string, 'limit': _integer},
       ['query'],
     ),
     _schema(
       'comic_get',
-      '获取已见漫画的详情，不包含漫画内页或逐页缩略图',
+      '按 source_key 和 comic_id 直接获取详情，无需先搜索或解析；不包含漫画内页或逐页缩略图',
       {'source_key': _string, 'comic_id': _string},
       ['source_key', 'comic_id'],
     ),
     _schema(
       'showcase_comics',
-      '把真实漫画放入用户的独立展示栏，最多30本；涉及具体漫画时必须调用',
+      '把漫画放入独立展示栏，最多30本；自动取得必要元数据，无需先搜索或查询详情，逐项返回无法展示的原因',
       {
         'comics': {..._comics, 'maxItems': 30},
         'title': _string,
@@ -185,13 +184,13 @@ class AgentTools {
     ),
     _schema(
       'fav_move',
-      '批量移动本地收藏；目标已有则跳过并保留源',
+      '直接批量移动本地收藏，无需先列出或检查漫画；目标已有则跳过并保留源，未在原收藏夹的条目逐项返回',
       {'from_folder': _string, 'to_folder': _string, 'comics': _comics},
       ['from_folder', 'to_folder', 'comics'],
     ),
     _schema(
       'fav_create_folder',
-      '创建本地收藏夹；不允许删除文件夹',
+      '直接创建本地收藏夹，无需先检查名称；同名已存在则返回已有收藏夹，不重复创建',
       {'name': _string},
       ['name'],
     ),
@@ -338,10 +337,12 @@ class AgentTools {
       if (properties.containsKey('comics')) {
         _refs(args, maximum: name == 'showcase_comics' ? 30 : 50);
       }
-      if (name.startsWith('fav_') ||
-          name.startsWith('later_') ||
-          name == 'comic_open_by_id') {
+      final needsStatus =
+          name == 'comic_open_by_id' && args['include_status'] != false;
+      if (name.startsWith('fav_') || needsStatus) {
         await context.run.wait(favorites.init());
+      }
+      if (name.startsWith('later_') || needsStatus) {
         await context.run.wait(later.init());
       }
       final data = await _dispatch(name, args, context);
@@ -386,12 +387,6 @@ class AgentTools {
         final source = await _source(_text(a, 'source_key'), c);
         final id = _text(a, 'comic_id');
         final cached = store.seen(c.conversationId, source.key, id);
-        if (cached == null && !_directUserId(source, id, c)) {
-          throw const AgentException(
-            'ID_NOT_DIRECT',
-            '请先搜索取得真实漫画引用，或提供源支持的原始id',
-          );
-        }
         if (a.containsKey('include_status') && a['include_status'] is! bool) {
           throw const AgentException(
             'INVALID_ARGUMENT',
@@ -444,10 +439,14 @@ class AgentTools {
         final folder = _text(a, 'name').trim();
         _validateFolderName(folder);
         if (favorites.existsFolder(folder)) {
-          throw const AgentException('FOLDER_EXISTS', '收藏夹已经存在');
+          return {
+            'name': folder,
+            'status': 'skipped',
+            'reason': 'ALREADY_EXISTS',
+          };
         }
         c.run.check();
-        return {'name': favorites.createFolder(folder)};
+        return {'name': favorites.createFolder(folder), 'status': 'created'};
       default:
         return _write(name, a, c);
     }
@@ -472,22 +471,8 @@ class AgentTools {
     for (final source in sources()) {
       if (source.key == key) return source;
     }
-    throw AgentException('SOURCE_NOT_FOUND', '漫画源 $key 未安装，请先查看源列表');
+    throw AgentException('SOURCE_NOT_FOUND', '漫画源 $key 未安装或不可用');
   }
-
-  bool _userProvided(String input, AgentToolContext c) {
-    final pattern = RegExp(
-      '(?<![a-zA-Z0-9])${RegExp.escape(input)}(?![a-zA-Z0-9])',
-    );
-    return store
-        .messages(c.conversationId)
-        .any(
-          (message) => message.role == 'user' && pattern.hasMatch(message.text),
-        );
-  }
-
-  bool _directUserId(ComicSource source, String id, AgentToolContext c) =>
-      source.idMatcher?.hasMatch(id) == true && _userProvided(id, c);
 
   Future<ComicDetails> _details(
     ComicSource source,
@@ -497,16 +482,22 @@ class AgentTools {
     c.run.check();
     final loader = source.loadComicInfo;
     if (loader == null) {
-      throw const AgentException('NOT_FOUND', '该源不提供漫画详情');
+      throw const AgentException('NO_DETAIL_SUPPORT', '该源不提供漫画详情');
     }
-    final result = await c.run.wait(loader(id), timeout: sourceTimeout);
-    if (result.error) {
-      throw AgentException(
-        'NOT_FOUND',
-        '源未返回漫画详情：${result.errorMessage ?? ''}',
-      );
+    try {
+      final result = await c.run.wait(loader(id), timeout: sourceTimeout);
+      if (result.error || result.dataOrNull == null) {
+        throw AgentException(
+          'NOT_FOUND',
+          '源未返回漫画详情：${result.errorMessage ?? '详情为空'}',
+        );
+      }
+      return result.data;
+    } on AgentException {
+      rethrow;
+    } catch (error) {
+      throw AgentException('SOURCE_REQUEST_FAILED', '请求漫画详情失败：$error');
     }
-    return result.data;
   }
 
   AgentComic _rememberDetails(
@@ -600,51 +591,55 @@ class AgentTools {
     AgentToolContext c, {
     int pageSize = 20,
   }) async {
-    final source = await _source(_text(a, 'source_key'), c);
+    final sourceKey = _text(a, 'source_key');
     final keyword = _text(a, 'keyword');
-    final search = source.searchPageData;
-    if (search == null ||
-        (search.loadPage == null && search.loadNext == null)) {
-      throw const AgentException('NO_SEARCH_SUPPORT', '该源不支持搜索');
-    }
-    final definitions = search.searchOptions ?? [];
     final rawOptions = a['options'];
     if (rawOptions != null &&
         (rawOptions is! List || rawOptions.any((v) => v is! String))) {
       throw const AgentException('INVALID_ARGUMENT', 'options 需要字符串数组');
     }
-    final options = rawOptions == null
-        ? definitions.map((d) => d.defaultValue).toList()
-        : List<String>.from(rawOptions as List);
-    if (options.length != definitions.length) {
-      throw const AgentException(
-        'SEARCH_OPTION_MISMATCH',
-        '请按 list_search_options 返回的定义提供选项',
-      );
-    }
-    final key = jsonEncode([c.conversationId, source.key, keyword, options]);
     final continuation = a['continuation'];
     if (continuation != null) {
       final rest = _remainders[continuation];
+      final key = rest == null
+          ? null
+          : jsonEncode([
+              c.conversationId,
+              sourceKey,
+              keyword,
+              rawOptions ?? (jsonDecode(rest.queryKey) as List)[3],
+            ]);
       if (rest == null || rest.queryKey != key) {
         throw const AgentException('INVALID_CURSOR', '本页续读标记已失效，请重新搜索');
       }
       _remainders.remove(continuation);
       return _searchSlice(rest, size: pageSize);
     }
+    final source = await _source(sourceKey, c);
+    final search = source.searchPageData;
+    if (search == null ||
+        (search.loadPage == null && search.loadNext == null)) {
+      throw const AgentException('NO_SEARCH_SUPPORT', '该源不支持搜索');
+    }
+    final definitions = search.searchOptions ?? [];
+    final options = rawOptions == null
+        ? definitions.map((d) => d.defaultValue).toList()
+        : List<String>.from(rawOptions as List);
+    if (options.length != definitions.length) {
+      throw AgentException(
+        'SEARCH_OPTION_MISMATCH',
+        'options 需要 ${definitions.length} 项；省略 options 则自动使用默认值',
+      );
+    }
+    final key = jsonEncode([c.conversationId, source.key, keyword, options]);
     final page = _number(a, 'page', 1, 10000);
     final cursor = a['cursor'];
     if (cursor != null && cursor is! String) {
-      throw const AgentException('INVALID_CURSOR', 'cursor 必须是原样返回的字符串');
+      throw const AgentException('INVALID_CURSOR', 'cursor 必须是字符串');
     }
     final isCursor = search.loadPage == null;
     if (isCursor && page != 1 || !isCursor && cursor != null) {
       throw const AgentException('INVALID_ARGUMENT', '该源的页码/游标参数不匹配');
-    }
-    if (isCursor &&
-        cursor != null &&
-        !(_cursors[key]?.contains(cursor) ?? false)) {
-      throw const AgentException('INVALID_CURSOR', '请使用同一查询返回的 next_cursor');
     }
     c.run.check();
     final result = await c.run.wait(
@@ -673,10 +668,6 @@ class AgentTools {
             (result.subData as String).isNotEmpty
         ? result.subData as String
         : null;
-    if (next != null) {
-      if (_cursors.length >= 64) _cursors.remove(_cursors.keys.first);
-      (_cursors[key] ??= {}).add(next);
-    }
     return _searchSlice(
       _SearchRemainder(key, items, {
         'style': isCursor ? 'cursor' : 'page',
@@ -719,10 +710,13 @@ class AgentTools {
   Future<AgentJson> _resolve(AgentJson a, AgentToolContext c) async {
     final query = _text(a, 'query');
     final limit = _number(a, 'limit', 5, 20);
-    await c.run.wait(initializeSources());
-    final available = a.containsKey('source_key')
-        ? [await _source(_text(a, 'source_key'), c)]
-        : sources();
+    final List<ComicSource> available;
+    if (a.containsKey('source_key')) {
+      available = [await _source(_text(a, 'source_key'), c)];
+    } else {
+      await c.run.wait(initializeSources());
+      available = sources();
+    }
     if (available.isEmpty) {
       throw const AgentException('SOURCE_NOT_FOUND', '尚未安装漫画源，请在应用中配置漫画源');
     }
@@ -756,9 +750,6 @@ class AgentTools {
     }
     if (direct.isNotEmpty) {
       final source = direct.single;
-      if (!_userProvided(query, c)) {
-        throw const AgentException('HALLUCINATED_REF', '直达输入必须来自用户；请先搜索');
-      }
       final id = linkSources.isNotEmpty
           ? source.linkHandler!.linkToId(query)
           : query;
@@ -781,7 +772,7 @@ class AgentTools {
     return {...result, 'resolved_by': 'search', 'candidates': candidates};
   }
 
-  AgentJson _showcase(AgentJson a, AgentToolContext c) {
+  Future<AgentJson> _showcase(AgentJson a, AgentToolContext c) async {
     final mode = a['mode'] ?? 'append';
     if (!['append', 'replace'].contains(mode)) {
       throw const AgentException(
@@ -791,34 +782,83 @@ class AgentTools {
     }
     final title = a.containsKey('title') ? _text(a, 'title') : '为你找到的漫画';
     final note = a.containsKey('note') ? _text(a, 'note') : '';
+    final refs = _refs(
+      a,
+      maximum: 30,
+    ).map((ref) => _canonicalRef(ref, c)).toList();
+    final prepared = <int, AgentComic>{};
+    final failures = <int, AgentJson>{};
+    final requested = <(String, String)>{};
+    for (var offset = 0; offset < refs.length; offset += 4) {
+      final jobs = <Future<void>>[];
+      for (var i = offset; i < math.min(offset + 4, refs.length); i++) {
+        final ref = refs[i];
+        if (!requested.add(ref)) {
+          failures[i] = {..._identity(ref), 'reason': 'DUPLICATE_IN_BATCH'};
+          continue;
+        }
+        final index = i;
+        jobs.add(() async {
+          try {
+            prepared[index] = await _metadata(ref, c);
+          } on AgentException catch (e) {
+            failures[index] = {
+              ..._identity(ref),
+              'reason': e.code,
+              'message': e.message,
+            };
+          } catch (_) {
+            failures[index] = {
+              ..._identity(ref),
+              'reason': 'TOOL_FAILED',
+              'message': '无法读取漫画资料，请检查源状态后重试',
+            };
+          }
+        }());
+      }
+      if (jobs.isNotEmpty) await Future.wait(jobs);
+      c.run.check();
+    }
     final comics = <AgentComic>[];
     final skipped = <AgentJson>[];
     final identities = <String>{};
-    for (final ref in _refs(a, maximum: 30)) {
-      final comic = store.seen(c.conversationId, ref.$1, ref.$2);
-      if (comic == null) {
-        skipped.add({..._identity(ref), 'reason': 'HALLUCINATED_REF'});
-      } else if (!identities.add(comic.identity)) {
-        skipped.add({..._identity(ref), 'reason': 'DUPLICATE_IN_BATCH'});
+    for (var i = 0; i < refs.length; i++) {
+      final failure = failures[i];
+      if (failure != null) {
+        skipped.add(failure);
+        continue;
+      }
+      final comic = prepared[i]!;
+      if (!identities.add(comic.identity)) {
+        skipped.add({...comic.ref, 'reason': 'DUPLICATE_IN_BATCH'});
       } else {
         comics.add(comic);
       }
     }
     c.run.check();
-    if (comics.isEmpty) {
-      throw const AgentException('HALLUCINATED_REF', '没有可展示的真实漫画，请先搜索或解析');
-    }
-    final id = store.addShowcase(
-      c.conversationId,
-      comics,
-      title: title,
-      note: note,
-      replace: mode == 'replace',
-    );
+    final id = comics.isEmpty
+        ? null
+        : store.addShowcase(
+            c.conversationId,
+            comics,
+            title: title,
+            note: note,
+            replace: mode == 'replace',
+          );
     return {
-      'set_id': id,
+      if (id != null) 'set_id': id,
       'title': title,
       'count': comics.length,
+      'summary': {
+        'total': refs.length,
+        'ok': comics.length,
+        'skipped': skipped
+            .where((item) => item['reason'] == 'DUPLICATE_IN_BATCH')
+            .length,
+        'failed': skipped
+            .where((item) => item['reason'] != 'DUPLICATE_IN_BATCH')
+            .length,
+      },
       'shown': comics.map((comic) => comic.ref).toList(),
       'skipped': skipped,
     };
@@ -893,29 +933,43 @@ class AgentTools {
     final cached = store.seen(c.conversationId, ref.$1, ref.$2);
     if (cached != null) return cached;
     final type = _type(ref.$1);
-    final folders = favorites.find(ref.$2, type);
-    if (folders.isNotEmpty) {
-      final comic = fromComic(favorites.getComic(folders.first, ref.$2, type));
-      store.remember(c.conversationId, comic);
-      return comic;
+    // Optional metadata must not initialize or require an unrelated library.
+    if (favorites.isInitialized) {
+      final folders = favorites.find(ref.$2, type);
+      if (folders.isNotEmpty) {
+        final comic = fromComic(
+          favorites.getComic(folders.first, ref.$2, type),
+        );
+        store.remember(c.conversationId, comic);
+        return comic;
+      }
     }
-    for (final comic in later.getAll()) {
-      if (comic.id == ref.$2 && comic.type == type) {
-        final value = fromComic(comic);
-        store.remember(c.conversationId, value);
-        return value;
+    if (later.isInitialized) {
+      for (final comic in later.getAll()) {
+        if (comic.id == ref.$2 && comic.type == type) {
+          final value = fromComic(comic);
+          store.remember(c.conversationId, value);
+          return value;
+        }
       }
     }
     return null;
   }
 
   Future<AgentComic> _metadata((String, String) ref, AgentToolContext c) async {
-    final local = _localMetadata(ref, c);
+    var local = _localMetadata(ref, c);
     if (local != null) return local;
-    final source = await _source(ref.$1, c);
-    if (!_directUserId(source, ref.$2, c)) {
-      throw const AgentException('HALLUCINATED_REF', '漫画未经搜索或用户输入确认，请先解析');
+    if (!favorites.isInitialized) {
+      await c.run.wait(favorites.init());
+      local = _localMetadata(ref, c);
+      if (local != null) return local;
     }
+    if (!later.isInitialized) {
+      await c.run.wait(later.init());
+      local = _localMetadata(ref, c);
+      if (local != null) return local;
+    }
+    final source = await _source(ref.$1, c);
     return _rememberDetails(
       await _details(source, ref.$2, c),
       c,
@@ -983,163 +1037,173 @@ class AgentTools {
               results[index] = {
                 ..._identity(ref),
                 'status': 'failed',
-                'reason': 'NOT_FOUND',
+                'reason': 'TOOL_FAILED',
+                'message': '无法读取漫画资料，请检查源状态后重试',
               };
             }
           }());
         }
       }
-      await Future.wait(jobs);
+      if (jobs.isNotEmpty) await Future.wait(jobs);
       c.run.check();
     }
     final undo = <AgentJson>[];
     final undoId = agentId();
     final written = <String>{};
-    favorites.batchNotifications(
-      () => later.batchNotifications(() {
-        for (var i = 0; i < refs.length; i++) {
-          if (results[i] != null) continue;
-          c.run.check();
-          final resolved = prepared[i];
-          final ref = resolved == null
-              ? refs[i]
-              : (resolved.sourceKey, resolved.comicId);
-          final row = <String, dynamic>{
-            ..._identity(ref),
-            if (resolved != null) 'title': resolved.title,
-          };
-          results[i] = row;
-          if (!written.add(jsonEncode([ref.$1, ref.$2]))) {
-            row.addAll({'status': 'skipped', 'reason': 'DUPLICATE_IN_BATCH'});
-            continue;
-          }
-          try {
-            final type = _type(ref.$1);
-            switch (name) {
-              case 'fav_add':
-                _folder({'folder': folder}, 'folder');
-                final added = favorites.addComic(folder!, _favorite(resolved!));
-                row.addAll({
-                  'status': added ? 'added' : 'skipped',
-                  'folder': folder,
-                  if (!added) 'reason': 'ALREADY_EXISTS',
-                });
-              case 'later_add':
-                final added = later.add(toComic(resolved!));
-                row.addAll({
-                  'status': added ? 'added' : 'skipped',
-                  if (!added) 'reason': 'ALREADY_EXISTS',
-                });
-              case 'fav_remove':
-                final targets = favorites
-                    .find(ref.$2, type)
-                    .where((f) => folder == null || f == folder)
-                    .toList();
-                if (targets.isEmpty) {
-                  row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
-                  store.removeOperationComic(
-                    c.conversationId,
-                    'favorites',
-                    ref.$1,
-                    ref.$2,
-                    folder: folder,
-                  );
-                  break;
-                }
-                var removed = 0;
-                for (final target in targets) {
-                  final item = favorites.getComic(target, ref.$2, type);
-                  row['title'] = item.name;
-                  favorites.deleteComicWithId(target, ref.$2, type);
-                  removed++;
-                  undo.add({
-                    'kind': 'favorite',
-                    'folder': target,
-                    'time': item.time,
-                    'comic': fromComic(item).toJson(),
-                  });
-                  store.saveUndo(undoId, c.conversationId, undo);
-                  store.removeOperationComic(
-                    c.conversationId,
-                    'favorites',
-                    ref.$1,
-                    ref.$2,
-                    folder: target,
-                  );
-                }
-                row.addAll({
-                  'status': 'removed',
-                  'removed_folders': removed,
-                  'folders': targets,
-                });
-              case 'later_remove':
-                final items = later
-                    .getAll()
-                    .where((item) => item.id == ref.$2 && item.type == type)
-                    .toList();
-                if (items.isEmpty) {
-                  row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
-                  store.removeOperationComic(
-                    c.conversationId,
-                    'later',
-                    ref.$1,
-                    ref.$2,
-                  );
-                  break;
-                }
-                if (later.remove(ref.$2, type)) {
-                  row['title'] = items.first.title;
-                  undo.add({
-                    'kind': 'later',
-                    'comic': fromComic(items.first).toJson(),
-                  });
-                  store.saveUndo(undoId, c.conversationId, undo);
-                  row['status'] = 'removed';
-                  store.removeOperationComic(
-                    c.conversationId,
-                    'later',
-                    ref.$1,
-                    ref.$2,
-                  );
-                } else {
-                  row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
-                }
-              case 'fav_move':
-                if (from == to || favorites.comicExists(to!, ref.$2, type)) {
-                  row.addAll({'status': 'skipped', 'reason': 'ALREADY_EXISTS'});
-                  break;
-                }
-                if (!favorites.comicExists(from!, ref.$2, type)) {
-                  row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
-                  break;
-                }
-                final item = favorites.getComic(from, ref.$2, type);
-                row['title'] = item.name;
-                if (favorites.addComic(to, item)) {
-                  favorites.deleteComicWithId(from, ref.$2, type);
-                  store.remember(c.conversationId, fromComic(item));
-                  store.removeOperationComic(
-                    c.conversationId,
-                    'favorites',
-                    ref.$1,
-                    ref.$2,
-                    folder: from,
-                  );
-                  row.addAll({'status': 'moved', 'folder': to});
-                } else {
-                  row.addAll({'status': 'skipped', 'reason': 'ALREADY_EXISTS'});
-                }
-              default:
-                throw const AgentException('UNKNOWN_TOOL', '未知写入工具');
-            }
-          } on AgentException catch (e) {
-            row.addAll({'status': 'failed', 'reason': e.code});
-          } catch (_) {
-            row.addAll({'status': 'failed', 'reason': 'WRITE_FAILED'});
-          }
+    final batchNotifications = name.startsWith('fav_')
+        ? favorites.batchNotifications
+        : later.batchNotifications;
+    batchNotifications(() {
+      for (var i = 0; i < refs.length; i++) {
+        if (results[i] != null) continue;
+        c.run.check();
+        final resolved = prepared[i];
+        final ref = resolved == null
+            ? refs[i]
+            : (resolved.sourceKey, resolved.comicId);
+        final row = <String, dynamic>{
+          ..._identity(ref),
+          if (resolved != null) 'title': resolved.title,
+        };
+        results[i] = row;
+        if (!written.add(jsonEncode([ref.$1, ref.$2]))) {
+          row.addAll({'status': 'skipped', 'reason': 'DUPLICATE_IN_BATCH'});
+          continue;
         }
-      }),
-    );
+        try {
+          final type = _type(ref.$1);
+          switch (name) {
+            case 'fav_add':
+              _folder({'folder': folder}, 'folder');
+              final added = favorites.addComic(folder!, _favorite(resolved!));
+              row.addAll({
+                'status': added ? 'added' : 'skipped',
+                'folder': folder,
+                if (!added) 'reason': 'ALREADY_EXISTS',
+              });
+            case 'later_add':
+              final added = later.add(toComic(resolved!));
+              row.addAll({
+                'status': added ? 'added' : 'skipped',
+                if (!added) 'reason': 'ALREADY_EXISTS',
+              });
+            case 'fav_remove':
+              final targets = favorites
+                  .find(ref.$2, type)
+                  .where((f) => folder == null || f == folder)
+                  .toList();
+              if (targets.isEmpty) {
+                row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+                store.removeOperationComic(
+                  c.conversationId,
+                  'favorites',
+                  ref.$1,
+                  ref.$2,
+                  folder: folder,
+                );
+                break;
+              }
+              var removed = 0;
+              for (final target in targets) {
+                final item = favorites.getComic(target, ref.$2, type);
+                row['title'] = item.name;
+                favorites.deleteComicWithId(target, ref.$2, type);
+                removed++;
+                undo.add({
+                  'kind': 'favorite',
+                  'folder': target,
+                  'time': item.time,
+                  'comic': fromComic(item).toJson(),
+                });
+                store.saveUndo(undoId, c.conversationId, undo);
+                store.removeOperationComic(
+                  c.conversationId,
+                  'favorites',
+                  ref.$1,
+                  ref.$2,
+                  folder: target,
+                );
+              }
+              row.addAll({
+                'status': 'removed',
+                'removed_folders': removed,
+                'folders': targets,
+              });
+            case 'later_remove':
+              final items = later
+                  .getAll()
+                  .where((item) => item.id == ref.$2 && item.type == type)
+                  .toList();
+              if (items.isEmpty) {
+                row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+                store.removeOperationComic(
+                  c.conversationId,
+                  'later',
+                  ref.$1,
+                  ref.$2,
+                );
+                break;
+              }
+              if (later.remove(ref.$2, type)) {
+                row['title'] = items.first.title;
+                undo.add({
+                  'kind': 'later',
+                  'comic': fromComic(items.first).toJson(),
+                });
+                store.saveUndo(undoId, c.conversationId, undo);
+                row['status'] = 'removed';
+                store.removeOperationComic(
+                  c.conversationId,
+                  'later',
+                  ref.$1,
+                  ref.$2,
+                );
+              } else {
+                row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+              }
+            case 'fav_move':
+              if (from == to || favorites.comicExists(to!, ref.$2, type)) {
+                row.addAll({'status': 'skipped', 'reason': 'ALREADY_EXISTS'});
+                break;
+              }
+              if (!favorites.comicExists(from!, ref.$2, type)) {
+                row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+                break;
+              }
+              final item = favorites.getComic(from, ref.$2, type);
+              row['title'] = item.name;
+              if (favorites.addComic(to, item)) {
+                favorites.deleteComicWithId(from, ref.$2, type);
+                store.remember(c.conversationId, fromComic(item));
+                store.removeOperationComic(
+                  c.conversationId,
+                  'favorites',
+                  ref.$1,
+                  ref.$2,
+                  folder: from,
+                );
+                row.addAll({'status': 'moved', 'folder': to});
+              } else {
+                row.addAll({'status': 'skipped', 'reason': 'ALREADY_EXISTS'});
+              }
+            default:
+              throw const AgentException('UNKNOWN_TOOL', '未知写入工具');
+          }
+        } on AgentException catch (e) {
+          row.addAll({
+            'status': 'failed',
+            'reason': e.code,
+            'message': e.message,
+          });
+        } catch (_) {
+          row.addAll({
+            'status': 'failed',
+            'reason': 'WRITE_FAILED',
+            'message': '写入本地列表失败，请稍后重试',
+          });
+        }
+      }
+    });
     final values = results.whereType<AgentJson>().toList();
     final missing = values
         .where((v) => ['NOT_FOUND', 'NOT_PRESENT'].contains(v['reason']))

@@ -205,7 +205,7 @@ void main() {
   });
 
   test(
-    'add tools resolve direct user ids internally and report missing entries',
+    'add tools resolve unseen ids internally and report missing entries',
     () async {
       final lookedUp = <String>[];
       sources.add(
@@ -220,7 +220,7 @@ void main() {
           },
         ),
       );
-      user('将123和404加入稍后再看和目标收藏夹');
+      user('将图片中的漫画加入稍后再看和目标收藏夹');
       final result = await tools.execute('later_add', {
         'comics': ['jm:123', 'jm:404'],
       }, context);
@@ -560,27 +560,100 @@ void main() {
   });
 
   test(
-    'showcase only accepts seen identities and uses their authoritative metadata',
+    'showcase fetches unseen identities and uses cached or source metadata',
     () async {
       store.remember(conversation.id, comic);
+      final lookedUp = <String>[];
+      sources.add(
+        TestSource(
+          'jm',
+          loadComicInfo: (id) async {
+            lookedUp.add(id);
+            return id == 'unknown'
+                ? const Res.error('未找到漫画')
+                : Res(details('jm', id));
+          },
+        ),
+      );
       final result = await tools.execute('showcase_comics', {
         'comics': [
           {...comic.toJson(), 'title': '伪造', 'cover': 'https://forged.invalid'},
           'jm:unknown',
+          'jm:456',
+          'jm:456',
         ],
       }, context);
       final groups = store.showcases(conversation.id);
-      expect(groups.single.comics.single.title, comic.title);
-      expect(result['data']['skipped'][0]['reason'], 'HALLUCINATED_REF');
-      store.hideComic(groups.single.id, comic);
+      expect(groups.single.comics.map((c) => c.comicId), ['123', '456']);
+      expect(groups.single.comics.first.title, comic.title);
+      expect(groups.single.comics.last.title, '真实标题');
+      expect(result['data']['count'], 2);
+      expect(result['data']['summary'], {
+        'total': 4,
+        'ok': 2,
+        'skipped': 1,
+        'failed': 1,
+      });
+      expect(result['data']['skipped'][0]['reason'], 'NOT_FOUND');
+      expect(result['data']['skipped'][0]['message'], contains('未找到漫画'));
+      expect(result['data']['skipped'][1]['reason'], 'DUPLICATE_IN_BATCH');
+      expect(lookedUp, ['unknown', '456']);
+      for (final item in groups.single.comics) {
+        store.hideComic(groups.single.id, item);
+      }
       expect(store.showcases(conversation.id), isEmpty);
       final another = store.createConversation();
-      final denied = await tools.execute('showcase_comics', {
+      final loaded = await tools.execute('showcase_comics', {
         'comics': ['jm:123'],
       }, AgentToolContext(another.id, AgentRun()));
-      expect(denied['ok'], false);
+      expect(loaded['ok'], true);
+      expect(loaded['data']['count'], 1);
+      expect(lookedUp, ['unknown', '456', '123']);
     },
   );
+
+  test('failed showcase replacement preserves the previous group', () async {
+    store.addShowcase(conversation.id, [comic], title: '已有展示');
+    final result = await tools.execute('showcase_comics', {
+      'comics': ['missing:339981', 'missing:1258084'],
+      'mode': 'replace',
+    }, context);
+    expect(result['ok'], true);
+    expect(result['data']['count'], 0);
+    expect(result['data']['summary']['failed'], 2);
+    expect(result['data']['set_id'], isNull);
+    expect(result['data']['skipped'], hasLength(2));
+    expect(result['data']['skipped'][0]['reason'], 'SOURCE_NOT_FOUND');
+    expect(result['data']['skipped'][1]['comic_id'], '1258084');
+    expect(store.showcases(conversation.id).single.title, '已有展示');
+  });
+
+  for (final name in ['comic_open_by_id', 'comic_get']) {
+    test('$name accepts unseen ids without an id matcher', () async {
+      final lookedUp = <String>[];
+      sources.add(
+        TestSource(
+          'jm',
+          loadComicInfo: (id) async {
+            lookedUp.add(id);
+            return Res(details('jm', id));
+          },
+        ),
+      );
+      for (final id in ['339981', 'album:1258084']) {
+        final result = await tools.execute(name, {
+          'source_key': 'jm',
+          'comic_id': id,
+        }, context);
+        expect(result['ok'], true);
+        expect(result['data']['comic_id'], id);
+        expect(result['data']['title'], '真实标题');
+        expect(store.seen(conversation.id, 'jm', id), isNotNull);
+      }
+      expect(lookedUp, ['339981', 'album:1258084']);
+      expect(store.messages(conversation.id), isEmpty);
+    });
+  }
 
   test(
     'source ids are passed unchanged, normalized by the source, and thumbnails are excluded',
@@ -629,6 +702,41 @@ void main() {
     expect(removal['data']['summary']['ok'], 1);
     expect(later.getAll(), isEmpty);
   });
+
+  test(
+    'resolve accepts ids and supported links absent from user text',
+    () async {
+      final lookedUp = <String>[];
+      sources.add(
+        TestSource(
+          'jm',
+          idMatcher: RegExp(r'^\d+$'),
+          linkHandler: LinkHandler([
+            'comics.invalid',
+          ], (link) => Uri.parse(link).pathSegments.last),
+          loadComicInfo: (id) async {
+            lookedUp.add(id);
+            return Res(details('jm', id));
+          },
+        ),
+      );
+      final byId = await tools.execute('comic_resolve', {
+        'source_key': 'jm',
+        'query': '339981',
+      }, context);
+      expect(byId['ok'], true);
+      expect(byId['data']['resolved_by'], 'id_match');
+      expect(byId['data']['candidates'].single['comic_id'], '339981');
+      final byLink = await tools.execute('comic_resolve', {
+        'query': 'https://comics.invalid/album/1258084',
+      }, context);
+      expect(byLink['ok'], true);
+      expect(byLink['data']['resolved_by'], 'url_extract');
+      expect(byLink['data']['candidates'].single['comic_id'], '1258084');
+      expect(lookedUp, ['339981', '1258084']);
+      expect(store.messages(conversation.id), isEmpty);
+    },
+  );
 
   test(
     'resolve limits preserve remaining candidates and reject unsupported URL domains',
@@ -680,32 +788,114 @@ void main() {
     },
   );
 
-  test('id from the model alone cannot trigger a direct request', () async {
-    var requests = 0;
-    sources.add(
-      TestSource(
-        'jm',
-        idMatcher: RegExp(r'^\d+$'),
-        loadComicInfo: (_) async {
-          requests++;
-          return Res(details('jm', '999'));
-        },
-      ),
+  for (final name in ['fav_add', 'later_add']) {
+    test(
+      '$name fetches unseen ids and reports individual source failures',
+      () async {
+        final lookedUp = <String>[];
+        sources.add(
+          TestSource(
+            'jm',
+            loadComicInfo: (id) async {
+              lookedUp.add(id);
+              if (id == 'offline') throw StateError('连接中断');
+              if (id == '404') return const Res.error('漫画不存在');
+              return Res(details('jm', id));
+            },
+          ),
+        );
+        final result = await tools.execute(name, {
+          if (name == 'fav_add') 'folder': '目标',
+          'comics': [
+            {
+              'source_key': 'jm',
+              'comic_id': '339981',
+              'title': '模型提供的标题',
+              'cover': 'https://forged.invalid',
+            },
+            'jm:1258084',
+            'jm:339981',
+            'jm:404',
+            'jm:offline',
+          ],
+        }, context);
+        expect(result['ok'], true);
+        expect(result['data']['summary'], {
+          'total': 5,
+          'ok': 2,
+          'skipped': 1,
+          'failed': 2,
+          'missing': 1,
+          'already_exists': 0,
+        });
+        expect(lookedUp, ['339981', '1258084', '404', 'offline']);
+        expect(result['data']['results'][2]['reason'], 'DUPLICATE_IN_BATCH');
+        expect(result['data']['missing'].single['comic_id'], '404');
+        expect(result['data']['missing'].single['message'], contains('漫画不存在'));
+        expect(result['data']['results'][4]['reason'], 'SOURCE_REQUEST_FAILED');
+        expect(result['data']['results'][4]['message'], contains('连接中断'));
+        final saved = name == 'fav_add'
+            ? favorites.getFolderComics('目标')
+            : later.getAll();
+        expect(saved.map((c) => c.id).toSet(), {'339981', '1258084'});
+        expect(saved.every((c) => c.title == '真实标题'), true);
+        expect(saved.every((c) => c.cover == comic.cover), true);
+        expect(store.messages(conversation.id), isEmpty);
+      },
     );
-    final result = await tools.execute('later_add', {
-      'comics': [
-        {'source_key': 'jm', 'comic_id': '999', 'title': '看似完整'},
-      ],
-    }, context);
-    expect(result['data']['summary']['failed'], 1);
-    expect(requests, 0);
-    expect(later.getAll(), isEmpty);
-  });
+  }
+
+  test(
+    'local collection metadata can be reused by a new conversation offline',
+    () async {
+      later.add(AgentTools.toComic(comic));
+      final added = await tools.execute('fav_add', {
+        'folder': '目标',
+        'comics': ['jm:123'],
+      }, context);
+      expect(added['data']['summary']['ok'], 1);
+      final another = store.createConversation();
+      final shown = await tools.execute('showcase_comics', {
+        'comics': ['jm:123'],
+      }, AgentToolContext(another.id, AgentRun()));
+      expect(shown['data']['count'], 1);
+      expect(
+        store.showcases(another.id).single.comics.single.title,
+        comic.title,
+      );
+      expect(sources, isEmpty);
+    },
+  );
+
+  test(
+    'sources without details report their capability error per comic',
+    () async {
+      sources.add(TestSource('jm'));
+      final result = await tools.execute('later_add', {
+        'comics': ['jm:339981'],
+      }, context);
+      expect(result['data']['summary']['failed'], 1);
+      expect(result['data']['summary']['missing'], 0);
+      expect(result['data']['results'].single['reason'], 'NO_DETAIL_SUPPORT');
+      expect(result['data']['results'].single['message'], contains('不提供漫画详情'));
+      expect(later.getAll(), isEmpty);
+    },
+  );
 
   test(
     'search fills defaults and preserves overflow with a scoped continuation',
     () async {
       List<String>? options;
+      var sourceInitializations = 0;
+      tools = AgentTools(
+        store,
+        favorites: favorites,
+        later: later,
+        initializeSources: () async {
+          if (++sourceInitializations > 1) throw StateError('源已不可用');
+        },
+        sources: () => sources,
+      );
       sources.add(
         TestSource(
           'jm',
@@ -754,45 +944,256 @@ void main() {
         'continuation': token,
       }, context);
       expect(invalid['error']['code'], 'INVALID_CURSOR');
+      expect(sourceInitializations, 1);
     },
   );
 
-  test('cursor source rejects invented and cross-query cursors', () async {
-    final received = <String?>[];
-    sources.add(
-      TestSource(
-        'cursor',
-        searchPageData: SearchPageData(null, null, (
-          keyword,
-          cursor,
-          options,
-        ) async {
-          received.add(cursor);
-          return Res([
-            Comic('A', '', 'id', '', [], '', 'cursor', null, null),
-          ], subData: cursor == null ? 'opaque:next' : null);
-        }),
-      ),
-    );
-    final invalid = await tools.execute('search_source', {
-      'source_key': 'cursor',
-      'keyword': 'q',
-      'cursor': 'made-up',
-    }, context);
-    expect(invalid['error']['code'], 'INVALID_CURSOR');
-    final first = await tools.execute('search_source', {
-      'source_key': 'cursor',
-      'keyword': 'q',
-    }, context);
-    expect(first['data']['next_cursor'], 'opaque:next');
-    final second = await tools.execute('search_source', {
-      'source_key': 'cursor',
-      'keyword': 'q',
-      'cursor': 'opaque:next',
-    }, context);
-    expect(second['data']['has_more'], false);
-    expect(received, [null, 'opaque:next']);
-  });
+  test(
+    'cursor source accepts valid unseen cursors and reports source errors',
+    () async {
+      final received = <String?>[];
+      sources.add(
+        TestSource(
+          'cursor',
+          searchPageData: SearchPageData(null, null, (
+            keyword,
+            cursor,
+            options,
+          ) async {
+            received.add(cursor);
+            if (cursor == 'expired') return const Res.error('游标已过期');
+            return Res([
+              Comic('A', '', 'id', '', [], '', 'cursor', null, null),
+            ], subData: cursor == null ? 'opaque:next' : null);
+          }),
+        ),
+      );
+      final resumed = await tools.execute('search_source', {
+        'source_key': 'cursor',
+        'keyword': 'q',
+        'cursor': 'from-history',
+      }, context);
+      expect(resumed['ok'], true);
+      expect(resumed['data']['has_more'], false);
+      final first = await tools.execute('search_source', {
+        'source_key': 'cursor',
+        'keyword': 'q',
+      }, context);
+      expect(first['data']['next_cursor'], 'opaque:next');
+      // Simulate restarting the tools while continuing a saved conversation.
+      final restarted = AgentTools(
+        store,
+        favorites: favorites,
+        later: later,
+        initializeSources: () async {},
+        sources: () => sources,
+      );
+      final second = await restarted.execute('search_source', {
+        'source_key': 'cursor',
+        'keyword': 'q',
+        'cursor': 'opaque:next',
+      }, context);
+      expect(second['data']['has_more'], false);
+      final expired = await restarted.execute('search_source', {
+        'source_key': 'cursor',
+        'keyword': 'q',
+        'cursor': 'expired',
+      }, context);
+      expect(expired['error']['code'], 'SEARCH_FAILED');
+      expect(expired['error']['message'], contains('游标已过期'));
+      expect(received, ['from-history', null, 'opaque:next', 'expired']);
+    },
+  );
+
+  test(
+    'favorite operations need neither sources nor the read-later database',
+    () async {
+      later.close();
+      var sourceInitializations = 0;
+      final localTools = AgentTools(
+        store,
+        favorites: favorites,
+        later: later,
+        initializeSources: () async {
+          sourceInitializations++;
+          throw StateError('源不可用');
+        },
+        sources: () => sources,
+      );
+      favorites.addComic(
+        '目标',
+        FavoriteItem(
+          id: '123',
+          name: '离线漫画',
+          coverPath: '',
+          author: '作者',
+          type: ComicType.fromKey('jm'),
+          tags: [],
+        ),
+      );
+
+      Future<AgentJson> call(String name, AgentJson arguments) async {
+        final fresh = store.createConversation();
+        final result = await localTools.execute(
+          name,
+          arguments,
+          AgentToolContext(fresh.id, AgentRun()),
+        );
+        expect(result['ok'], true, reason: name);
+        expect(later.isInitialized, false, reason: name);
+        expect(sourceInitializations, 0, reason: name);
+        return result['data'] is Map ? agentObject(result['data']) : result;
+      }
+
+      await call('fav_list_folders', {});
+      final listed = await call('fav_list', {'folder': '目标'});
+      expect(listed['total'], 1);
+      final searched = await call('fav_search', {'keyword': '离线'});
+      expect(searched['total'], 1);
+      final checked = await call('fav_check', {
+        'comics': ['jm:123', 'jm:456'],
+      });
+      expect(checked['results'][0]['in_favorites'], true);
+      expect(checked['results'][1]['in_favorites'], false);
+      final existing = await call('fav_add', {
+        'folder': '目标',
+        'comics': ['jm:123'],
+      });
+      expect(existing['summary']['already_exists'], 1);
+      final created = await call('fav_create_folder', {'name': '新收藏夹'});
+      expect(created['status'], 'created');
+      final duplicate = await call('fav_create_folder', {'name': '新收藏夹'});
+      expect(duplicate['reason'], 'ALREADY_EXISTS');
+      expect(
+        favorites.folderNames.where((name) => name == '新收藏夹'),
+        hasLength(1),
+      );
+      final moved = await call('fav_move', {
+        'from_folder': '目标',
+        'to_folder': '新收藏夹',
+        'comics': ['jm:123', 'jm:456'],
+      });
+      expect(moved['summary']['ok'], 1);
+      expect(moved['summary']['missing'], 1);
+      final removed = await call('fav_remove', {
+        'folder': '新收藏夹',
+        'comics': ['jm:123', 'jm:456'],
+      });
+      expect(removed['summary']['ok'], 1);
+      expect(removed['summary']['missing'], 1);
+      expect(favorites.count('目标'), 0);
+      expect(favorites.count('新收藏夹'), 0);
+    },
+  );
+
+  test(
+    'read-later operations need neither sources nor the favorites database',
+    () async {
+      favorites.close();
+      later.add(AgentTools.toComic(comic));
+      var sourceInitializations = 0;
+      final localTools = AgentTools(
+        store,
+        favorites: favorites,
+        later: later,
+        initializeSources: () async {
+          sourceInitializations++;
+          throw StateError('源不可用');
+        },
+        sources: () => sources,
+      );
+      Future<AgentJson> call(String name, AgentJson arguments) async {
+        final fresh = store.createConversation();
+        final result = await localTools.execute(
+          name,
+          arguments,
+          AgentToolContext(fresh.id, AgentRun()),
+        );
+        expect(result['ok'], true, reason: name);
+        expect(favorites.isInitialized, false, reason: name);
+        expect(sourceInitializations, 0, reason: name);
+        return agentObject(result['data']);
+      }
+
+      final listed = await call('later_list', {});
+      expect(listed['total'], 1);
+      final searched = await call('later_list', {'keyword': '真实'});
+      expect(searched['total'], 1);
+      final checked = await call('later_check', {
+        'comics': ['jm:123', 'jm:456'],
+      });
+      expect(checked['results'][0]['in_read_later'], true);
+      expect(checked['results'][1]['in_read_later'], false);
+      final existing = await call('later_add', {
+        'comics': ['jm:123'],
+      });
+      expect(existing['summary']['already_exists'], 1);
+      final removed = await call('later_remove', {
+        'comics': ['jm:123', 'jm:456'],
+      });
+      expect(removed['summary']['ok'], 1);
+      expect(removed['summary']['missing'], 1);
+      expect(later.getAll(), isEmpty);
+    },
+  );
+
+  test(
+    'opening details without status leaves local databases closed',
+    () async {
+      favorites.close();
+      later.close();
+      sources.add(
+        TestSource('jm', loadComicInfo: (id) async => Res(details('jm', id))),
+      );
+      final result = await tools.execute('comic_open_by_id', {
+        'source_key': 'jm',
+        'comic_id': '339981',
+        'include_status': false,
+      }, context);
+      expect(result['ok'], true);
+      expect(favorites.isInitialized, false);
+      expect(later.isInitialized, false);
+      expect(result['data'].containsKey('in_favorites'), false);
+    },
+  );
+
+  test(
+    'cached showcase metadata does not open either collection database',
+    () async {
+      store.remember(conversation.id, comic);
+      favorites.close();
+      later.close();
+      final result = await tools.execute('showcase_comics', {
+        'comics': ['jm:123'],
+      }, context);
+      expect(result['ok'], true);
+      expect(result['data']['count'], 1);
+      expect(favorites.isInitialized, false);
+      expect(later.isInitialized, false);
+    },
+  );
+
+  test(
+    'missing destination folders return a resource error without creating them',
+    () async {
+      for (final name in ['fav_add', 'fav_move']) {
+        final result = await tools.execute(name, {
+          if (name == 'fav_add') 'folder': '不存在的目标',
+          if (name == 'fav_move') ...{
+            'from_folder': '目标',
+            'to_folder': '不存在的目标',
+          },
+          'comics': ['jm:123'],
+        }, context);
+        expect(result['error']['code'], 'FOLDER_NOT_FOUND');
+        expect(favorites.existsFolder('不存在的目标'), false);
+      }
+      final invalid = await tools.execute('fav_create_folder', {
+        'name': '非法"名称',
+      }, context);
+      expect(invalid['error']['code'], 'INVALID_ARGUMENT');
+    },
+  );
 
   test(
     'late source result after cancellation never writes a collection',
@@ -842,6 +1243,34 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 10));
     expect(later.getAll(), isEmpty);
   });
+
+  test(
+    'late showcase metadata after cancellation cannot create a group',
+    () async {
+      final response = Completer<Res<ComicDetails>>();
+      final started = Completer<void>();
+      sources.add(
+        TestSource(
+          'jm',
+          loadComicInfo: (_) {
+            started.complete();
+            return response.future;
+          },
+        ),
+      );
+      final task = tools.execute('showcase_comics', {
+        'comics': ['jm:339981'],
+      }, context);
+      await started.future;
+      context.run.cancel();
+      final result = await task;
+      expect(result['error']['code'], 'CANCELLED');
+      response.complete(Res(details('jm', '339981')));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(store.showcases(conversation.id), isEmpty);
+      expect(store.seen(conversation.id, 'jm', '339981'), isNull);
+    },
+  );
 
   test(
     'conversation deletion cascades, while turn truncation preserves showcase',

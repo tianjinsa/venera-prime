@@ -316,8 +316,6 @@ class AgentController extends ChangeNotifier {
       'INVALID_ARGUMENT',
       'FOLDER_NOT_FOUND',
       'SOURCE_NOT_FOUND',
-      'HALLUCINATED_REF',
-      'ID_NOT_DIRECT',
       'BATCH_TOO_LARGE',
       'NO_SEARCH_SUPPORT',
       'FOLDER_EXISTS',
