@@ -44,6 +44,18 @@ void main() {
     expect(manager.add(first), isFalse);
     expect(manager.add(second), isTrue);
     expect(manager.getAll(), hasLength(2));
+    final firstType = manager.typeForComic(first);
+    final secondType = manager.typeForComic(second);
+    final saved = manager.getComic(first.id, firstType)!;
+    expect(saved.sourceKey, first.sourceKey);
+    expect(saved.title, first.title);
+    expect(saved.cover, first.cover);
+    expect(saved.tags, first.tags);
+    expect(manager.getComic(second.id, secondType)?.title, second.title);
+    expect(manager.getComic('missing', firstType), isNull);
+    expect(manager.remove(first.id, firstType), isTrue);
+    expect(manager.getComic(first.id, firstType), isNull);
+    expect(manager.getComic(second.id, secondType)?.title, second.title);
 
     manager.removeMany(manager.getAll());
     expect(manager.getAll(), isEmpty);
