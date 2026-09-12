@@ -380,27 +380,31 @@ class _CachedMarkdownState extends State<_CachedMarkdown> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return _body ??= MarkdownBody(
-      data: widget.text,
-      selectable: true,
-      imageBuilder: (_, _, _) => const Text('[图片已省略]'),
-      onTapLink: (_, href, _) => widget.onLink(href),
-      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-        p: theme.textTheme.bodyMedium?.copyWith(fontSize: 16, height: 1.7),
-        blockSpacing: 14,
-        code: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 13,
-          backgroundColor: theme.colorScheme.surfaceContainerHighest,
-        ),
-        tableColumnWidth: const IntrinsicColumnWidth(),
-        tableCellsPadding: const EdgeInsets.symmetric(
-          horizontal: 12,
-          vertical: 8,
-        ),
-        tableBorder: TableBorder.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: .65),
-          width: .6,
+    // A shared selection region avoids a separate scrollable EditableText for
+    // every paragraph, while preserving long-press selection and link taps.
+    return _body ??= SelectionArea(
+      child: MarkdownBody(
+        data: widget.text,
+        selectable: false,
+        imageBuilder: (_, _, _) => const Text('[图片已省略]'),
+        onTapLink: (_, href, _) => widget.onLink(href),
+        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+          p: theme.textTheme.bodyMedium?.copyWith(fontSize: 16, height: 1.7),
+          blockSpacing: 14,
+          code: TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 13,
+            backgroundColor: theme.colorScheme.surfaceContainerHighest,
+          ),
+          tableColumnWidth: const IntrinsicColumnWidth(),
+          tableCellsPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
+          ),
+          tableBorder: TableBorder.all(
+            color: theme.colorScheme.outlineVariant.withValues(alpha: .65),
+            width: .6,
+          ),
         ),
       ),
     );
