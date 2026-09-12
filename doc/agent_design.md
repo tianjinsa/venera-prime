@@ -1,8 +1,8 @@
 # Venera Prime Agent 接入设计方案
 
-> 版本：v5（2026-09-12）
+> 版本：v6（2026-09-13）
 > 实施基线：6a62b16（Venera Prime 2.2.1，当前上游最新版）
-> 本次修订：完善手机输入和顶部模型信息，改用 Android 相册选图，增加纯文本附件与独立任务队列；工具按参数直接执行，内部按需补齐资料。
+> 本次修订：完善手机输入和顶部模型信息，改用 Android 相册选图，增加纯文本附件与独立任务队列，优化大分组卡片的按需加载；工具按参数直接执行，内部按需补齐资料。
 
 ## 1. 目标与范围
 
@@ -268,6 +268,8 @@ Agent 工具栏提供模型设置、历史、展示、新对话。手机布局�
 
 漫画只出现在展示栏，复用 ComicTile 的详情导航和长按菜单。主动搜索/推荐保留普通展示组；收藏和稍后再看的添加结果按两个操作类型默认折叠，“收藏”内再按收藏夹折叠。分组以会话+类型+收藏夹复用并去重，点击工具的“查看漫画”可定位并展开对应组。单漫画移除用独立的小按钮列/行，不覆盖封面或标题；整组操作置于省略号菜单。移除只改变展示状态；关闭或重启后不复活，后续新操作仅重新显示本次涉及的漫画。删除会话级联清理所有展示。
 
+展示栏使用单个 CustomScrollView，分组装饰和折叠内容由 sliver 组成，漫画通过 SliverGrid 的 builder 按视口和缓存范围创建。避免在外层列表内嵌套 shrinkWrap 网格测量整组高度；离开缓存范围的卡片释放，不截断漫画数据或额外分页。普通过程折叠和展示分组复用同一套状态保存逻辑。定位时将目标分区及收藏夹提前并展开，配合滚到顶部，避免目标被前面的超大分组遮住。
+
 Markdown 使用 flutter_markdown_plus（纯 Dart/Flutter，无原生工程配置），不加载 Markdown 外链图片或 HTML WebView；链接仅允许 http/https 并复用站内处理。使用 SelectionArea 包裹非 selectable 的 MarkdownBody，避免每段 SelectableText 的内层滚动争夺触摸手势，保留长按选择、复制和链接点击。流式更新节流，缓存已完成消息。
 
 历史按标题和消息内容搜索，首条用户消息产生默认标题，仅附件消息使用首个图片或文件的名称。每项显示消息数与占用大小，支持多选和批量删除确认。当前模型和思考选择随会话保存。
@@ -376,6 +378,19 @@ $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 
 $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 & 'D:\.tool\flutter-venera.ps1' test --no-pub --concurrency=1 test/agent test/batched_notifications_test.dart test/read_later_test.dart test/favorites_input_test.dart test/home_layout_test.dart
+```
+
+### 9.5 大分组展示性能（2026-09-13）
+
+- 将“外层列表 + 展开内容 Column + shrinkWrap GridView”改为共享一个视口的 sliver 分组与网格。展开只创建视口和缓存附近的漫画卡片，离屏卡片不保活；保持完整结果、详细/简略布局、分组背景、单项/整组移除和折叠状态。
+- 收藏分区及目标文件夹、稍后再看与普通结果都支持提前到顶部定位，重复定位可重新展开被手动折叠的目标。
+- 性能回归使用每组600本漫画、304×800视口，以完整元素树的卡片数量和实际构建回调计数验证，而非墙钟耗时或仅统计可见元素。样本中详细模式最多同时挂载10张、简略模式12张；普通展开/滚动最多新建10/12个不同卡片，跨大分组定位最多22/25个，未构建全部中间漫画。
+- 多收藏夹用例验证160个文件夹的展开、滚动及折叠内容不创建漫画卡片，标题仍按组构建。手机实际帧率与内存峰值仍需真机验证。
+- 新增7项性能/交互回归；**193 项相关测试通过**，其中 Agent 186 项、原有功能7项，修改范围静态分析通过。完整检查命令沿用上一节；单独复现卡片构建指标：
+
+```powershell
+$env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
+& 'D:\.tool\flutter-venera.ps1' test --no-pub --dart-define=VENERA_SHOWCASE_METRICS=true test/agent/agent_showcase_performance_test.dart
 ```
 
 ## 10. 后续范围与合并维护
