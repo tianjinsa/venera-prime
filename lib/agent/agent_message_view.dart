@@ -249,21 +249,9 @@ class AgentMessageParts extends StatelessWidget {
   Widget _tool(BuildContext context, AgentJson part, int index) {
     final result = part['result'] is Map ? agentObject(part['result']) : null;
     final data = result?['data'];
-    final error = result?['error'];
     final running = part['state'] == 'running' || part['state'] == 'pending';
     final failed = agentToolHasFailure(part);
-    final summary = data is Map ? data['summary'] : null;
-    String caption = running ? '执行中' : '';
-    if (summary is Map) {
-      caption =
-          '成功 ${summary['ok']} · 跳过 ${summary['skipped']} · 失败 ${summary['failed']}';
-    } else if (error is Map) {
-      caption = error['code'] == 'INPUT_UPDATED'
-          ? '已跳过，按补充要求重新判断'
-          : error['message']?.toString() ?? '未完成';
-    } else if (data is Map && data['count'] is int) {
-      caption = '已展示 ${data['count']} 本';
-    }
+    final caption = agentToolCaption(part);
     final showcaseId = data is Map ? data['set_id'] as String? : null;
     final undoId = data is Map ? data['undo_id'] as String? : null;
     final identity = '${message.id}-$index';
@@ -336,10 +324,104 @@ class AgentMessageParts extends StatelessWidget {
     if (name.contains('search')) return Icons.search;
     if (name.startsWith('fav_')) return Icons.folder_outlined;
     if (name.startsWith('later_')) return Icons.bookmark_border;
+    if (name.startsWith('net_fav_')) return Icons.cloud_outlined;
+    if (name.startsWith('history_')) return Icons.history;
+    if (name.startsWith('download_')) return Icons.download_outlined;
+    if (name.startsWith('local_')) return Icons.folder_zip_outlined;
+    if (name.startsWith('updates_')) return Icons.update;
+    if (name.startsWith('open_')) return Icons.open_in_new;
+    if (name.startsWith('blocked_')) return Icons.block;
+    if (name.startsWith('source_') || name == 'list_sources') {
+      return Icons.travel_explore;
+    }
+    if (name == 'explore_load' ||
+        name == 'category_comics' ||
+        name == 'ranking_comics') {
+      return Icons.explore_outlined;
+    }
+    if (name == 'comic_comments') return Icons.forum_outlined;
+    if (name == 'reading_stats') return Icons.bar_chart;
     if (name == 'showcase_comics') return Icons.view_sidebar_outlined;
-    if (name == 'list_sources') return Icons.travel_explore;
     return Icons.menu_book_outlined;
   }
+}
+
+/// A short result line: what was done and how far it succeeded.
+String agentToolCaption(AgentJson part) {
+  final state = part['state'];
+  if (state == 'running' || state == 'pending') return '执行中';
+  final result = part['result'];
+  if (result is! Map) return '';
+  final error = result['error'];
+  if (error is Map) {
+    return error['code'] == 'INPUT_UPDATED'
+        ? '已跳过，按补充要求重新判断'
+        : error['message']?.toString() ?? '未完成';
+  }
+  final data = result['data'];
+  if (data is! Map) return data is List ? '${data.length} 项' : '';
+  String pages(Object? page, Object? total) =>
+      page is int && total is int && total > 0
+      ? '第 $page/$total 页'
+      : page is int
+      ? '第 $page 页'
+      : '';
+  String join(List<String> values) =>
+      values.where((v) => v.isNotEmpty).join(' · ');
+  final summary = data['summary'];
+  if (summary is Map) {
+    final unit = part['name'] == 'search_all' ? '个源' : '';
+    return join([
+      '成功 ${summary['ok']}$unit',
+      if (summary['skipped'] != 0) '跳过 ${summary['skipped']}',
+      if (summary['failed'] != 0) '失败 ${summary['failed']}',
+    ]);
+  }
+  switch (part['name']) {
+    case 'showcase_comics':
+      return '已展示 ${data['count']} 本';
+    case 'comic_get' || 'comic_open_by_id':
+      final chapters = data['chapters'];
+      return join([
+        if (data['title'] is String) '《${data['title']}》',
+        if (chapters is Map && chapters['count'] is int && chapters['count'] > 0)
+          '${chapters['count']} 章',
+      ]);
+    case 'comic_chapters':
+      return join([
+        pages(data['page'], data['total_pages']),
+        '共 ${data['count']} 章',
+      ]);
+    case 'comic_comments':
+      return join([pages(data['page'], data['max_page']), '${data['count']} 条评论']);
+    case 'open_comic' || 'open_page':
+      return '已打开';
+    case 'reading_stats':
+      final seconds = data['total_seconds'];
+      return seconds is int ? '近 ${data['days']} 天 ${(seconds / 60).round()} 分钟' : '';
+  }
+  if (data['parts'] is List) return '${(data['parts'] as List).length} 个分区';
+  if (data['results'] is List) return '${(data['results'] as List).length} 项';
+  // Paged local lists.
+  if (data['total'] is int) {
+    return join([
+      pages(data['page'], data['total_pages']),
+      '共 ${data['total']} 条',
+    ]);
+  }
+  // Pages from a source.
+  if (data['style'] != null || data['sections'] is List) {
+    final count = data['count'] ?? (data['sections'] as List?)?.length;
+    return join([
+      pages(data['page'], data['max_page']),
+      if (count is int) '$count 项',
+      if (data['has_more'] == true && data['max_page'] == null) '还有更多',
+      if (data['from_cache'] == true) '缓存',
+    ]);
+  }
+  final candidates = data['candidates'];
+  if (candidates is List) return '${candidates.length} 个候选';
+  return '';
 }
 
 class _CachedMarkdown extends StatefulWidget {

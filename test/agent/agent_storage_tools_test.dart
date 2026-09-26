@@ -115,16 +115,13 @@ void main() {
   );
 
   test(
-    'all 19 tool schemas are distinct and exclude unsupported destructive capabilities',
+    'tool schemas are distinct and exclude unsupported destructive capabilities',
     () {
       final names = AgentTools.schemas
           .map((s) => s['function']['name'])
           .toSet();
-      expect(names.length, 19);
-      expect(
-        names,
-        containsAll(['fav_check', 'later_check', 'showcase_comics']),
-      );
+      expect(names.length, AgentTools.schemas.length);
+      expect(names, containsAll(['comic_status', 'showcase_comics']));
       expect(names, isNot(contains('fav_delete_folder')));
     },
   );

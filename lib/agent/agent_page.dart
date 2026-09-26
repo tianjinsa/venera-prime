@@ -1055,7 +1055,15 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   Widget _confirmation(AgentConfirmation confirmation) {
-    final count = confirmation.arguments['comics'];
+    final args = confirmation.arguments;
+    final count = args['comics'] ?? args['comic_ids'] ?? args['keys'];
+    const actions = {
+      'pause': '暂停',
+      'resume': '继续',
+      'retry': '重试',
+      'prioritize': '移到队首',
+      'cancel': '取消并删除未完成文件',
+    };
     return Card(
       margin: const EdgeInsets.all(12),
       child: Padding(
@@ -1070,13 +1078,26 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             const SizedBox(height: 6),
             Text(
               [
-                if (count is List) '涉及 ${count.length} 本漫画',
-                if (confirmation.arguments['folder'] != null)
-                  '收藏夹：${confirmation.arguments['folder']}',
-                if (confirmation.arguments['from_folder'] != null)
-                  '从“${confirmation.arguments['from_folder']}”移到“${confirmation.arguments['to_folder']}”',
-                if (confirmation.arguments['name'] != null)
-                  '名称：${confirmation.arguments['name']}',
+                if (count is List)
+                  args['keys'] != null
+                      ? '涉及 ${count.length} 个漫画源'
+                      : '涉及 ${count.length} 本漫画',
+                if (args['source_key'] != null) '漫画源：${args['source_key']}',
+                if (args['action'] != null)
+                  '操作：${actions[args['action']] ?? args['action']}',
+                if (args['folder'] != null) '收藏夹：${args['folder']}',
+                if (args['from_folder'] != null)
+                  '从“${args['from_folder']}”移到“${args['to_folder']}”',
+                if (args['name'] != null) '名称：${args['name']}',
+                if (args['names'] is List)
+                  '名称：${(args['names'] as List).join('、')}',
+                if (args['renames'] is List)
+                  '重命名 ${(args['renames'] as List).length} 个收藏夹',
+                if (args['add'] is List && (args['add'] as List).isNotEmpty)
+                  '添加：${(args['add'] as List).join('、')}',
+                if (args['remove'] is List &&
+                    (args['remove'] as List).isNotEmpty)
+                  '移除：${(args['remove'] as List).join('、')}',
               ].join(' · '),
             ),
             Wrap(

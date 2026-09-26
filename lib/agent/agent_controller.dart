@@ -400,6 +400,9 @@ class AgentController extends ChangeNotifier {
       'BATCH_TOO_LARGE',
       'NO_SEARCH_SUPPORT',
       'FOLDER_EXISTS',
+      'FOLDER_REQUIRED',
+      'NOT_LOGGED_IN',
+      'NO_FOLLOW_FOLDER',
     }.contains(code);
   }
 
@@ -834,6 +837,11 @@ class AgentController extends ChangeNotifier {
     if (busy || _disposed) return {'restored': 0, 'skipped': 0, 'failed': 0};
     await tools.favorites.init();
     await tools.later.init();
+    try {
+      await tools.app.initHistory();
+    } catch (_) {
+      // History entries stay undoable until the history can be opened.
+    }
     if (_disposed) return {'restored': 0, 'skipped': 0, 'failed': 0};
     final result = tools.undo(
       id,

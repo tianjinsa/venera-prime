@@ -1,12 +1,22 @@
+import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
+import 'package:venera/foundation/follow_updates.dart';
+import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/read_later.dart';
+import 'package:venera/foundation/res.dart';
+import 'agent_app_bridge.dart';
 import 'agent_models.dart';
 import 'agent_store.dart';
+
+part 'agent_tool_schemas.dart';
+part 'agent_tools_catalog.dart';
+part 'agent_tools_library.dart';
 
 class AgentToolContext {
   final String conversationId;
@@ -21,6 +31,18 @@ class AgentTools {
   final Future<void> Function() initializeSources;
   final List<ComicSource> Function() sources;
   final Duration sourceTimeout;
+  final AgentAppBridge app;
+
+  /// Details already read in this session. Chapter pages, downloads and the
+  /// reader reuse them instead of requesting the whole comic again.
+  final _details = <String, (DateTime, ComicDetails)>{};
+
+  /// Successful list pages of sources, keyed by every request parameter.
+  /// Repeating a page or returning to it while paging needs no new request.
+  final _pages = <String, (DateTime, Res<Object>)>{};
+
+  /// Network favorite ids some sources need to remove an entry again.
+  final _networkFavoriteIds = <String, String>{};
 
   AgentTools(
     this.store, {
@@ -29,186 +51,44 @@ class AgentTools {
     Future<void> Function()? initializeSources,
     List<ComicSource> Function()? sources,
     this.sourceTimeout = const Duration(seconds: 30),
-  }) : favorites = favorites ?? LocalFavoritesManager(),
+    AgentAppBridge? app,
+  }) : app = app ?? const AgentAppBridge(),
+       favorites = favorites ?? LocalFavoritesManager(),
        later = later ?? ReadLaterManager(),
        initializeSources =
            initializeSources ?? (() => ComicSourceManager().init()),
        sources = sources ?? ComicSource.all;
+
+  static List<AgentJson> get schemas => _agentToolSchemas;
 
   static const writeTools = {
     'fav_add',
     'fav_remove',
     'fav_move',
     'fav_create_folder',
+    'fav_rename_folder',
     'later_add',
     'later_remove',
+    'history_remove',
+    'local_delete',
+    'download_start',
+    'download_control',
+    'updates_mark_read',
+    'net_fav_add',
+    'net_fav_remove',
+    'source_install',
+    'source_update',
+    'blocked_words_update',
   };
-  static const destructiveTools = {'fav_remove', 'fav_move', 'later_remove'};
-  static const _string = {'type': 'string'};
-  static const _integer = {'type': 'integer', 'minimum': 1};
-  static final _comics = {
-    'type': 'array',
-    'minItems': 1,
-    'maxItems': 50,
-    'items': {
-      'anyOf': [
-        {'type': 'string', 'description': 'source_key:comic_id'},
-        {
-          'type': 'object',
-          'properties': {'source_key': _string, 'comic_id': _string},
-          'required': ['source_key', 'comic_id'],
-        },
-      ],
-    },
-    'description':
-        '提供 source_key 和 comic_id，支持文本或图片识别出的ID。工具自行读取本地资料或请求源详情，无需先搜索、解析或检查存在性；逐项返回失败原因',
+  static const destructiveTools = {
+    'fav_remove',
+    'fav_move',
+    'later_remove',
+    'history_remove',
+    'local_delete',
+    'download_control',
+    'net_fav_remove',
   };
-  static AgentJson _schema(
-    String name,
-    String description,
-    AgentJson properties, [
-    List<String> required = const [],
-  ]) => {
-    'type': 'function',
-    'function': {
-      'name': name,
-      'description': description,
-      'parameters': {
-        'type': 'object',
-        'properties': properties,
-        'required': required,
-        'additionalProperties': false,
-      },
-    },
-  };
-  static final schemas = <AgentJson>[
-    _schema('list_sources', '查看已安装源及其能力；源不明确时使用', {}),
-    _schema(
-      'list_search_options',
-      '查询单源的搜索选项与默认值',
-      {'source_key': _string},
-      ['source_key'],
-    ),
-    _schema(
-      'search_source',
-      '直接搜索单个源并返回源的一整页结果，无需先查询源或选项；省略 options 使用默认值。下一页按返回的 next_page 或 next_cursor 继续，保持源、关键词和选项不变',
-      {
-        'source_key': _string,
-        'keyword': _string,
-        'page': _integer,
-        'cursor': _string,
-        'options': {'type': 'array', 'items': _string},
-      },
-      ['source_key', 'keyword'],
-    ),
-    _schema(
-      'comic_open_by_id',
-      '按源和原始 comic_id 直接获取详情及状态，无需先搜索或解析',
-      {
-        'source_key': _string,
-        'comic_id': _string,
-        'include_status': {'type': 'boolean'},
-      },
-      ['source_key', 'comic_id'],
-    ),
-    _schema(
-      'comic_resolve',
-      '将名称、源 id 或站内 URL 解析成候选，可使用图片识别出的内容；名称搜索返回源的一整页候选及翻页信息，可用 search_source 继续；不明确的源应询问用户',
-      {'query': _string, 'source_key': _string},
-      ['query'],
-    ),
-    _schema(
-      'comic_get',
-      '按 source_key 和 comic_id 直接获取详情，无需先搜索或解析；不包含漫画内页或逐页缩略图',
-      {'source_key': _string, 'comic_id': _string},
-      ['source_key', 'comic_id'],
-    ),
-    _schema(
-      'showcase_comics',
-      '把漫画放入独立展示栏，最多30本；自动取得必要元数据，无需先搜索或查询详情，逐项返回无法展示的原因',
-      {
-        'comics': {..._comics, 'maxItems': 30},
-        'title': _string,
-        'note': _string,
-        'mode': {
-          'type': 'string',
-          'enum': ['append', 'replace'],
-        },
-      },
-      ['comics'],
-    ),
-    _schema('fav_list_folders', '列出本地收藏夹及数量', {}),
-    _schema(
-      'fav_list',
-      '分页查看本地收藏夹',
-      {'folder': _string, 'page': _integer, 'page_size': _integer},
-      ['folder'],
-    ),
-    _schema(
-      'fav_search',
-      '按标题、作者和标签搜索本地收藏；省略 folder 搜全部文件夹',
-      {
-        'keyword': _string,
-        'folder': _string,
-        'page': _integer,
-        'page_size': _integer,
-      },
-      ['keyword'],
-    ),
-    _schema(
-      'fav_check',
-      '批量查在哪些本地收藏夹；未收藏 folder=-1',
-      {'comics': _comics},
-      ['comics'],
-    ),
-    _schema(
-      'fav_add',
-      '直接批量加入指定的本地收藏夹；内部自动查重并取得必要元数据，无需先查详情或fav_check；返回成功、已存在、不存在的数量和列表，并自动在收藏展示分组中显示',
-      {'folder': _string, 'comics': _comics},
-      ['folder', 'comics'],
-    ),
-    _schema(
-      'fav_remove',
-      '直接批量取消本地收藏，无需先查询；内部判断是否存在，返回不存在数量和列表。省略folder则从所有收藏夹移除；可撤销',
-      {'folder': _string, 'comics': _comics},
-      ['comics'],
-    ),
-    _schema(
-      'fav_move',
-      '直接批量移动本地收藏，无需先列出或检查漫画；目标已有则跳过并保留源，未在原收藏夹的条目逐项返回',
-      {'from_folder': _string, 'to_folder': _string, 'comics': _comics},
-      ['from_folder', 'to_folder', 'comics'],
-    ),
-    _schema(
-      'fav_create_folder',
-      '直接创建本地收藏夹，无需先检查名称；同名已存在则返回已有收藏夹，不重复创建',
-      {'name': _string},
-      ['name'],
-    ),
-    _schema('later_list', '分页查看稍后再看', {
-      'keyword': _string,
-      'page': _integer,
-      'page_size': _integer,
-    }),
-    _schema(
-      'later_check',
-      '批量判定是否在稍后再看，marker=-1/1',
-      {'comics': _comics},
-      ['comics'],
-    ),
-    _schema(
-      'later_add',
-      '直接批量加入稍后再看；自动查重并取得必要元数据，无需先查详情或later_check；返回成功、已存在、不存在的数量和列表，并自动在稍后再看展示分组中显示',
-      {'comics': _comics},
-      ['comics'],
-    ),
-    _schema(
-      'later_remove',
-      '直接批量从稍后再看移除，无需先查询；自动判断是否存在，返回不存在数量和列表；可撤销',
-      {'comics': _comics},
-      ['comics'],
-    ),
-  ];
 
   static String _text(AgentJson args, String key, {String? fallback}) {
     final value = args[key] ?? fallback;
@@ -314,23 +194,36 @@ class AgentTools {
   ) async {
     try {
       context.run.check();
-      final specs = schemas.where((s) => s['function']['name'] == name);
-      if (specs.isEmpty) {
+      bool matches(AgentJson spec) {
+        final function = spec['function'] as Map;
+        if (function['name'] != name) return false;
+        final params = function['parameters'] as Map;
+        final properties = params['properties'] as Map;
+        return args.keys.every(properties.containsKey) &&
+            (params['required'] as List).every(args.containsKey);
+      }
+
+      final known = [
+        ..._agentToolSchemas,
+        ..._legacySchemas,
+      ].where((s) => s['function']['name'] == name);
+      if (known.isEmpty) {
         throw const AgentException('UNKNOWN_TOOL', '工具不在应用允许的清单中');
       }
-      final params = specs.first['function']['parameters'] as Map;
-      final properties = params['properties'] as Map;
-      if (args.keys.any((k) => !properties.containsKey(k)) ||
-          (params['required'] as List).any((k) => !args.containsKey(k))) {
+      if (!known.any(matches)) {
         throw const AgentException('INVALID_ARGUMENT', '工具参数缺失或包含未知字段');
       }
       // Validate all array references before entering any write path.
-      if (properties.containsKey('comics')) {
+      if (args.containsKey('comics') && name != 'download_start') {
         _refs(args, maximum: name == 'showcase_comics' ? 30 : 50);
       }
       final needsStatus =
-          name == 'comic_open_by_id' && args['include_status'] != false;
-      if (name.startsWith('fav_') || needsStatus) {
+          ['comic_open_by_id', 'comic_get'].contains(name) &&
+              args['include_status'] != false ||
+          name == 'comic_status';
+      if (name.startsWith('fav_') ||
+          name.startsWith('updates_') ||
+          needsStatus) {
         await context.run.wait(favorites.init());
       }
       if (name.startsWith('later_') || needsStatus) {
@@ -359,16 +252,7 @@ class AgentTools {
         return sources().map(_capability).toList();
       case 'list_search_options':
         final source = await _source(_text(a, 'source_key'), c);
-        return (source.searchPageData?.searchOptions ?? [])
-            .map(
-              (option) => {
-                'label': option.label,
-                'type': option.type,
-                'options': option.options,
-                'default': option.defaultValue,
-              },
-            )
-            .toList();
+        return _searchOptions(source);
       case 'search_source':
         return _search(a, c);
       case 'comic_resolve':
@@ -384,19 +268,35 @@ class AgentTools {
             'include_status 需要布尔值',
           );
         }
-        final details = await _details(source, cached?.comicId ?? id, c);
+        final details = await _loadDetails(source, cached?.comicId ?? id, c);
+        _cacheDetails(details, alias: id);
         final brief = _rememberDetails(details, c, alias: id);
         return {
           ..._detailJson(details, brief),
-          if (name == 'comic_open_by_id' && a['include_status'] != false)
+          if (a['include_status'] != false)
             ..._status((brief.sourceKey, brief.comicId)),
         };
       case 'showcase_comics':
         return _showcase(a, c);
       case 'fav_list_folders':
-        return favorites.folderNames
-            .map((f) => {'name': f, 'count': favorites.count(f)})
-            .toList();
+        final keyword = a.containsKey('keyword')
+            ? _text(a, 'keyword').toLowerCase()
+            : null;
+        final followed = app.followedFolder();
+        return _paged(
+          [
+            for (final folder in favorites.folderNames)
+              if (keyword == null || folder.toLowerCase().contains(keyword))
+                {
+                  'name': folder,
+                  'count': favorites.count(folder),
+                  if (folder == followed) 'follow_updates': true,
+                },
+          ],
+          a,
+          size: 50,
+          maximum: 200,
+        );
       case 'fav_list':
       case 'fav_search':
         return _favoriteList(name, a, c);
@@ -427,19 +327,18 @@ class AgentTools {
               .toList(),
         };
       case 'fav_create_folder':
-        final folder = _text(a, 'name').trim();
-        _validateFolderName(folder);
-        if (favorites.existsFolder(folder)) {
-          return {
-            'name': folder,
-            'status': 'skipped',
-            'reason': 'ALREADY_EXISTS',
-          };
-        }
-        c.run.check();
-        return {'name': favorites.createFolder(folder), 'status': 'created'};
-      default:
+        if (a.containsKey('name')) return _createFolder(_text(a, 'name'), c);
+        return _createFolders(a, c);
+      case 'fav_rename_folder':
+        return _renameFolders(a, c);
+      case 'fav_add' ||
+          'fav_remove' ||
+          'fav_move' ||
+          'later_add' ||
+          'later_remove':
         return _write(name, a, c);
+      default:
+        return _dispatchMore(name, a, c);
     }
   }
 
@@ -455,6 +354,11 @@ class AgentTools {
         : null,
     'id_matcher': source.idMatcher?.pattern,
     'link_domains': source.linkHandler?.domains ?? [],
+    'explore_pages': source.explorePages.length,
+    'categories': source.categoryData != null,
+    'ranking': source.categoryComicsData?.rankingData != null,
+    'network_favorites': source.favoriteData != null,
+    'comments': source.commentsLoader != null,
   };
 
   Future<ComicSource> _source(String key, AgentToolContext c) async {
@@ -465,7 +369,7 @@ class AgentTools {
     throw AgentException('SOURCE_NOT_FOUND', '漫画源 $key 未安装或不可用');
   }
 
-  Future<ComicDetails> _details(
+  Future<ComicDetails> _loadDetails(
     ComicSource source,
     String id,
     AgentToolContext c,
@@ -535,19 +439,67 @@ class AgentTools {
     'stars': d.stars,
     'url': d.url,
     'max_page': d.maxPage,
-    'chapters': {
-      'count': d.chapters?.length ?? 0,
-      'groups': d.chapters?.groups.toList() ?? [],
-      'items':
-          d.chapters?.allChapters.entries
-              .map((e) => {'id': e.key, 'name': e.value})
-              .toList() ??
-          [],
-    },
+    // Long series can have thousands of chapters; the rest are paged.
+    'chapters': _chapterPage(d.chapters, null, 1, 30),
     'recommend': (d.recommend ?? <Comic>[])
         .map((item) => _briefJson(fromComic(item)))
         .toList(),
   };
+
+  /// Chapter indexes are 1-based as in the reader; grouped comics number
+  /// chapters within their group.
+  static AgentJson _chapterPage(
+    ComicChapters? chapters,
+    String? group,
+    int page,
+    int size,
+  ) {
+    if (chapters == null) {
+      return {'count': 0, 'items': <AgentJson>[], 'total_pages': 0};
+    }
+    final items = <AgentJson>[];
+    if (chapters.isGrouped) {
+      final groups = chapters.groups.toList();
+      if (group != null && !groups.contains(group)) {
+        throw AgentException('NOT_FOUND', '没有名为 $group 的章节分组');
+      }
+      for (var g = 0; g < groups.length; g++) {
+        if (group != null && groups[g] != group) continue;
+        var index = 0;
+        for (final entry in chapters.getGroup(groups[g]).entries) {
+          items.add({
+            'group': groups[g],
+            'group_index': g + 1,
+            'index': ++index,
+            'id': entry.key,
+            'title': entry.value,
+          });
+        }
+      }
+    } else {
+      if (group != null) {
+        throw const AgentException('INVALID_ARGUMENT', '该漫画的章节没有分组');
+      }
+      var index = 0;
+      for (final entry in chapters.allChapters.entries) {
+        items.add({'index': ++index, 'id': entry.key, 'title': entry.value});
+      }
+    }
+    return {
+      'count': chapters.length,
+      if (chapters.isGrouped)
+        'groups': [
+          for (final name in chapters.groups)
+            {'title': name, 'count': chapters.getGroup(name).length},
+        ],
+      if (group != null) 'group': group,
+      'items': items.skip((page - 1) * size).take(size).toList(),
+      'page': page,
+      'page_size': size,
+      'total_pages': (items.length / size).ceil(),
+      'has_more': page * size < items.length,
+    };
+  }
 
   AgentJson _favoriteStatus((String, String) ref) {
     final folders = favorites.find(ref.$2, _type(ref.$1));
@@ -570,6 +522,7 @@ class AgentTools {
   AgentJson _status((String, String) ref) => {
     ..._favoriteStatus(ref),
     ..._laterStatus(ref),
+    ..._libraryStatus(ref),
   };
 
   (String, String) _canonicalRef((String, String) ref, AgentToolContext c) {
@@ -614,12 +567,18 @@ class AgentTools {
     if (isCursor && page != 1 || !isCursor && cursor != null) {
       throw const AgentException('INVALID_ARGUMENT', '该源的页码/游标参数不匹配');
     }
-    c.run.check();
-    final result = await c.run.wait(
-      isCursor
+    final (result, cached) = await _cachedPage<List<Comic>>(
+      [
+        'search',
+        source.key,
+        keyword,
+        options,
+        if (isCursor) cursor else page,
+      ],
+      () => isCursor
           ? search.loadNext!(keyword, cursor as String?, options)
           : search.loadPage!(keyword, page, options),
-      timeout: sourceTimeout,
+      c,
     );
     if (result.error) {
       throw AgentException(
@@ -627,37 +586,18 @@ class AgentTools {
         '搜索失败：${result.errorMessage ?? ''}',
       );
     }
-    final items = result.data.map(fromComic).toList();
-    for (final item in items) {
-      store.remember(c.conversationId, item);
-    }
-    final maxPage = !isCursor && result.subData is int
-        ? result.subData as int
-        : null;
-    final next =
-        isCursor &&
-            result.subData is String &&
-            result.subData != cursor &&
-            (result.subData as String).isNotEmpty
-        ? result.subData as String
-        : null;
-    final hasMore = isCursor
-        ? next != null
-        : maxPage != null
-        ? page < maxPage
-        : items.isNotEmpty;
     return {
       'source_key': source.key,
       'keyword': keyword,
       'options': options,
-      'style': isCursor ? 'cursor' : 'page',
-      'page': isCursor ? null : page,
-      'max_page': maxPage,
-      'next_page': !isCursor && hasMore ? page + 1 : null,
-      'next_cursor': next,
-      'has_more': hasMore,
-      'exhausted': !hasMore,
-      'items': items.map(_briefJson).toList(),
+      ..._comicPage(
+        result,
+        c,
+        cursor: isCursor,
+        page: page,
+        current: cursor as String?,
+        cached: cached,
+      ),
     };
   }
 
@@ -709,7 +649,7 @@ class AgentTools {
       if (id == null || id.isEmpty) {
         throw const AgentException('NOT_FOUND', '漫画源未能解析这个链接');
       }
-      final details = await _details(source, id, c);
+      final details = await _loadDetails(source, id, c);
       final comic = _rememberDetails(details, c, alias: id);
       return {
         'resolved_by': linkSources.isNotEmpty ? 'url_extract' : 'id_match',
@@ -837,10 +777,10 @@ class AgentTools {
   }
 
   AgentJson _favoriteList(String name, AgentJson a, AgentToolContext c) {
-    final folders = name == 'fav_list' || a.containsKey('folder')
+    final folders = a.containsKey('folder')
         ? [_folder(a, 'folder')]
         : favorites.folderNames;
-    final keyword = name == 'fav_search' ? _text(a, 'keyword') : null;
+    final keyword = a.containsKey('keyword') ? _text(a, 'keyword') : null;
     final items = <AgentJson>[];
     for (final folder in folders) {
       final values = keyword == null
@@ -856,6 +796,25 @@ class AgentTools {
       }
     }
     return _localPage(items, a, c);
+  }
+
+  /// A page of an in-memory list with the counts needed to continue.
+  static AgentJson _paged(
+    List<AgentJson> items,
+    AgentJson a, {
+    int size = 20,
+    int maximum = 50,
+  }) {
+    final page = _number(a, 'page', 1, 1000000);
+    final pageSize = _number(a, 'page_size', size, maximum);
+    return {
+      'items': items.skip((page - 1) * pageSize).take(pageSize).toList(),
+      'total': items.length,
+      'page': page,
+      'page_size': pageSize,
+      'total_pages': (items.length / pageSize).ceil(),
+      'has_more': page * pageSize < items.length,
+    };
   }
 
   AgentJson _localPage(List<AgentJson> items, AgentJson a, AgentToolContext c) {
@@ -878,6 +837,8 @@ class AgentTools {
           .toList(),
       'total': items.length,
       'page': page,
+      'page_size': size,
+      'total_pages': (items.length / size).ceil(),
       'has_more': page * size < items.length,
     };
   }
@@ -923,7 +884,7 @@ class AgentTools {
     }
     final source = await _source(ref.$1, c);
     return _rememberDetails(
-      await _details(source, ref.$2, c),
+      await _loadDetails(source, ref.$2, c),
       c,
       alias: ref.$2,
     );
@@ -1227,6 +1188,19 @@ class AgentTools {
       () => later.batchNotifications(() {
         for (final entry in entries) {
           try {
+            if (entry['kind'] == 'history') {
+              if (!app.historyReady) throw StateError('History is closed');
+              final history = _AgentLibraryTools._historyFromMap(
+                agentObject(entry['history']),
+              );
+              if (app.findHistory(history.id, history.type) != null) {
+                skipped++;
+              } else {
+                app.addHistory(history);
+                restored++;
+              }
+              continue;
+            }
             final comic = AgentComic.fromJson(agentObject(entry['comic']));
             final added = entry['kind'] == 'favorite'
                 ? favorites.addComic(
