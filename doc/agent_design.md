@@ -1,12 +1,12 @@
 # Venera Prime Agent 接入设计方案
 
-> 版本：v6（2026-09-13）
-> 实施基线：6a62b16（Venera Prime 2.2.1，当前上游最新版）
-> 本次修订：完善手机输入和顶部模型信息，改用 Android 相册选图，增加纯文本附件与独立任务队列，优化大分组卡片的按需加载；工具按参数直接执行，内部按需补齐资料。
+> 版本：v7（2026-09-27）
+> 实施基线：5768460（上游 master，Venera Prime 2.4.1 之后）
+> 本次修订：同步上游并变基；修复在消息气泡上拖动无法滚动；新增 Responses、Messages 协议；工具扩展为45个并统一为批量、分页调用；优化流式与长内容渲染。
 
 ## 1. 目标与范围
 
-在应用内接入用户配置的 OpenAI Chat Completions 兼容模型，通过工具搜索漫画、查看详情、批量管理本地收藏和稍后再看。已知源和漫画 ID（含图片识别结果）时可直接调用目标工具，由工具自行取得所需资料；只有漫画名称时通过搜索定位。漫画在独立展示栏呈现。
+在应用内接入用户配置的模型（Chat Completions、OpenAI Responses、Anthropic Messages 三种协议任选），通过工具搜索漫画、查看详情、批量管理本地收藏和稍后再看。已知源和漫画 ID（含图片识别结果）时可直接调用目标工具，由工具自行取得所需资料；只有漫画名称时通过搜索定位。漫画在独立展示栏呈现。
 
 本期交付：
 
@@ -17,7 +17,7 @@
 - 运行中可选择插入消息，在下一次模型请求处理；或排队消息，等待前一任务完整完成后依次启动。
 - 一次用户任务包含多次模型响应和运行中补充消息；正文间的连续思考和工具合为默认折叠的过程组，组内每项详情也可独立展开。完成后只展开最终正文，之前的正文、过程组及补充消息再次整体折叠。
 - 不限制工具轮数、不按字符数截断模型或工具输出。按最近一次真实 token 统计在模型容量90%时自动压缩，也可手动触发；保留原始记录。
-- 19 个工具：源能力、发现、展示、本地收藏、稍后再看；支持批量操作、逐项回执和删除撤销。
+- 45 个工具：漫画源（详情、分类、仓库安装、更新）、搜索与发现（多源搜索、发现页、分类、排行、评论）、详情与章节、展示、本地收藏、稍后再看、追更、阅读历史、本地漫画与下载、网络收藏、打开页面、屏蔽词、阅读统计。同一操作只提供批量工具，长列表全部分页；逐项回执，删除收藏、稍后再看和历史可撤销。
 
 保留已有决定：只操作本地收藏；默认全自动；不提供删除收藏夹、清空收藏库、登录、验证码、通过工具获取章节图片或图片收藏写入；不做 headless 第二入口。图片收藏/历史工具、分享入口和会话导入导出留到后续。
 
@@ -108,27 +108,36 @@
 
 | 组 | 工具 | 主要契约 |
 | --- | --- | --- |
-| 源 | list_sources | key、name、搜索样式、id_matcher、link_domains |
-| 源 | list_search_options | source_key → 选项定义与默认值 |
-| 发现 | search_source | source_key、keyword、page/cursor、options → 源整页 items、has_more、next_page/next_cursor |
-| 发现 | comic_open_by_id | source_key、comic_id → 详情与收藏/稍后再看状态 |
-| 发现 | comic_resolve | query、可选 source_key → 候选和 resolved_by；名称返回源整页候选及翻页信息，歧义返回可选源 |
-| 发现 | comic_get | source_key、comic_id → 详情，排除内页和 thumbnails |
-| 展示 | showcase_comics | comics 数组、title、note、append/replace → 分组和跳过原因 |
-| 收藏 | fav_list_folders | 文件夹与实时 count |
-| 收藏 | fav_list | folder、page、page_size → items、total、has_more |
-| 收藏 | fav_search | keyword、可选 folder、page、page_size → 分页结果 |
-| 收藏 | fav_check | comics 数组 → folders、folder、in_favorites |
-| 收藏 | fav_add | folder、comics 数组 → 逐项回执 |
-| 收藏 | fav_remove | comics 数组、可选 folder；省略为所有本地收藏夹 |
-| 收藏 | fav_move | from_folder、to_folder、comics；同名文件夹或目标已有时跳过 |
-| 收藏 | fav_create_folder | name → 创建结果，不允许删文件夹 |
-| 稍后再看 | later_list | keyword、page、page_size → items、total、has_more |
-| 稍后再看 | later_check | comics 数组 → in_read_later、marker |
-| 稍后再看 | later_add | comics 数组 → 逐项回执 |
-| 稍后再看 | later_remove | comics 数组 → 逐项回执及本地撤销记录 |
+| 源 | list_sources | key、name、搜索样式、各功能是否可用 |
+| 源 | source_info | 搜索选项、发现页标题、分类分组与数量、分类筛选、排行选项、网络收藏与评论支持 |
+| 源 | source_categories | 按分组分页读取分类条目 → category/param 或搜索关键词 |
+| 源 | source_catalog / source_install | 分页浏览已启用仓库；按仓库中的 key 批量安装，不接受任意链接 |
+| 源 | source_update | 可选 source_keys → 检查并批量更新，逐项回执 |
+| 查找 | search_source / search_all | 单源或多源；页码式返回 page、max_page、next_page，游标式返回 next_cursor；多源逐源返回，失败互不影响 |
+| 查找 | comic_resolve | query、可选 source_key → 候选和 resolved_by |
+| 查找 | explore_load / category_comics / ranking_comics | 发现页（列表、多分区、混合）、分类（默认筛选按分类页规则）、排行，均分页 |
+| 漫画 | comic_get | 详情与本地状态；章节只返回总数、前30章与章节页数，排除内页和缩略图 |
+| 漫画 | comic_chapters | 分页（默认30）读取章节目录，可按分组；复用详情缓存 |
+| 漫画 | comic_status | comics 数组 → 收藏夹、稍后再看、阅读进度、下载状态 |
+| 漫画 | comic_comments | 漫画或章节评论，分页 |
+| 展示 | showcase_comics | comics 数组、title、note、append/replace |
+| 收藏 | fav_list_folders | 分页，可按名称过滤，标明追更收藏夹 |
+| 收藏 | fav_list | 可选 folder、keyword → 分页浏览或搜索本地收藏 |
+| 收藏 | fav_add / fav_remove / fav_move | comics 数组 → 逐项回执；移除可撤销 |
+| 收藏 | fav_create_folder / fav_rename_folder | names / renames 数组；不提供删除收藏夹 |
+| 稍后再看 | later_list / later_add / later_remove | 分页浏览或搜索；批量写入与撤销 |
+| 追更 | updates_list / updates_mark_read | 分页读取有更新的漫画，refresh 时先联网检查；批量标记已读 |
+| 历史 | history_list / history_remove | 分页浏览或搜索进度；批量删除可撤销 |
+| 本地与下载 | local_list / local_delete | 分页浏览或搜索本地漫画；批量删除下载文件，不可撤销 |
+| 本地与下载 | download_start / download_list / download_control | 批量加入下载（跳过已下载章节和已排队漫画）；分页查看队列；批量暂停/继续/重试/置顶/取消 |
+| 网络收藏 | net_fav_folders / net_fav_list / net_fav_add / net_fav_remove | 需源已登录；多收藏夹源需指定 folder；删除所需的 favorite_id 由工具记住 |
+| 应用 | open_comic / open_page | 为用户打开详情、阅读器或页面，模型看不到页面内容 |
+| 应用 | blocked_words_list / blocked_words_update | 漫画或评论屏蔽词；批量增删 |
+| 应用 | reading_stats | 最近若干天的每日时长与阅读最多的漫画 |
 
-fav_check 未收藏时 folder=-1、folders=[]，恰好一个文件夹返回名称，多个文件夹时 folder=null，以 folders 为准。later_check 的 marker=-1/1。
+旧工具 fav_check、later_check、fav_search、comic_open_by_id、list_search_options 以及单个 name 的 fav_create_folder 不再提供给模型，但仍可执行，以兼容已保存会话中的调用和重试。不提供应用设置修改工具。
+
+工具通过 AgentAppBridge 访问历史、本地漫画、下载、追更、漫画源仓库、统计和导航，测试以替身替换。源列表页（搜索、发现、分类、排行、评论）按全部请求参数缓存5分钟，只缓存成功结果；详情缓存10分钟，供章节翻页、下载和阅读器复用；网络收藏属于账号数据，不缓存。
 
 ### 5.2 漫画身份和元数据
 
@@ -191,6 +200,15 @@ App.dataPath/agent 下保存 config.json、secrets.json（modelId→密钥）和
 SQLite 启用 foreign_keys=ON 和 user_version=4；消息、图片、文本附件、展示、seen、撤销记录、上下文摘要和操作展示归属关联会话并级联删除。v1 升级从成功工具回执补齐旧会话的操作展示，不重放收藏/稍后再看的实际操作；v2 升级增加 message_images 并启用增量空间回收；v3 升级只增加 message_text_files，不重复执行完整 VACUUM，保留原消息、模型设置和摘要。展示状态独立于消息，重试不清空面板。未完成消息恢复为 interrupted；插入消息和待开始的独立任务均保留，重开后由用户继续；损坏数据报告错误而非静默覆盖。
 
 ### 6.3 请求
+
+模型可选择三种协议之一，历史以统一结构保存，由 agent_protocol.dart 转换请求并解析流式事件：
+
+- Chat Completions：/chat/completions，Bearer 认证，stream_options.include_usage。
+- OpenAI Responses：/responses，instructions + input、function_call/function_call_output，默认 store=false；开启思考回传时请求 reasoning.encrypted_content，并在工具调用之间原样回传推理条目。
+- Anthropic Messages：/messages，x-api-key 与 anthropic-version，system、交替角色、tool_use/tool_result；自动补 max_tokens（高于思考预算）；签名思考块原样回传。
+
+回传数据只发给产生它的同一模型；压缩摘要请求不带工具，工具记录展开为文本。HTTP 错误附带服务商返回的简短原因，并移除回显的密钥。
+
 
 独立 Dio 复用 RHttpAdapter 的代理/DNS/TLS 设置，不使用 AppDio 的15秒超时、正文日志和 Cloudflare 拦截器。连接20秒，提交请求到收到响应头最多60秒，帧间隔60秒。现有 RHttpAdapter 不完整转发 Dio 的取消和超时设置，因此由 AgentHttpAdapter 桥接 rhttp.CancelToken，并由 AgentClient 独立约束首响应等待；不把长时间流式响应误当成总请求超时。
 
@@ -393,8 +411,16 @@ $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 & 'D:\.tool\flutter-venera.ps1' test --no-pub --dart-define=VENERA_SHOWCASE_METRICS=true test/agent/agent_showcase_performance_test.dart
 ```
 
+### 9.6 上游同步、协议、工具扩展与渲染（2026-09-27）
+
+- 上游改写了提交历史（作者信息匿名化），与 fork 无共同祖先；已确认上游 2.2.1 与 fork 的 2.2.1 树完全相同，将 master 重置为上游 master，并把 Agent 分支的提交变基到上游之上，未产生冲突。
+- 修复从用户消息气泡开始拖动无法滚动：SelectableText 自带纵向 Scrollable 会抢占拖动，改为 SelectionArea + Text，保留长按选择与复制。
+- 新增 Responses、Messages 协议，工具扩展为45个（见第5.1节），界面为每个工具显示名称、图标和结果摘要。
+- 流式输出只通知当前轮次；长 Markdown 按稳定段落边界分块，流式时只重新解析最后一块；工具回执 JSON 只编码一次，超长回执按需布局。
+- Agent 测试 222 项通过，lib 静态分析通过。
+
 ## 10. 后续范围与合并维护
 
-图片收藏/历史只读工具、封面消歧专用工具、分享/详情页入口、会话导入导出、组级批量快捷操作为后续扩展；headless、网络收藏、通过工具获取章节图片、删除收藏夹不在本方案范围。
+图片收藏只读工具、封面消歧专用工具、会话导入导出、组级批量快捷操作为后续扩展；headless、应用设置修改、通过工具获取章节图片、删除收藏夹、发表评论不在本方案范围。
 
 每次合并上游先检查第2.2节接入文件，再跑 Agent 协议、存储、集合与导航测试；API变化优先改 lib/agent 内的适配，保持上游代码改动面稳定。
