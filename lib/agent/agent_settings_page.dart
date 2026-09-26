@@ -188,6 +188,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   late bool _vision;
   late bool _reasoning;
   late bool _stream;
+  late AgentProtocol _protocol;
   bool _pastingKey = false;
   bool _saving = false;
   String? _error;
@@ -213,6 +214,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       'headers': _encoder.convert(model?.headers ?? {}),
       'context': (model?.contextWindowTokens ?? 128000).toString(),
       'temperature': model?.temperature?.toString() ?? '',
+      'max_output': model?.maxOutputTokens?.toString() ?? '',
     };
     for (final entry in values.entries) {
       _fields[entry.key] = TextEditingController(text: entry.value);
@@ -220,10 +222,33 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     _vision = model?.supportsVision ?? false;
     _reasoning = model?.includeReasoning ?? false;
     _stream = model?.stream ?? true;
+    _protocol = model?.protocol ?? AgentProtocol.chat;
     _defaultThinking = model?.defaultThinking ?? 'default';
     _updateLevels();
     _fields['thinking']!.addListener(_thinkingChanged);
   }
+
+  static const _defaultUrls = {
+    AgentProtocol.chat: 'https://api.openai.com/v1',
+    AgentProtocol.responses: 'https://api.openai.com/v1',
+    AgentProtocol.messages: 'https://api.anthropic.com/v1',
+  };
+
+  void _selectProtocol(AgentProtocol protocol) {
+    final url = _fields['url']!;
+    // Only replace an untouched official address; never a custom gateway.
+    if (url.text.trim() == _defaultUrls[_protocol]) {
+      url.text = _defaultUrls[protocol]!;
+    }
+    setState(() => _protocol = protocol);
+  }
+
+  String get _thinkingExample => switch (_protocol) {
+    AgentProtocol.chat => '{"reasoning_effort":"low"}',
+    AgentProtocol.responses => '{"reasoning":{"effort":"low","summary":"auto"}}',
+    AgentProtocol.messages =>
+      '{"thinking":{"type":"enabled","budget_tokens":4000}}',
+  };
 
   List<AgentThinkingLevel> _readLevels() {
     try {
@@ -321,6 +346,10 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       if (temperature.isNotEmpty && double.tryParse(temperature) == null) {
         throw const FormatException('temperature 需要数字，或留空');
       }
+      final maxOutput = _value('max_output');
+      if (maxOutput.isNotEmpty && (int.tryParse(maxOutput) ?? 0) < 1) {
+        throw const FormatException('最大输出 tokens 需要正整数，或留空');
+      }
       final model = AgentModel(
         id: widget.original?.id ?? agentId(),
         name: _value('name'),
@@ -335,6 +364,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         headers: Map<String, String>.from(_object('headers', '请求头')),
         contextWindowTokens: contextWindow,
         temperature: temperature.isEmpty ? null : double.parse(temperature),
+        protocol: _protocol,
+        maxOutputTokens: maxOutput.isEmpty ? null : int.parse(maxOutput),
       );
       model.validate();
       final old = widget.store.settings;
@@ -406,11 +437,44 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
             padding: const EdgeInsets.all(20),
             children: [
               _field('name', '显示名称', required: true),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: '接口协议',
+                    border: OutlineInputBorder(),
+                    helperText: '按服务商支持的接口选择，三者任选其一',
+                    helperMaxLines: 2,
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<AgentProtocol>(
+                      key: const ValueKey('agent-model-protocol'),
+                      isExpanded: true,
+                      isDense: true,
+                      value: _protocol,
+                      items: [
+                        for (final protocol in AgentProtocol.values)
+                          DropdownMenuItem(
+                            value: protocol,
+                            child: Text(protocol.label),
+                          ),
+                      ],
+                      onChanged: _saving
+                          ? null
+                          : (value) {
+                              if (value != null) _selectProtocol(value);
+                            },
+                    ),
+                  ),
+                ),
+              ),
               _field(
                 'url',
                 'API 地址',
                 required: true,
-                hint: '填写 /v1 基础地址或完整 /chat/completions 地址',
+                hint:
+                    '填写 /v1 基础地址或完整的 ${_protocol.path} 地址；'
+                    '${_protocol == AgentProtocol.messages ? '使用 x-api-key 认证' : '使用 Bearer 认证'}',
               ),
               _field('model', '模型 ID', required: true, hint: '填写服务商提供的准确模型名称'),
               TextFormField(
@@ -458,20 +522,26 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 value: _vision,
                 onChanged: (v) => setState(() => _vision = v),
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('将思考内容回传模型'),
-                subtitle: const Text('仅对要求 reasoning_content 的服务开启'),
-                value: _reasoning,
-                onChanged: (v) => setState(() => _reasoning = v),
-              ),
+              // Anthropic signed thinking is always returned as required.
+              if (_protocol != AgentProtocol.messages)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('将思考内容回传模型'),
+                  subtitle: Text(
+                    _protocol == AgentProtocol.chat
+                        ? '仅对要求 reasoning_content 的服务开启'
+                        : '请求加密推理内容并在工具调用之间回传，适用于推理模型',
+                  ),
+                  value: _reasoning,
+                  onChanged: (v) => setState(() => _reasoning = v),
+                ),
               const SizedBox(height: 16),
               _field(
                 'thinking',
                 '思考深度列表（JSON）',
                 lines: 4,
                 hint:
-                    '每项包含 id、label 和 params；例如 params: {"reasoning_effort":"low"}，以服务商支持为准',
+                    '每项包含 id、label 和 params；例如 params: $_thinkingExample，以服务商支持为准',
               ),
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
@@ -511,6 +581,15 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 hint: '填写服务商提供的容量；达到90%时自动压缩，也可在对话中手动压缩',
               ),
               _field('temperature', 'temperature（可选，0–2）'),
+              _field(
+                'max_output',
+                _protocol == AgentProtocol.messages
+                    ? '最大输出 tokens（可选，默认 8192）'
+                    : '最大输出 tokens（可选）',
+                hint: _protocol == AgentProtocol.messages
+                    ? '该协议必填，留空时使用默认值；开启思考时会自动高于思考预算'
+                    : null,
+              ),
               ExpansionTile(
                 title: const Text('高级请求配置'),
                 children: [
@@ -518,7 +597,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                     'body',
                     '额外请求体（JSON）',
                     lines: 3,
-                    hint: '可配置服务商参数；model、messages、tools 和 stream 由应用管理',
+                    hint: '可配置服务商参数；模型、消息、工具和 stream 由应用管理',
                   ),
                   _field(
                     'headers',

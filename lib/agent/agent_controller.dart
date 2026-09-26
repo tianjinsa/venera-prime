@@ -763,6 +763,13 @@ class AgentController extends ChangeNotifier {
             response.reasoning.isNotEmpty) {
           assistant.appendText('reasoning', response.reasoning);
         }
+        if (response.providerState != null) {
+          // Not displayed; replayed only to the same model and protocol.
+          assistant.parts.add({
+            'type': 'provider_state',
+            ...response.providerState!,
+          });
+        }
         for (final tool in response.tools) {
           assistant.parts.add({
             'type': 'tool_call',

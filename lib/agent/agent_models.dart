@@ -99,6 +99,22 @@ class AgentThinkingLevel {
   AgentJson toJson() => {'id': id, 'label': label, 'params': params};
 }
 
+/// The wire protocol of a model service. Every protocol shares the same
+/// conversation history; only the request body and stream events differ.
+enum AgentProtocol {
+  chat('chat', 'Chat Completions', '/chat/completions'),
+  responses('responses', 'OpenAI Responses', '/responses'),
+  messages('messages', 'Anthropic Messages', '/messages');
+
+  final String id;
+  final String label;
+  final String path;
+  const AgentProtocol(this.id, this.label, this.path);
+
+  static AgentProtocol parse(Object? value) =>
+      values.firstWhere((p) => p.id == value, orElse: () => chat);
+}
+
 class AgentModel {
   final String id;
   final String name;
@@ -113,6 +129,11 @@ class AgentModel {
   final Map<String, String> headers;
   final int contextWindowTokens;
   final double? temperature;
+  final AgentProtocol protocol;
+
+  /// Output token limit. Anthropic Messages requires one; the others only
+  /// send it when configured.
+  final int? maxOutputTokens;
   const AgentModel({
     required this.id,
     required this.name,
@@ -129,6 +150,8 @@ class AgentModel {
     this.headers = const {},
     this.contextWindowTokens = 128000,
     this.temperature,
+    this.protocol = AgentProtocol.chat,
+    this.maxOutputTokens,
   });
   factory AgentModel.fromJson(AgentJson json) => AgentModel(
     id: json['id'] as String,
@@ -150,6 +173,8 @@ class AgentModel {
     headers: Map<String, String>.from(json['headers'] as Map? ?? {}),
     contextWindowTokens: json['context_window_tokens'] as int? ?? 128000,
     temperature: (json['temperature'] as num?)?.toDouble(),
+    protocol: AgentProtocol.parse(json['protocol']),
+    maxOutputTokens: json['max_output_tokens'] as int?,
   );
   Uri get endpoint {
     final uri = Uri.tryParse(baseUrl.trim());
@@ -161,12 +186,17 @@ class AgentModel {
         uri.hasQuery) {
       throw const FormatException('API 地址需要是有效的 HTTP(S) 地址，不含账号或查询参数');
     }
-    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
-    return uri.replace(
-      path: path.endsWith('/chat/completions')
-          ? path
-          : '$path/chat/completions',
-    );
+    var path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    // A complete endpoint of any protocol is accepted as its base address.
+    for (final other in AgentProtocol.values) {
+      if (path.endsWith(other.path)) {
+        path = path.substring(0, path.length - other.path.length);
+        break;
+      }
+    }
+    // Official Responses and Messages services are versioned under /v1.
+    if (path.isEmpty && protocol != AgentProtocol.chat) path = '/v1';
+    return uri.replace(path: '$path${protocol.path}');
   }
 
   void validate() {
@@ -196,6 +226,9 @@ class AgentModel {
         (!temperature!.isFinite || temperature! < 0 || temperature! > 2)) {
       throw const FormatException('temperature 应为 0–2');
     }
+    if (maxOutputTokens != null && maxOutputTokens! < 1) {
+      throw const FormatException('最大输出 tokens 需要是正整数');
+    }
   }
 
   AgentThinkingLevel thinking(String? id) => thinkingLevels.firstWhere(
@@ -219,6 +252,8 @@ class AgentModel {
     'headers': headers,
     'context_window_tokens': contextWindowTokens,
     'temperature': temperature,
+    'protocol': protocol.id,
+    'max_output_tokens': maxOutputTokens,
   };
 }
 

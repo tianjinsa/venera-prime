@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'agent_context.dart';
 import 'agent_models.dart';
+import 'agent_protocol.dart';
 
 const agentSystemPrompt = '''
 你是 Venera Prime 内的漫画助手。用用户的语言回答。
@@ -127,11 +128,18 @@ List<AgentJson> agentWire(
         .map((p) => p['text'] as String? ?? '')
         .join();
     if (calls.isEmpty && message.text.isEmpty) continue;
+    AgentJson? provider;
+    for (final part in message.parts) {
+      if (part['type'] == 'provider_state') provider = part;
+    }
     result.add({
       'role': 'assistant',
       'content': message.text.isEmpty ? null : message.text,
       if (model.includeReasoning && thinking.isNotEmpty)
         'reasoning_content': thinking,
+      // Signed or encrypted reasoning is only valid for the model that made it.
+      if (provider != null && message.modelId == model.id)
+        AgentProtocolCodec.providerKey: provider,
       if (calls.isNotEmpty)
         'tool_calls': calls
             .map(
