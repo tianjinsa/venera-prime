@@ -38,8 +38,8 @@ class AgentUserMessageView extends StatelessWidget {
               margin: const EdgeInsets.only(top: 12),
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
               decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest.withValues(alpha: .65),
-                borderRadius: BorderRadius.circular(18),
+                color: scheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(16),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

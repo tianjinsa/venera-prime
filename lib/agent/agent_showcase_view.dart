@@ -77,21 +77,45 @@ class AgentShowcasePanel extends StatelessWidget {
         sections.insert(0, sections.removeAt(sectionIndex));
       }
     }
+    final scheme = Theme.of(context).colorScheme;
+    final count = groups.fold<int>(0, (n, g) => n + g.comics.length);
     return Column(
       children: [
-        ListTile(
-          title: const Text('展示漫画'),
-          trailing: close == null
-              ? IconButton(
-                  tooltip: '清空展示面板',
-                  onPressed: groups.isEmpty ? null : clear,
-                  icon: const Icon(Icons.clear_all),
-                )
-              : IconButton(
-                  tooltip: '关闭',
-                  onPressed: close,
-                  icon: const Icon(Icons.close),
+        SizedBox(
+          height: 56,
+          child: Row(
+            children: [
+              const SizedBox(width: 16),
+              const Text('展示漫画', style: TextStyle(fontSize: 18)),
+              if (count > 0)
+                // The count badge of the home page modules.
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: scheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text('$count', style: const TextStyle(fontSize: 12)),
                 ),
+              const Spacer(),
+              close == null
+                  ? IconButton(
+                      tooltip: '清空展示面板',
+                      onPressed: groups.isEmpty ? null : clear,
+                      icon: const Icon(Icons.clear_all),
+                    )
+                  : IconButton(
+                      tooltip: '关闭',
+                      onPressed: close,
+                      icon: const Icon(Icons.close),
+                    ),
+              const SizedBox(width: 8),
+            ],
+          ),
         ),
         if (close != null && groups.isNotEmpty)
           TextButton(onPressed: clear, child: const Text('清空展示面板')),
@@ -126,18 +150,18 @@ class AgentShowcasePanel extends StatelessWidget {
         key: ValueKey(id),
         padding: const EdgeInsets.only(bottom: 12),
         sliver: DecoratedSliver(
+          // Outlined like the modules of the home page.
           decoration: BoxDecoration(
             color: id == focusedGroup
                 ? Theme.of(
                     context,
-                  ).colorScheme.secondaryContainer.withValues(alpha: .35)
-                : Theme.of(context).colorScheme.surfaceContainerLow,
+                  ).colorScheme.primaryContainer.withValues(alpha: .36)
+                : null,
             border: Border.all(
-              color: Theme.of(
-                context,
-              ).colorScheme.outlineVariant.withValues(alpha: .45),
+              color: Theme.of(context).colorScheme.outlineVariant,
+              width: .6,
             ),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(8),
           ),
           sliver: SliverPadding(
             padding: const EdgeInsets.all(6),

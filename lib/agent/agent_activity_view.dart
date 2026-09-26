@@ -23,67 +23,36 @@ class AgentActivityView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final dark = theme.brightness == Brightness.dark;
-    final surface = Color.alphaBlend(
-      scheme.onSurface.withValues(alpha: dark ? .06 : .045),
-      scheme.surface,
-    );
-    final secondary = Color.alphaBlend(
-      scheme.onSurface.withValues(alpha: .72),
-      surface,
-    );
-    final border = scheme.onSurface.withValues(alpha: .1);
-    final detailSurface = Color.alphaBlend(
-      scheme.onSurface.withValues(alpha: dark ? .035 : .025),
-      surface,
-    );
-    final activityTheme = theme.copyWith(
-      colorScheme: scheme.copyWith(
-        onSurface: secondary,
-        onSurfaceVariant: secondary,
-        surfaceContainerLow: detailSurface,
-        outlineVariant: border,
-      ),
-      textTheme: theme.textTheme.apply(
-        bodyColor: secondary,
-        displayColor: secondary,
-      ),
-    );
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       decoration: BoxDecoration(
-        color: surface,
-        border: Border.all(color: border),
-        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant, width: .6),
+        borderRadius: BorderRadius.circular(8),
       ),
-      child: Theme(
-        data: activityTheme,
-        child: AgentDisclosure(
-          storageId: storageId,
-          resetToken: resetToken,
-          label: running ? '执行中' : '执行过程',
-          detail: [
-            if (reasoningCount > 0) '思考 $reasoningCount',
-            if (toolCount > 0) '工具 $toolCount',
-            if (failures > 0) '$failures 项未完成',
-          ].join(' · '),
-          color: failures > 0 ? scheme.error : secondary,
-          leading: running
-              ? const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 1.5),
-                )
-              : const Icon(Icons.account_tree_outlined),
-          builder: (_) => Padding(
-            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: children,
-            ),
+      child: AgentDisclosure(
+        storageId: storageId,
+        resetToken: resetToken,
+        label: running ? '执行中' : '执行过程',
+        detail: [
+          if (reasoningCount > 0) '思考 $reasoningCount',
+          if (toolCount > 0) '工具 $toolCount',
+          if (failures > 0) '$failures 项未完成',
+        ].join(' · '),
+        color: failures > 0 ? scheme.error : null,
+        leading: running
+            ? const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 1.5),
+              )
+            : const Icon(Icons.account_tree_outlined),
+        builder: (_) => Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
           ),
         ),
       ),

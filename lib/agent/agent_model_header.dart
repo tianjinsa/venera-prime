@@ -101,11 +101,11 @@ class _AgentModelHeaderState extends State<AgentModelHeader> {
       return Tooltip(
         message: '$name · $thinking\n选择模型与思考深度',
         child: Material(
-          color: scheme.surfaceContainerHighest.withValues(alpha: .5),
-          borderRadius: BorderRadius.circular(10),
+          color: scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(8),
           child: InkWell(
             key: const ValueKey('agent-model-header'),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(8),
             onTap: controller == null ? null : _openPanel,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),

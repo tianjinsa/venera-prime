@@ -77,14 +77,15 @@ class _AgentHistoryPanelState extends State<AgentHistoryPanel> {
         .fold<int>(0, (total, c) => total + c.storageBytes);
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+        SizedBox(
+          height: 56,
           child: Row(
             children: [
+              const SizedBox(width: 16),
               Expanded(
                 child: Text(
                   _selecting ? '已选 ${_selected.length} 段' : '历史对话',
-                  style: Theme.of(context).textTheme.titleMedium,
+                  style: const TextStyle(fontSize: 18),
                 ),
               ),
               IconButton(
@@ -110,20 +111,26 @@ class _AgentHistoryPanelState extends State<AgentHistoryPanel> {
                     size: 20,
                   ),
                 ),
+              const SizedBox(width: 4),
             ],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: TextField(
             controller: widget.search,
             onChanged: widget.onSearch,
             enabled: !_deleting,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               hintText: '搜索对话',
-              prefixIcon: Icon(Icons.search),
+              prefixIcon: const Icon(Icons.search, size: 20),
               isDense: true,
-              border: OutlineInputBorder(),
+              filled: true,
+              fillColor: scheme.surfaceContainerHigh,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(32),
+                borderSide: BorderSide.none,
+              ),
             ),
           ),
         ),
@@ -179,87 +186,103 @@ class _AgentHistoryPanelState extends State<AgentHistoryPanel> {
                     final date = DateTime.fromMillisecondsSinceEpoch(
                       conversation.updatedAt,
                     );
-                    return ListTile(
-                      key: ValueKey('history-${conversation.id}'),
-                      contentPadding: const EdgeInsets.fromLTRB(12, 2, 4, 2),
-                      horizontalTitleGap: 6,
-                      minLeadingWidth: 24,
-                      selected: _selecting
-                          ? _selected.contains(conversation.id)
-                          : conversation.id == widget.currentId,
-                      leading: _selecting
-                          ? Checkbox(
-                              value: _selected.contains(conversation.id),
-                              visualDensity: VisualDensity.compact,
-                              onChanged: _deleting
-                                  ? null
-                                  : (_) => _toggle(conversation),
-                            )
-                          : null,
-                      title: Text(
-                        conversation.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${date.month}/${date.day} · ${conversation.messageCount} 条消息',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                    final selected = _selecting
+                        ? _selected.contains(conversation.id)
+                        : conversation.id == widget.currentId;
+                    // Marked like the selected folder in the favorites page.
+                    return DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? scheme.primaryContainer.withValues(alpha: .36)
+                            : null,
+                        border: Border(
+                          left: BorderSide(
+                            color: selected
+                                ? scheme.primary
+                                : Colors.transparent,
+                            width: 2,
                           ),
-                          Text(
-                            '约 ${agentFormatBytes(conversation.storageBytes)}',
-                            key: ValueKey('history-size-${conversation.id}'),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      child: ListTile(
+                        key: ValueKey('history-${conversation.id}'),
+                        contentPadding: const EdgeInsets.fromLTRB(14, 2, 4, 2),
+                        horizontalTitleGap: 6,
+                        minLeadingWidth: 24,
+                        leading: _selecting
+                            ? Checkbox(
+                                value: _selected.contains(conversation.id),
+                                visualDensity: VisualDensity.compact,
+                                onChanged: _deleting
+                                    ? null
+                                    : (_) => _toggle(conversation),
+                              )
+                            : null,
+                        title: Text(
+                          conversation.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${date.month}/${date.day} · ${conversation.messageCount} 条消息',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                          ),
-                        ],
-                      ),
-                      onTap: _deleting
-                          ? null
-                          : () => _selecting
-                                ? _toggle(conversation)
-                                : widget.onSelect(conversation),
-                      onLongPress: _deleting
-                          ? null
-                          : () => _toggle(conversation),
-                      trailing: _selecting
-                          ? null
-                          : SizedBox(
-                              width: 32,
-                              child: PopupMenuButton<String>(
-                                tooltip: '对话选项',
-                                padding: EdgeInsets.zero,
-                                icon: const Icon(Icons.more_horiz, size: 18),
-                                onSelected: (action) {
-                                  if (action == 'delete') {
-                                    widget.onDelete([conversation]);
-                                  } else if (action == 'select') {
-                                    _toggle(conversation);
-                                  } else {
-                                    widget.onRename(conversation);
-                                  }
-                                },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
-                                    value: 'rename',
-                                    child: Text('重命名'),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'select',
-                                    child: Text('选择对话'),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'delete',
-                                    child: Text('删除'),
-                                  ),
-                                ],
+                            Text(
+                              '约 ${agentFormatBytes(conversation.storageBytes)}',
+                              key: ValueKey('history-size-${conversation.id}'),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: scheme.onSurfaceVariant,
                               ),
                             ),
+                          ],
+                        ),
+                        onTap: _deleting
+                            ? null
+                            : () => _selecting
+                                  ? _toggle(conversation)
+                                  : widget.onSelect(conversation),
+                        onLongPress: _deleting
+                            ? null
+                            : () => _toggle(conversation),
+                        trailing: _selecting
+                            ? null
+                            : SizedBox(
+                                width: 32,
+                                child: PopupMenuButton<String>(
+                                  tooltip: '对话选项',
+                                  padding: EdgeInsets.zero,
+                                  icon: const Icon(Icons.more_horiz, size: 18),
+                                  onSelected: (action) {
+                                    if (action == 'delete') {
+                                      widget.onDelete([conversation]);
+                                    } else if (action == 'select') {
+                                      _toggle(conversation);
+                                    } else {
+                                      widget.onRename(conversation);
+                                    }
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'rename',
+                                      child: Text('重命名'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'select',
+                                      child: Text('选择对话'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Text('删除'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                      ),
                     );
                   },
                 ),

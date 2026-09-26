@@ -2,7 +2,7 @@
 
 > 版本：v7（2026-09-27）
 > 实施基线：5768460（上游 master，Venera Prime 2.4.1 之后）
-> 本次修订：同步上游并变基；修复在消息气泡上拖动无法滚动；新增 Responses、Messages 协议；工具扩展为45个并统一为批量、分页调用；优化流式与长内容渲染。
+> 本次修订：同步上游并变基；修复在消息气泡上拖动无法滚动；新增 Responses、Messages 协议；工具扩展为45个并统一为批量、分页调用；优化流式与长内容渲染；Responses、Messages 使用协议自带的思考深度字段；页面样式与应用统一。
 
 ## 1. 目标与范围
 
@@ -183,7 +183,14 @@
 
 ### 6.1 模型
 
-每个模型保存 id、name、base_url、model、supports_vision、thinking_levels[{id,label,params}]、default_thinking、include_reasoning_in_context、extra_body、headers、context_window_tokens、可选 temperature 和流式开关。上下文容量默认128000，由用户按实际模型修改。移除最大工具轮数字段，旧配置中的该字段被忽略，不再写回。默认思考深度从上方 JSON 列表动态生成下拉选项；选项删除时回退到首项，无效 JSON 时禁用下拉并提示修正。
+每个模型保存 id、name、base_url、model、supports_vision、thinking_levels[{id,label,params}]、default_thinking、include_reasoning_in_context、extra_body、headers、context_window_tokens、可选 temperature 和流式开关。上下文容量默认128000，由用户按实际模型修改。移除最大工具轮数字段，旧配置中的该字段被忽略，不再写回。Chat Completions 没有统一的思考字段，思考深度由用户以 JSON 列表配置，默认思考深度从该列表动态生成下拉选项；选项删除时回退到首项，无效 JSON 时禁用下拉并提示修正。Responses 与 Messages 使用协议自带的字段，设置页直接列出支持的档位供勾选（至少保留一项），不需要编写 JSON：
+
+| 协议 | 档位 | 请求参数 |
+| --- | --- | --- |
+| Responses | 默认、不思考、极低、低、中、高、超高、最高 | 默认不发送；不思考为 reasoning.effort=none；其余为 reasoning.effort=minimal/low/medium/high/xhigh/max，并请求 summary=auto |
+| Messages | 默认、不思考、低、中、高、超高、最高 | 默认不发送；不思考为 thinking.type=disabled；其余为 thinking={type: adaptive, display: summarized} 与 output_config.effort=low/medium/high/xhigh/max |
+
+新模型默认勾选默认、低、中、高。各模型实际支持的档位以服务商为准。在两种协议之间切换时保留共同档位。
 
 模型编辑页的输入框均使用普通文本输入配置，不设置 obscureText 或关闭 suggestions 触发 Android 的密码输入类型。API Key 提供粘贴按钮，粘贴后整体替换并保留完整内容；该字段关闭 IME 个性化学习，不主动切换安全输入法。
 
@@ -205,7 +212,7 @@ SQLite 启用 foreign_keys=ON 和 user_version=4；消息、图片、文本附�
 
 - Chat Completions：/chat/completions，Bearer 认证，stream_options.include_usage。
 - OpenAI Responses：/responses，instructions + input、function_call/function_call_output，默认 store=false；开启思考回传时请求 reasoning.encrypted_content，并在工具调用之间原样回传推理条目。
-- Anthropic Messages：/messages，x-api-key 与 anthropic-version，system、交替角色、tool_use/tool_result；自动补 max_tokens（高于思考预算）；签名思考块原样回传。
+- Anthropic Messages：/messages，x-api-key 与 anthropic-version，system、交替角色、tool_use/tool_result；自动补 max_tokens（思考与回答共用：有思考预算时为预算+8192，自适应思考时为16000，否则为8192，用户配置优先）；签名思考块原样回传。
 
 回传数据只发给产生它的同一模型；压缩摘要请求不带工具，工具记录展开为文本。HTTP 错误附带服务商返回的简短原因，并移除回显的密钥。
 
@@ -278,9 +285,11 @@ Agent 工具栏提供模型设置、历史、展示、新对话。手机布局�
 
 手机键盘显示时收起底部导航栏，由页面的 Scaffold 处理键盘避让，避免导航栏继续占高导致输入框与键盘之间留白。进入会话默认跟随最新消息；用户拖动、惯性滚动及按住列表期间暂停跟随，只有向最新消息方向上滑并在距底部160逻辑像素以内停下才恢复。向历史方向滑动或停在底部区域以外保持当前位置，流式更新不能抢占；嵌套工具详情滚动不改变消息列表的跟随状态。
 
-每次模型请求仍有独立 assistant 记录，但同一任务仅显示一次 Agent 标题。运行中正文按顺序直接呈现；两段正文之间的连续思考和工具合成一个默认收起的“执行过程”组，显示思考/工具数量。分组跨模型响应边界合并，遇到正文或用户补充消息才分隔。展开组后列出各项，思考内容与工具参数/结果仍各自默认折叠，可单独或同时展开多个。过程组采用柔和背景、细边框和较淡的小字号文字，与16px正文区分，兼顾明暗主题。
+每次模型请求仍有独立 assistant 记录，但同一任务仅显示一次 Agent 标题。运行中正文按顺序直接呈现；两段正文之间的连续思考和工具合成一个默认收起的“执行过程”组，显示思考/工具数量。分组跨模型响应边界合并，遇到正文或用户补充消息才分隔。展开组后列出各项，思考内容与工具参数/结果仍各自默认折叠，可单独或同时展开多个。过程组采用细边框和较淡的小字号文字，与16px正文区分，兼顾明暗主题。
 
 完成后只保留最后一次请求的正文在外，之前的正文、全部过程组及运行中补充消息收进“已完成”历史区域，原始用户请求留在外面。停止或失败时外层历史默认展开，内部过程组仍默认折叠。折叠状态使用显式 PageStorage 标识，与详情内部滚动状态隔离；流式更新及手动收起再展开保留用户选择，任务完成时重置外层历史、内部过程组和各项详情为折叠状态。
+
+页面样式与应用其他页面保持一致：标题栏高56、标题20号字，与 Appbar 相同；侧栏与卡片使用0.6宽的 outlineVariant 细线和8圆角，与首页模块、收藏页侧栏相同；当前历史对话使用收藏夹侧栏的选中样式（primaryContainer 36%背景和左侧主色竖线）；输入框、搜索框和用户消息使用首页搜索栏的 surfaceContainerHigh 填充；展示面板标题旁显示与首页模块相同的数量徽标。不再单独覆盖为灰阶配色。
 
 使用内容区 LayoutBuilder 宽度：≥1024 显示历史+对话+展示；720–1023 显示对话+展示、历史弹层；<720 单栏对话，历史和展示分别打开弹层。不要用包含桌面导航的屏幕宽度判三栏。
 
@@ -417,7 +426,9 @@ $env:PATH = 'D:\.tool\venera-flutter-3.41.4-install\native;' + $env:PATH
 - 修复从用户消息气泡开始拖动无法滚动：SelectableText 自带纵向 Scrollable 会抢占拖动，改为 SelectionArea + Text，保留长按选择与复制。
 - 新增 Responses、Messages 协议，工具扩展为45个（见第5.1节），界面为每个工具显示名称、图标和结果摘要。
 - 流式输出只通知当前轮次；长 Markdown 按稳定段落边界分块，流式时只重新解析最后一块；工具回执 JSON 只编码一次，超长回执按需布局。
-- Agent 测试 222 项通过，lib 静态分析通过。
+- Responses、Messages 改用协议自带的思考深度字段，设置页列出档位供勾选（见第6.1节）。
+- 页面样式向应用其他页面统一（见第8节）。
+- Agent 测试 227 项通过，lib 静态分析通过。
 
 ## 10. 后续范围与合并维护
 

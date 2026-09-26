@@ -459,12 +459,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (_width >= 1024) ...[
-                  SizedBox(width: 216, child: _historyPanel()),
-                  const VerticalDivider(width: 1),
+                  SizedBox(width: 240, child: _historyPanel()),
+                  const VerticalDivider(width: 1, thickness: .6),
                 ],
                 Expanded(child: _chat()),
                 if (_width >= 720) ...[
-                  const VerticalDivider(width: 1),
+                  const VerticalDivider(width: 1, thickness: .6),
                   SizedBox(
                     width: 304,
                     child: _showcasePanel(scroll: _showcaseScroll),
@@ -494,22 +494,27 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     }
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        // Laid out like the app's Appbar, so the tab matches other pages.
+        SizedBox(
+          height: 56,
           child: Row(
             children: [
-              if (_width < 1024)
+              const SizedBox(width: 8),
+              if (_width < 1024) ...[
                 IconButton(
                   tooltip: '历史对话',
                   onPressed: _history,
                   icon: const Icon(Icons.history),
                 ),
+                const SizedBox(width: 8),
+              ] else
+                const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   controller.conversation.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium,
+                  style: const TextStyle(fontSize: 20),
                 ),
               ),
               IconButton(
@@ -537,6 +542,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                 onPressed: () => _act(_settings),
                 icon: const Icon(Icons.tune),
               ),
+              const SizedBox(width: 8),
             ],
           ),
         ),
@@ -600,7 +606,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               ],
             ),
           ),
-        const Divider(height: 1),
+        const Divider(height: 1, thickness: .6),
         Expanded(
           child: controller.messages.isEmpty
               ? _empty(model == null)
@@ -976,12 +982,21 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                       minLines: 1,
                       maxLines: 5,
                       textInputAction: TextInputAction.newline,
+                      // Filled like the search bar on the home page.
                       decoration: InputDecoration(
                         hintText: '输入消息…',
+                        filled: true,
+                        fillColor: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHigh,
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
                         ),
-                        contentPadding: const EdgeInsets.all(14),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 14,
+                        ),
                       ),
                     ),
                   ),
@@ -1067,8 +1082,18 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       'prioritize': '移到队首',
       'cancel': '取消并删除未完成文件',
     };
-    return Card(
+    return Container(
       margin: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(
+          context,
+        ).colorScheme.primaryContainer.withValues(alpha: .36),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+          width: .6,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
