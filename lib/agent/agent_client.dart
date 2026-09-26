@@ -6,8 +6,7 @@ import 'agent_models.dart';
 import 'agent_http_adapter.dart';
 import 'agent_protocol.dart';
 
-export 'agent_protocol.dart'
-    show AgentDelta, AgentResponse, AgentToolCall;
+export 'agent_protocol.dart' show AgentDelta, AgentResponse, AgentToolCall;
 
 /// Intentionally does not use AppDio interceptors or log request contents.
 class AgentClient {

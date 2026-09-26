@@ -245,7 +245,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
 
   String get _thinkingExample => switch (_protocol) {
     AgentProtocol.chat => '{"reasoning_effort":"low"}',
-    AgentProtocol.responses => '{"reasoning":{"effort":"low","summary":"auto"}}',
+    AgentProtocol.responses =>
+      '{"reasoning":{"effort":"low","summary":"auto"}}',
     AgentProtocol.messages =>
       '{"thinking":{"type":"enabled","budget_tokens":4000}}',
   };

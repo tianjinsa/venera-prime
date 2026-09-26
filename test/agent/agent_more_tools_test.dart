@@ -115,9 +115,8 @@ class FakeBridge extends AgentAppBridge {
   @override
   List<History> histories() => historyItems.toList();
   @override
-  History? findHistory(String id, ComicType type) => historyItems
-      .where((h) => h.id == id && h.type == type)
-      .firstOrNull;
+  History? findHistory(String id, ComicType type) =>
+      historyItems.where((h) => h.id == id && h.type == type).firstOrNull;
   @override
   void removeHistories(List<ComicID> ids) => historyItems.removeWhere(
     (h) => ids.any((id) => id.id == h.id && id.type == h.type),
@@ -129,9 +128,8 @@ class FakeBridge extends AgentAppBridge {
   @override
   List<LocalComic> localComics() => localItems.toList();
   @override
-  LocalComic? findLocal(String id, ComicType type) => localItems
-      .where((c) => c.id == id && c.comicType == type)
-      .firstOrNull;
+  LocalComic? findLocal(String id, ComicType type) =>
+      localItems.where((c) => c.id == id && c.comicType == type).firstOrNull;
   @override
   void deleteLocal(LocalComic comic) => localItems.remove(comic);
   @override
@@ -410,13 +408,7 @@ void main() {
       'group': '番外',
     });
     expect(page['items'], [
-      {
-        'group': '番外',
-        'group_index': 2,
-        'index': 1,
-        'id': 'b1',
-        'title': '外一',
-      },
+      {'group': '番外', 'group_index': 2, 'index': 1, 'id': 'b1', 'title': '外一'},
     ]);
     expect(page['groups'], [
       {'title': '正篇', 'count': 2},
@@ -526,7 +518,10 @@ void main() {
             null,
             null,
             () async => Res([
-              ExplorePagePart('热门', [comic('jm', 'h1'), comic('jm', 'h2')], null),
+              ExplorePagePart('热门', [
+                comic('jm', 'h1'),
+                comic('jm', 'h2'),
+              ], null),
             ]),
             null,
           ),
@@ -629,7 +624,10 @@ void main() {
     });
     expect(latest['items'][0]['comic_id'], 'n2');
     expect(latest['has_more'], false);
-    final parts = await call('explore_load', {'source_key': 'jm', 'title': '推'});
+    final parts = await call('explore_load', {
+      'source_key': 'jm',
+      'title': '推',
+    });
     expect(parts['parts'][0]['count'], 2);
     final ranking = await call('ranking_comics', {
       'source_key': 'jm',
@@ -680,52 +678,70 @@ void main() {
     expect(unsupported['error']['code'], 'NO_COMMENT_SUPPORT');
   });
 
-  test('local favorites and folders are searchable, batched and paged', () async {
-    for (var i = 0; i < 120; i++) {
-      favorites.createFolder('夹$i');
-    }
-    final folders = await call('fav_list_folders', {'page': 3});
-    expect(folders['total'], 120);
-    expect(folders['items'], hasLength(20));
-    expect(folders['total_pages'], 3);
-    final filtered = await call('fav_list_folders', {'keyword': '夹11'});
-    expect(filtered['total'], 11);
+  test(
+    'local favorites and folders are searchable, batched and paged',
+    () async {
+      for (var i = 0; i < 120; i++) {
+        favorites.createFolder('夹$i');
+      }
+      final folders = await call('fav_list_folders', {'page': 3});
+      expect(folders['total'], 120);
+      expect(folders['items'], hasLength(20));
+      expect(folders['total_pages'], 3);
+      final filtered = await call('fav_list_folders', {'keyword': '夹11'});
+      expect(filtered['total'], 11);
 
-    final created = await call('fav_create_folder', {
-      'names': ['新A', '新A', '夹1', '"bad'],
-    });
-    expect(created['summary'], {'total': 4, 'ok': 1, 'skipped': 2, 'failed': 1});
-    // Saved conversations may still retry the single-name form.
-    final legacy = await call('fav_create_folder', {'name': '旧式'});
-    expect(legacy['status'], 'created');
+      final created = await call('fav_create_folder', {
+        'names': ['新A', '新A', '夹1', '"bad'],
+      });
+      expect(created['summary'], {
+        'total': 4,
+        'ok': 1,
+        'skipped': 2,
+        'failed': 1,
+      });
+      // Saved conversations may still retry the single-name form.
+      final legacy = await call('fav_create_folder', {'name': '旧式'});
+      expect(legacy['status'], 'created');
 
-    app.settings['quickFavorite'] = '新A';
-    final renamed = await call('fav_rename_folder', {
-      'renames': [
-        {'folder': '新A', 'new_name': '改名A'},
-        {'folder': '不存在', 'new_name': 'x'},
-        {'folder': '夹2', 'new_name': '夹3'},
-      ],
-    });
-    expect(renamed['summary'], {'total': 3, 'ok': 1, 'skipped': 0, 'failed': 2});
-    expect(renamed['results'][1]['reason'], 'FOLDER_NOT_FOUND');
-    expect(renamed['results'][2]['reason'], 'FOLDER_EXISTS');
-    expect(favorites.existsFolder('改名A'), true);
-    expect(app.settings['quickFavorite'], '改名A');
-    expect(app.saves, 1);
+      app.settings['quickFavorite'] = '新A';
+      final renamed = await call('fav_rename_folder', {
+        'renames': [
+          {'folder': '新A', 'new_name': '改名A'},
+          {'folder': '不存在', 'new_name': 'x'},
+          {'folder': '夹2', 'new_name': '夹3'},
+        ],
+      });
+      expect(renamed['summary'], {
+        'total': 3,
+        'ok': 1,
+        'skipped': 0,
+        'failed': 2,
+      });
+      expect(renamed['results'][1]['reason'], 'FOLDER_NOT_FOUND');
+      expect(renamed['results'][2]['reason'], 'FOLDER_EXISTS');
+      expect(favorites.existsFolder('改名A'), true);
+      expect(app.settings['quickFavorite'], '改名A');
+      expect(app.saves, 1);
 
-    store.remember(
-      context.conversationId,
-      const AgentComic(sourceKey: 'jm', comicId: '1', title: '海贼王', subtitle: '尾田'),
-    );
-    await call('fav_add', {
-      'folder': '夹5',
-      'comics': ['jm:1'],
-    });
-    final searched = await call('fav_list', {'keyword': '尾田'});
-    expect(searched['total'], 1);
-    expect(searched['items'][0]['folder'], '夹5');
-  });
+      store.remember(
+        context.conversationId,
+        const AgentComic(
+          sourceKey: 'jm',
+          comicId: '1',
+          title: '海贼王',
+          subtitle: '尾田',
+        ),
+      );
+      await call('fav_add', {
+        'folder': '夹5',
+        'comics': ['jm:1'],
+      });
+      final searched = await call('fav_list', {'keyword': '尾田'});
+      expect(searched['total'], 1);
+      expect(searched['items'][0]['folder'], '夹5');
+    },
+  );
 
   test('history lists, removes and restores progress', () async {
     for (var i = 0; i < 25; i++) {
@@ -809,7 +825,12 @@ void main() {
         },
       ],
     });
-    expect(started['summary'], {'total': 5, 'ok': 2, 'skipped': 2, 'failed': 1});
+    expect(started['summary'], {
+      'total': 5,
+      'ok': 2,
+      'skipped': 2,
+      'failed': 1,
+    });
     expect(app.downloaded.map((d) => '${d.$1} ${d.$2}'), [
       'jm:1 null',
       'jm:5 [c3]',
@@ -824,7 +845,12 @@ void main() {
       'action': 'pause',
       'comics': ['jm:9', 'jm:1'],
     });
-    expect(control['summary'], {'total': 2, 'ok': 1, 'skipped': 1, 'failed': 0});
+    expect(control['summary'], {
+      'total': 2,
+      'ok': 1,
+      'skipped': 1,
+      'failed': 0,
+    });
     expect(app.controlled, ['pause:9']);
 
     final local = await call('local_list', {'keyword': '已下'});
@@ -923,60 +949,73 @@ void main() {
       'folder': '2',
       'comic_ids': ['a', 'bad'],
     });
-    expect(removed['summary'], {'total': 2, 'ok': 1, 'skipped': 0, 'failed': 1});
+    expect(removed['summary'], {
+      'total': 2,
+      'ok': 1,
+      'skipped': 0,
+      'failed': 1,
+    });
     expect(changes, ['a/2/false/f-a', 'bad/2/false/null']);
   });
 
-  test('source catalog installs only catalog entries and updates in batch', () async {
-    sources.add(RichSource('old', version: '1.0.0'));
-    app.catalog.addAll([
-      const AgentCatalogSource(
-        key: 'new',
-        name: '新源',
-        version: '2.0.0',
-        description: '',
-        url: 'https://example.invalid/new.js',
-        libraryId: 'lib',
-        libraryName: '仓库',
-      ),
-      const AgentCatalogSource(
-        key: 'old',
-        name: '旧源',
-        version: '1.1.0',
-        description: '',
-        url: 'https://example.invalid/old.js',
-        libraryId: 'lib',
-        libraryName: '仓库',
-      ),
-    ]);
-    final catalog = await call('source_catalog', {});
-    expect(catalog['items'][1], containsPair('installed_version', '1.0.0'));
-    final installed = await call('source_install', {
-      'keys': ['new', 'old', 'unknown', 'new'],
-    });
-    expect(installed['summary'], {'total': 4, 'ok': 1, 'skipped': 2, 'failed': 1});
-    expect(app.installed, ['new']);
-    expect(sources.map((s) => s.key), ['old', 'new']);
+  test(
+    'source catalog installs only catalog entries and updates in batch',
+    () async {
+      sources.add(RichSource('old', version: '1.0.0'));
+      app.catalog.addAll([
+        const AgentCatalogSource(
+          key: 'new',
+          name: '新源',
+          version: '2.0.0',
+          description: '',
+          url: 'https://example.invalid/new.js',
+          libraryId: 'lib',
+          libraryName: '仓库',
+        ),
+        const AgentCatalogSource(
+          key: 'old',
+          name: '旧源',
+          version: '1.1.0',
+          description: '',
+          url: 'https://example.invalid/old.js',
+          libraryId: 'lib',
+          libraryName: '仓库',
+        ),
+      ]);
+      final catalog = await call('source_catalog', {});
+      expect(catalog['items'][1], containsPair('installed_version', '1.0.0'));
+      final installed = await call('source_install', {
+        'keys': ['new', 'old', 'unknown', 'new'],
+      });
+      expect(installed['summary'], {
+        'total': 4,
+        'ok': 1,
+        'skipped': 2,
+        'failed': 1,
+      });
+      expect(app.installed, ['new']);
+      expect(sources.map((s) => s.key), ['old', 'new']);
 
-    app.updatesAvailable['old'] = '1.1.0';
-    final updated = await call('source_update', {});
-    expect(updated['results'], [
-      {
-        'key': 'old',
-        'name': '源old',
-        'status': 'updated',
-        'from': '1.0.0',
-        'to': '1.1.0',
-      },
-    ]);
-    final selected = await call('source_update', {
-      'source_keys': ['new', 'gone'],
-    });
-    expect(selected['results'].map((r) => r['reason']), [
-      'UP_TO_DATE',
-      'SOURCE_NOT_FOUND',
-    ]);
-  });
+      app.updatesAvailable['old'] = '1.1.0';
+      final updated = await call('source_update', {});
+      expect(updated['results'], [
+        {
+          'key': 'old',
+          'name': '源old',
+          'status': 'updated',
+          'from': '1.0.0',
+          'to': '1.1.0',
+        },
+      ]);
+      final selected = await call('source_update', {
+        'source_keys': ['new', 'gone'],
+      });
+      expect(selected['results'].map((r) => r['reason']), [
+        'UP_TO_DATE',
+        'SOURCE_NOT_FOUND',
+      ]);
+    },
+  );
 
   test('pages open for the user without exposing page content', () async {
     detailSource('jm');
@@ -1011,7 +1050,12 @@ void main() {
       'add': ['新词', '旧词'],
       'remove': ['旧词', '无'],
     });
-    expect(updated['summary'], {'total': 4, 'ok': 2, 'skipped': 2, 'failed': 0});
+    expect(updated['summary'], {
+      'total': 4,
+      'ok': 2,
+      'skipped': 2,
+      'failed': 0,
+    });
     expect(app.settings['blockedWords'], ['新词']);
     final comments = await call('blocked_words_update', {
       'scope': 'comment',
@@ -1060,8 +1104,10 @@ void main() {
           'state': state,
           'result': {'ok': true, 'data': data},
         });
-    expect(caption('later_list', {'total': 45, 'page': 2, 'total_pages': 3}),
-        '第 2/3 页 · 共 45 条');
+    expect(
+      caption('later_list', {'total': 45, 'page': 2, 'total_pages': 3}),
+      '第 2/3 页 · 共 45 条',
+    );
     expect(
       caption('search_source', {
         'style': 'page',

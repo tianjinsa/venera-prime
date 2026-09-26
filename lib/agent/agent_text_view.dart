@@ -75,3 +75,48 @@ String _trimChunk(String chunk, bool last) {
   if (end > 0 && chunk.codeUnitAt(end - 1) == 13) end--;
   return chunk.substring(0, end);
 }
+
+final _listItem = RegExp(r'^([-*+]|\d{1,9}[.)])(\s|$)');
+
+/// Split long Markdown into independently renderable chunks.
+///
+/// A chunk ends only before an unindented line that follows a blank line and
+/// is outside a fenced code block, and is not a list item that could continue
+/// a list. Boundaries depend only on the text before them, so a streamed
+/// response keeps its earlier chunks and only the last one is parsed again.
+List<String> agentMarkdownChunks(String text, {int size = 1500}) {
+  if (text.length <= size) return [text];
+  final chunks = <String>[];
+  var start = 0;
+  var lineStart = 0;
+  String? fence;
+  var previousBlank = false;
+  while (lineStart < text.length) {
+    final newline = text.indexOf('\n', lineStart);
+    final lineEnd = newline < 0 ? text.length : newline;
+    final line = text.substring(lineStart, lineEnd);
+    final first = line.isEmpty ? 0 : line.codeUnitAt(0);
+    if (fence == null &&
+        previousBlank &&
+        lineStart - start >= size &&
+        line.isNotEmpty &&
+        first != 32 &&
+        first != 9 &&
+        !_listItem.hasMatch(line)) {
+      chunks.add(text.substring(start, lineStart));
+      start = lineStart;
+    }
+    final trimmed = line.trimLeft();
+    if (fence == null) {
+      if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+        fence = trimmed.substring(0, 3);
+      }
+    } else if (trimmed.startsWith(fence)) {
+      fence = null;
+    }
+    previousBlank = line.trim().isEmpty;
+    lineStart = newline < 0 ? text.length : newline + 1;
+  }
+  chunks.add(text.substring(start));
+  return chunks;
+}

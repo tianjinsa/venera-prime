@@ -139,8 +139,10 @@ void main() {
     expect(anthropic['anthropic-version'], '2023-06-01');
     expect(anthropic.containsKey('Authorization'), false);
     expect(
-      AgentProtocolCodec.headers(_model(AgentProtocol.responses), 'secret')
-          ['Authorization'],
+      AgentProtocolCodec.headers(
+        _model(AgentProtocol.responses),
+        'secret',
+      )['Authorization'],
       'Bearer secret',
     );
     // Older configurations without a protocol keep using Chat Completions.
@@ -224,11 +226,7 @@ void main() {
     expect(body.containsKey('input'), false);
     expect(body['tool_choice'], {'type': 'auto'});
     expect(body['tools'], [
-      {
-        'name': 'fav_add',
-        'description': '加入收藏',
-        'input_schema': _parameters,
-      },
+      {'name': 'fav_add', 'description': '加入收藏', 'input_schema': _parameters},
     ]);
     final messages = body['messages'] as List;
     expect(messages.map((m) => m['role']), ['user', 'assistant', 'user']);
@@ -306,147 +304,158 @@ void main() {
     ]);
   });
 
-  test('Responses streams text, reasoning, calls, usage and replay items', () async {
-    final deltas = <String>[];
-    final result = await AgentClient.readResponse(
-      _bytes(
-        _sse([
-          {'type': 'response.created', 'response': {}},
-          {
-            'type': 'response.output_item.added',
-            'output_index': 0,
-            'item': {'type': 'reasoning', 'id': 'rs_1'},
-          },
-          {'type': 'response.reasoning_summary_part.added', 'output_index': 0},
-          {
-            'type': 'response.reasoning_summary_text.delta',
-            'output_index': 0,
-            'delta': '先查',
-          },
-          {'type': 'response.reasoning_summary_part.added', 'output_index': 0},
-          {
-            'type': 'response.reasoning_summary_text.delta',
-            'output_index': 0,
-            'delta': '再加',
-          },
-          {
-            'type': 'response.output_item.done',
-            'output_index': 0,
-            'item': {
-              'type': 'reasoning',
-              'id': 'rs_1',
-              'summary': [
-                {'type': 'summary_text', 'text': '先查'},
-              ],
-              'encrypted_content': 'SECRET',
+  test(
+    'Responses streams text, reasoning, calls, usage and replay items',
+    () async {
+      final deltas = <String>[];
+      final result = await AgentClient.readResponse(
+        _bytes(
+          _sse([
+            {'type': 'response.created', 'response': {}},
+            {
+              'type': 'response.output_item.added',
+              'output_index': 0,
+              'item': {'type': 'reasoning', 'id': 'rs_1'},
             },
-          },
-          {
-            'type': 'response.output_text.delta',
-            'output_index': 1,
-            'delta': '好的',
-          },
-          {
-            'type': 'response.output_item.done',
-            'output_index': 1,
-            'item': {
-              'type': 'message',
-              'id': 'msg_1',
-              'role': 'assistant',
-              'content': [
-                {'type': 'output_text', 'text': '好的'},
-              ],
+            {
+              'type': 'response.reasoning_summary_part.added',
+              'output_index': 0,
             },
-          },
-          {
-            'type': 'response.output_item.added',
-            'output_index': 2,
-            'item': {
-              'type': 'function_call',
-              'call_id': 'call_9',
-              'name': 'fav_add',
-              'arguments': '',
+            {
+              'type': 'response.reasoning_summary_text.delta',
+              'output_index': 0,
+              'delta': '先查',
             },
-          },
-          {
-            'type': 'response.function_call_arguments.delta',
-            'output_index': 2,
-            'delta': '{"folder":',
-          },
-          {
-            'type': 'response.function_call_arguments.delta',
-            'output_index': 2,
-            'delta': '"默认"}',
-          },
-          {
-            'type': 'response.completed',
-            'response': {
-              'status': 'completed',
-              'usage': {
-                'input_tokens': 100,
-                'input_tokens_details': {'cached_tokens': 40},
-                'output_tokens': 20,
-                'total_tokens': 120,
+            {
+              'type': 'response.reasoning_summary_part.added',
+              'output_index': 0,
+            },
+            {
+              'type': 'response.reasoning_summary_text.delta',
+              'output_index': 0,
+              'delta': '再加',
+            },
+            {
+              'type': 'response.output_item.done',
+              'output_index': 0,
+              'item': {
+                'type': 'reasoning',
+                'id': 'rs_1',
+                'summary': [
+                  {'type': 'summary_text', 'text': '先查'},
+                ],
+                'encrypted_content': 'SECRET',
               },
             },
-          },
-        ]),
-      ),
-      AgentRun(),
-      (type, text) => deltas.add('$type:$text'),
-      protocol: AgentProtocol.responses,
-    );
-    expect(deltas, [
-      'reasoning:先查',
-      'reasoning:\n\n',
-      'reasoning:再加',
-      'text:好的',
-    ]);
-    expect(result.text, '好的');
-    expect(result.tools.single.id, 'call_9');
-    expect(jsonDecode(result.tools.single.arguments), {'folder': '默认'});
-    expect(result.usage!.inputTokens, 100);
-    expect(result.usage!.cachedTokens, 40);
-    expect(result.usage!.totalTokens, 120);
-    expect(result.providerState!['items'], [
-      {
-        'type': 'reasoning',
-        'id': 'rs_1',
-        'summary': [
-          {'type': 'summary_text', 'text': '先查'},
-        ],
-        'encrypted_content': 'SECRET',
-      },
-      {'role': 'assistant', 'content': '好的'},
-    ]);
-
-    // Replay uses the stored items for the same model, then the call results.
-    final model = _model(AgentProtocol.responses, reasoning: true);
-    final provider = {...result.providerState!, 'model': model.id};
-    final replay = AgentClient.requestBody(
-      model: model,
-      thinkingId: null,
-      messages: _wire(model, provider: provider),
-      tools: _tools,
-    )['input'] as List;
-    expect(replay[1]['type'], 'reasoning');
-    expect(replay[1]['encrypted_content'], 'SECRET');
-    expect(replay[2], {'role': 'assistant', 'content': '好的'});
-    expect(replay[3]['type'], 'function_call_output');
-    // Another model cannot receive encrypted reasoning it did not produce.
-    final other = AgentModel.fromJson({...model.toJson(), 'id': 'other'});
-    expect(
-      jsonEncode(
-        AgentClient.requestBody(
-          model: other,
-          thinkingId: null,
-          messages: _wire(other, provider: provider),
-          tools: _tools,
+            {
+              'type': 'response.output_text.delta',
+              'output_index': 1,
+              'delta': '好的',
+            },
+            {
+              'type': 'response.output_item.done',
+              'output_index': 1,
+              'item': {
+                'type': 'message',
+                'id': 'msg_1',
+                'role': 'assistant',
+                'content': [
+                  {'type': 'output_text', 'text': '好的'},
+                ],
+              },
+            },
+            {
+              'type': 'response.output_item.added',
+              'output_index': 2,
+              'item': {
+                'type': 'function_call',
+                'call_id': 'call_9',
+                'name': 'fav_add',
+                'arguments': '',
+              },
+            },
+            {
+              'type': 'response.function_call_arguments.delta',
+              'output_index': 2,
+              'delta': '{"folder":',
+            },
+            {
+              'type': 'response.function_call_arguments.delta',
+              'output_index': 2,
+              'delta': '"默认"}',
+            },
+            {
+              'type': 'response.completed',
+              'response': {
+                'status': 'completed',
+                'usage': {
+                  'input_tokens': 100,
+                  'input_tokens_details': {'cached_tokens': 40},
+                  'output_tokens': 20,
+                  'total_tokens': 120,
+                },
+              },
+            },
+          ]),
         ),
-      ),
-      isNot(contains('SECRET')),
-    );
-  });
+        AgentRun(),
+        (type, text) => deltas.add('$type:$text'),
+        protocol: AgentProtocol.responses,
+      );
+      expect(deltas, [
+        'reasoning:先查',
+        'reasoning:\n\n',
+        'reasoning:再加',
+        'text:好的',
+      ]);
+      expect(result.text, '好的');
+      expect(result.tools.single.id, 'call_9');
+      expect(jsonDecode(result.tools.single.arguments), {'folder': '默认'});
+      expect(result.usage!.inputTokens, 100);
+      expect(result.usage!.cachedTokens, 40);
+      expect(result.usage!.totalTokens, 120);
+      expect(result.providerState!['items'], [
+        {
+          'type': 'reasoning',
+          'id': 'rs_1',
+          'summary': [
+            {'type': 'summary_text', 'text': '先查'},
+          ],
+          'encrypted_content': 'SECRET',
+        },
+        {'role': 'assistant', 'content': '好的'},
+      ]);
+
+      // Replay uses the stored items for the same model, then the call results.
+      final model = _model(AgentProtocol.responses, reasoning: true);
+      final provider = {...result.providerState!, 'model': model.id};
+      final replay =
+          AgentClient.requestBody(
+                model: model,
+                thinkingId: null,
+                messages: _wire(model, provider: provider),
+                tools: _tools,
+              )['input']
+              as List;
+      expect(replay[1]['type'], 'reasoning');
+      expect(replay[1]['encrypted_content'], 'SECRET');
+      expect(replay[2], {'role': 'assistant', 'content': '好的'});
+      expect(replay[3]['type'], 'function_call_output');
+      // Another model cannot receive encrypted reasoning it did not produce.
+      final other = AgentModel.fromJson({...model.toJson(), 'id': 'other'});
+      expect(
+        jsonEncode(
+          AgentClient.requestBody(
+            model: other,
+            thinkingId: null,
+            messages: _wire(other, provider: provider),
+            tools: _tools,
+          ),
+        ),
+        isNot(contains('SECRET')),
+      );
+    },
+  );
 
   test('Responses incomplete, failed and non-stream bodies', () async {
     Future<AgentResponse> read(String body) => AgentClient.readResponse(
@@ -649,142 +658,148 @@ void main() {
     expect(messages[1]['content'], content);
   });
 
-  test('Messages stop reasons, refusals, errors and non-stream bodies', () async {
-    Future<AgentResponse> read(String body) => AgentClient.readResponse(
-      _bytes(body),
-      AgentRun(),
-      (_, _) {},
-      protocol: AgentProtocol.messages,
-    );
-    String stopped(String reason) => _sse([
-      {
-        'type': 'message_start',
-        'message': {'usage': <String, dynamic>{}},
-      },
-      {
-        'type': 'content_block_start',
-        'index': 0,
-        'content_block': {'type': 'text', 'text': '部分'},
-      },
-      {'type': 'content_block_stop', 'index': 0},
-      {
-        'type': 'message_delta',
-        'delta': {'stop_reason': reason},
-      },
-      {'type': 'message_stop'},
-    ]);
-    expect((await read(stopped('end_turn'))).text, '部分');
-    expect((await read(stopped('refusal'))).text, '部分');
-    await expectLater(
-      read(stopped('max_tokens')),
-      throwsA(
-        isA<AgentException>().having(
-          (e) => e.message,
-          'message',
-          contains('输出上限'),
-        ),
-      ),
-    );
-    await expectLater(
-      read(
-        _sse([
-          {
-            'type': 'error',
-            'error': {'type': 'overloaded_error', 'message': 'Overloaded'},
-          },
-        ]),
-      ),
-      throwsA(
-        isA<AgentException>().having(
-          (e) => e.message,
-          'message',
-          contains('Overloaded'),
-        ),
-      ),
-    );
-    final full = await read(
-      jsonEncode({
-        'type': 'message',
-        'content': [
-          {'type': 'thinking', 'thinking': '想', 'signature': 's'},
-          {'type': 'text', 'text': '好'},
-          {
-            'type': 'tool_use',
-            'id': 'toolu_x',
-            'name': 'later_list',
-            'input': {'page': 2},
-          },
-        ],
-        'stop_reason': 'tool_use',
-        'usage': {'input_tokens': 3, 'output_tokens': 4},
-      }),
-    );
-    expect(full.reasoning, '想');
-    expect(full.text, '好');
-    expect(jsonDecode(full.tools.single.arguments), {'page': 2});
-    expect(full.usage!.totalTokens, 7);
-    expect(full.providerState, isNotNull);
-  });
-
-  test('HTTP errors include a bounded provider message without the key', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    String? key;
-    String? version;
-    final subscription = server.listen((request) async {
-      key = request.headers.value('x-api-key');
-      version = request.headers.value('anthropic-version');
-      await utf8.decoder.bind(request).join();
-      request.response.statusCode = 400;
-      request.response.headers.contentType = ContentType.json;
-      request.response.write(
-        jsonEncode({
-          'type': 'error',
-          'error': {
-            'type': 'invalid_request_error',
-            'message': 'max_tokens: bad value for key local-test-secret',
-          },
-        }),
+  test(
+    'Messages stop reasons, refusals, errors and non-stream bodies',
+    () async {
+      Future<AgentResponse> read(String body) => AgentClient.readResponse(
+        _bytes(body),
+        AgentRun(),
+        (_, _) {},
+        protocol: AgentProtocol.messages,
       );
-      await request.response.close();
-    });
-    final client = AgentClient(dio: Dio());
-    try {
+      String stopped(String reason) => _sse([
+        {
+          'type': 'message_start',
+          'message': {'usage': <String, dynamic>{}},
+        },
+        {
+          'type': 'content_block_start',
+          'index': 0,
+          'content_block': {'type': 'text', 'text': '部分'},
+        },
+        {'type': 'content_block_stop', 'index': 0},
+        {
+          'type': 'message_delta',
+          'delta': {'stop_reason': reason},
+        },
+        {'type': 'message_stop'},
+      ]);
+      expect((await read(stopped('end_turn'))).text, '部分');
+      expect((await read(stopped('refusal'))).text, '部分');
       await expectLater(
-        client.complete(
-          model: AgentModel(
-            id: 'm',
-            name: 'test',
-            baseUrl: 'http://127.0.0.1:${server.port}/v1',
-            model: 'test',
-            protocol: AgentProtocol.messages,
+        read(stopped('max_tokens')),
+        throwsA(
+          isA<AgentException>().having(
+            (e) => e.message,
+            'message',
+            contains('输出上限'),
           ),
-          apiKey: 'local-test-secret',
-          thinkingId: null,
-          messages: [
-            {'role': 'user', 'content': 'test'},
-          ],
-          tools: const [],
-          run: AgentRun(),
-          onDelta: (_, _) {},
+        ),
+      );
+      await expectLater(
+        read(
+          _sse([
+            {
+              'type': 'error',
+              'error': {'type': 'overloaded_error', 'message': 'Overloaded'},
+            },
+          ]),
         ),
         throwsA(
           isA<AgentException>().having(
             (e) => e.message,
             'message',
-            allOf(
-              contains('HTTP 400'),
-              contains('max_tokens: bad value for key ***'),
-              isNot(contains('local-test-secret')),
-            ),
+            contains('Overloaded'),
           ),
         ),
       );
-      expect(key, 'local-test-secret');
-      expect(version, '2023-06-01');
-    } finally {
-      client.close();
-      await subscription.cancel();
-      await server.close(force: true);
-    }
-  });
+      final full = await read(
+        jsonEncode({
+          'type': 'message',
+          'content': [
+            {'type': 'thinking', 'thinking': '想', 'signature': 's'},
+            {'type': 'text', 'text': '好'},
+            {
+              'type': 'tool_use',
+              'id': 'toolu_x',
+              'name': 'later_list',
+              'input': {'page': 2},
+            },
+          ],
+          'stop_reason': 'tool_use',
+          'usage': {'input_tokens': 3, 'output_tokens': 4},
+        }),
+      );
+      expect(full.reasoning, '想');
+      expect(full.text, '好');
+      expect(jsonDecode(full.tools.single.arguments), {'page': 2});
+      expect(full.usage!.totalTokens, 7);
+      expect(full.providerState, isNotNull);
+    },
+  );
+
+  test(
+    'HTTP errors include a bounded provider message without the key',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      String? key;
+      String? version;
+      final subscription = server.listen((request) async {
+        key = request.headers.value('x-api-key');
+        version = request.headers.value('anthropic-version');
+        await utf8.decoder.bind(request).join();
+        request.response.statusCode = 400;
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'type': 'error',
+            'error': {
+              'type': 'invalid_request_error',
+              'message': 'max_tokens: bad value for key local-test-secret',
+            },
+          }),
+        );
+        await request.response.close();
+      });
+      final client = AgentClient(dio: Dio());
+      try {
+        await expectLater(
+          client.complete(
+            model: AgentModel(
+              id: 'm',
+              name: 'test',
+              baseUrl: 'http://127.0.0.1:${server.port}/v1',
+              model: 'test',
+              protocol: AgentProtocol.messages,
+            ),
+            apiKey: 'local-test-secret',
+            thinkingId: null,
+            messages: [
+              {'role': 'user', 'content': 'test'},
+            ],
+            tools: const [],
+            run: AgentRun(),
+            onDelta: (_, _) {},
+          ),
+          throwsA(
+            isA<AgentException>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                contains('HTTP 400'),
+                contains('max_tokens: bad value for key ***'),
+                isNot(contains('local-test-secret')),
+              ),
+            ),
+          ),
+        );
+        expect(key, 'local-test-secret');
+        expect(version, '2023-06-01');
+      } finally {
+        client.close();
+        await subscription.cancel();
+        await server.close(force: true);
+      }
+    },
+  );
 }

@@ -188,8 +188,7 @@ void main() {
               .widget<Text>(
                 find.byWidgetPredicate(
                   (widget) =>
-                      widget is Text &&
-                      widget.data == '第一条原始内容\n包含完整换行',
+                      widget is Text && widget.data == '第一条原始内容\n包含完整换行',
                 ),
               )
               .maxLines,

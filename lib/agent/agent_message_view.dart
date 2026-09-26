@@ -384,7 +384,9 @@ String agentToolCaption(AgentJson part) {
       final chapters = data['chapters'];
       return join([
         if (data['title'] is String) '《${data['title']}》',
-        if (chapters is Map && chapters['count'] is int && chapters['count'] > 0)
+        if (chapters is Map &&
+            chapters['count'] is int &&
+            chapters['count'] > 0)
           '${chapters['count']} 章',
       ]);
     case 'comic_chapters':
@@ -393,12 +395,17 @@ String agentToolCaption(AgentJson part) {
         '共 ${data['count']} 章',
       ]);
     case 'comic_comments':
-      return join([pages(data['page'], data['max_page']), '${data['count']} 条评论']);
+      return join([
+        pages(data['page'], data['max_page']),
+        '${data['count']} 条评论',
+      ]);
     case 'open_comic' || 'open_page':
       return '已打开';
     case 'reading_stats':
       final seconds = data['total_seconds'];
-      return seconds is int ? '近 ${data['days']} 天 ${(seconds / 60).round()} 分钟' : '';
+      return seconds is int
+          ? '近 ${data['days']} 天 ${(seconds / 60).round()} 分钟'
+          : '';
   }
   if (data['parts'] is List) return '${(data['parts'] as List).length} 个分区';
   if (data['results'] is List) return '${(data['results'] as List).length} 项';
@@ -424,18 +431,48 @@ String agentToolCaption(AgentJson part) {
   return '';
 }
 
-class _CachedMarkdown extends StatefulWidget {
+class _CachedMarkdown extends StatelessWidget {
   final String text;
   final Future<void> Function(String?) onLink;
   const _CachedMarkdown({super.key, required this.text, required this.onLink});
+
   @override
-  State<_CachedMarkdown> createState() => _CachedMarkdownState();
+  Widget build(BuildContext context) {
+    final chunks = agentMarkdownChunks(text);
+    // A shared selection region avoids a separate scrollable EditableText for
+    // every paragraph, while preserving long-press selection and link taps.
+    // Long responses are parsed in stable chunks: while streaming, only the
+    // last chunk changes and is parsed again.
+    return SelectionArea(
+      child: chunks.length == 1
+          ? _MarkdownChunk(text: text, onLink: onLink)
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < chunks.length; i++)
+                  Padding(
+                    key: ValueKey(i),
+                    padding: EdgeInsets.only(top: i == 0 ? 0 : 14),
+                    child: _MarkdownChunk(text: chunks[i], onLink: onLink),
+                  ),
+              ],
+            ),
+    );
+  }
 }
 
-class _CachedMarkdownState extends State<_CachedMarkdown> {
+class _MarkdownChunk extends StatefulWidget {
+  final String text;
+  final Future<void> Function(String?) onLink;
+  const _MarkdownChunk({required this.text, required this.onLink});
+  @override
+  State<_MarkdownChunk> createState() => _MarkdownChunkState();
+}
+
+class _MarkdownChunkState extends State<_MarkdownChunk> {
   Widget? _body;
   @override
-  void didUpdateWidget(covariant _CachedMarkdown oldWidget) {
+  void didUpdateWidget(covariant _MarkdownChunk oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.text != widget.text) _body = null;
   }
@@ -449,31 +486,28 @@ class _CachedMarkdownState extends State<_CachedMarkdown> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // A shared selection region avoids a separate scrollable EditableText for
-    // every paragraph, while preserving long-press selection and link taps.
-    return _body ??= SelectionArea(
-      child: MarkdownBody(
-        data: widget.text,
-        selectable: false,
-        imageBuilder: (_, _, _) => const Text('[图片已省略]'),
-        onTapLink: (_, href, _) => widget.onLink(href),
-        styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-          p: theme.textTheme.bodyMedium?.copyWith(fontSize: 16, height: 1.7),
-          blockSpacing: 14,
-          code: TextStyle(
-            fontFamily: 'monospace',
-            fontSize: 13,
-            backgroundColor: theme.colorScheme.surfaceContainerHighest,
-          ),
-          tableColumnWidth: const IntrinsicColumnWidth(),
-          tableCellsPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 8,
-          ),
-          tableBorder: TableBorder.all(
-            color: theme.colorScheme.outlineVariant.withValues(alpha: .65),
-            width: .6,
-          ),
+    // Returning the same widget lets an unchanged chunk skip its subtree.
+    return _body ??= MarkdownBody(
+      data: widget.text,
+      selectable: false,
+      imageBuilder: (_, _, _) => const Text('[图片已省略]'),
+      onTapLink: (_, href, _) => widget.onLink(href),
+      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+        p: theme.textTheme.bodyMedium?.copyWith(fontSize: 16, height: 1.7),
+        blockSpacing: 14,
+        code: TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 13,
+          backgroundColor: theme.colorScheme.surfaceContainerHighest,
+        ),
+        tableColumnWidth: const IntrinsicColumnWidth(),
+        tableCellsPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 8,
+        ),
+        tableBorder: TableBorder.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: .65),
+          width: .6,
         ),
       ),
     );

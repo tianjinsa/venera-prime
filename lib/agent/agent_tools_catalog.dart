@@ -432,14 +432,11 @@ extension _AgentCatalogTools on AgentTools {
       }
       load = () => loader(id, subId, page, replyTo);
     }
-    final (result, cached) = await _cachedPage<List<Comment>>([
-      'comments',
-      source.key,
-      id,
-      chapter,
-      replyTo,
-      page,
-    ], load, c);
+    final (result, cached) = await _cachedPage<List<Comment>>(
+      ['comments', source.key, id, chapter, replyTo, page],
+      load,
+      c,
+    );
     if (result.error) {
       throw AgentException(
         'SOURCE_REQUEST_FAILED',
@@ -532,11 +529,11 @@ extension _AgentCatalogTools on AgentTools {
         };
       case ExplorePageType.singlePageWithMultiPart:
         if (explore.loadMultiPart == null) break;
-        final (result, cached) = await _cachedPage<List<ExplorePagePart>>([
-          'explore',
-          source.key,
-          explore.title,
-        ], explore.loadMultiPart!, c);
+        final (result, cached) = await _cachedPage<List<ExplorePagePart>>(
+          ['explore', source.key, explore.title],
+          explore.loadMultiPart!,
+          c,
+        );
         if (result.error) {
           throw AgentException(
             'SOURCE_REQUEST_FAILED',
@@ -567,9 +564,7 @@ extension _AgentCatalogTools on AgentTools {
           ...base,
           'page': page,
           'max_page': maxPage,
-          'has_more': maxPage != null
-              ? page < maxPage
-              : result.data.isNotEmpty,
+          'has_more': maxPage != null ? page < maxPage : result.data.isNotEmpty,
           if (cached) 'from_cache': true,
           'sections': [
             for (final element in result.data)
@@ -577,7 +572,11 @@ extension _AgentCatalogTools on AgentTools {
                 part(element)
               else if (element is List)
                 part(
-                  ExplorePagePart('', element.whereType<Comic>().toList(), null),
+                  ExplorePagePart(
+                    '',
+                    element.whereType<Comic>().toList(),
+                    null,
+                  ),
                 )..['type'] = 'comics',
           ],
         };
@@ -596,12 +595,11 @@ extension _AgentCatalogTools on AgentTools {
     final param = a.containsKey('param') ? AgentTools._text(a, 'param') : null;
     List<CategoryComicsOptions> definitions;
     if (data.optionsLoader != null) {
-      final (result, _) = await _cachedPage<List<CategoryComicsOptions>>([
-        'category_options',
-        source.key,
-        category,
-        param,
-      ], () => data.optionsLoader!(category, param), c);
+      final (result, _) = await _cachedPage<List<CategoryComicsOptions>>(
+        ['category_options', source.key, category, param],
+        () => data.optionsLoader!(category, param),
+        c,
+      );
       if (result.error) {
         throw AgentException(
           'SOURCE_REQUEST_FAILED',
@@ -904,8 +902,14 @@ extension _AgentCatalogTools on AgentTools {
         results.add({
           'key': key,
           'name': source.name,
-          if (updated) ...{'status': 'updated', 'from': from, 'to': version}
-          else ...{'status': 'failed', 'reason': 'UPDATE_FAILED'},
+          if (updated) ...{
+            'status': 'updated',
+            'from': from,
+            'to': version,
+          } else ...{
+            'status': 'failed',
+            'reason': 'UPDATE_FAILED',
+          },
         });
       } on AgentException catch (e) {
         if (e.code == 'CANCELLED') rethrow;

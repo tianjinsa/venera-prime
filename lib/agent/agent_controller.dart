@@ -38,6 +38,11 @@ class AgentController extends ChangeNotifier {
   Completer<bool>? _approval;
   Future<void>? _task;
   Timer? _notifyTimer;
+
+  /// Streamed text and reasoning change only the running response. They
+  /// notify here instead of rebuilding the whole page, its history and
+  /// showcase panels.
+  final streamRevision = ValueNotifier<int>(0);
   Timer? _checkpointTimer;
 
   AgentController(this.store, {AgentClient? client, AgentTools? tools})
@@ -79,7 +84,7 @@ class AgentController extends ChangeNotifier {
   void _throttle() {
     _notifyTimer ??= Timer(const Duration(milliseconds: 80), () {
       _notifyTimer = null;
-      _notify();
+      if (!_disposed) streamRevision.value++;
     });
   }
 
@@ -880,6 +885,7 @@ class AgentController extends ChangeNotifier {
     _disposed = true;
     _notifyTimer?.cancel();
     _checkpointTimer?.cancel();
+    streamRevision.dispose();
     if (_approval != null && !_approval!.isCompleted) {
       _approval!.complete(false);
     }

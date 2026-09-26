@@ -289,6 +289,27 @@ void main() {
     },
   );
 
+  testWidgets('streamed text rebuilds only the running turn', (tester) async {
+    await pumpAgent(tester);
+    await tester.enterText(input, '开始');
+    await tester.pump();
+    await tester.tap(send);
+    await tester.pump();
+    var pageNotifications = 0;
+    void count() => pageNotifications++;
+    controller.addListener(count);
+    final revision = controller.streamRevision.value;
+    for (var i = 0; i < 5; i++) {
+      await emit(tester, '第 $i 段。');
+    }
+    controller.removeListener(count);
+    expect(pageNotifications, 0);
+    expect(controller.streamRevision.value, greaterThan(revision));
+    expect(find.textContaining('第 4 段。', findRichText: true), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('dragging on a user message bubble scrolls the conversation', (
     tester,
   ) async {
@@ -321,8 +342,7 @@ void main() {
       of: messages,
       matching: find.byWidgetPredicate(
         (widget) =>
-            widget is RichText &&
-            widget.text.toPlainText().startsWith('请帮我整理'),
+            widget is RichText && widget.text.toPlainText().startsWith('请帮我整理'),
       ),
     );
     Offset glyph(int offset) {

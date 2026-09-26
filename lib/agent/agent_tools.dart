@@ -568,13 +568,7 @@ class AgentTools {
       throw const AgentException('INVALID_ARGUMENT', '该源的页码/游标参数不匹配');
     }
     final (result, cached) = await _cachedPage<List<Comic>>(
-      [
-        'search',
-        source.key,
-        keyword,
-        options,
-        if (isCursor) cursor else page,
-      ],
+      ['search', source.key, keyword, options, if (isCursor) cursor else page],
       () => isCursor
           ? search.loadNext!(keyword, cursor as String?, options)
           : search.loadPage!(keyword, page, options),

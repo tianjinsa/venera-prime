@@ -79,7 +79,11 @@ final _agentToolSchemas = <AgentJson>[
   _schema(
     'source_catalog',
     '分页浏览用户已启用的漫画源仓库中可安装的源，标明是否已安装及已安装版本；可按名称或 key 过滤',
-    {'keyword': _keywordArg, 'page': _pageArg, 'page_size': _pageSizeArg(30, 100)},
+    {
+      'keyword': _keywordArg,
+      'page': _pageArg,
+      'page_size': _pageSizeArg(30, 100),
+    },
   ),
   _schema(
     'source_install',
@@ -95,18 +99,14 @@ final _agentToolSchemas = <AgentJson>[
     },
     ['keys'],
   ),
-  _schema(
-    'source_update',
-    '检查漫画源更新并安装新版本；省略 source_keys 则检查全部已安装源',
-    {
-      'source_keys': {
-        'type': 'array',
-        'items': _stringArg,
-        'minItems': 1,
-        'description': '只更新这些源',
-      },
+  _schema('source_update', '检查漫画源更新并安装新版本；省略 source_keys 则检查全部已安装源', {
+    'source_keys': {
+      'type': 'array',
+      'items': _stringArg,
+      'minItems': 1,
+      'description': '只更新这些源',
     },
-  ),
+  }),
 
   // Search and comics.
   _schema(
@@ -137,11 +137,7 @@ final _agentToolSchemas = <AgentJson>[
         'maxItems': 20,
         'description': '省略则使用应用的聚合搜索源',
       },
-      'page': {
-        'type': 'integer',
-        'minimum': 1,
-        'description': '页码式源的页码，默认1',
-      },
+      'page': {'type': 'integer', 'minimum': 1, 'description': '页码式源的页码，默认1'},
       'cursors': {
         'type': 'object',
         'additionalProperties': _stringArg,
@@ -258,11 +254,11 @@ final _agentToolSchemas = <AgentJson>[
   ),
 
   // Local favorites.
-  _schema(
-    'fav_list_folders',
-    '分页列出本地收藏夹名称和漫画数量，并标明追更收藏夹；可按名称过滤',
-    {'keyword': _keywordArg, 'page': _pageArg, 'page_size': _pageSizeArg(50, 200)},
-  ),
+  _schema('fav_list_folders', '分页列出本地收藏夹名称和漫画数量，并标明追更收藏夹；可按名称过滤', {
+    'keyword': _keywordArg,
+    'page': _pageArg,
+    'page_size': _pageSizeArg(50, 200),
+  }),
   _schema(
     'fav_list',
     '分页浏览或搜索本地收藏：keyword 按标题、作者、标签搜索；指定 folder 只查该收藏夹，省略则查全部收藏夹并标明所在收藏夹',
@@ -288,7 +284,11 @@ final _agentToolSchemas = <AgentJson>[
   _schema(
     'fav_move',
     '直接批量移动本地收藏，无需先列出或检查漫画；目标已有则跳过并保留源，未在原收藏夹的条目逐项返回',
-    {'from_folder': _stringArg, 'to_folder': _stringArg, 'comics': _comicsArg(50)},
+    {
+      'from_folder': _stringArg,
+      'to_folder': _stringArg,
+      'comics': _comicsArg(50),
+    },
     ['from_folder', 'to_folder', 'comics'],
   ),
   _schema(
@@ -513,30 +513,22 @@ final _agentToolSchemas = <AgentJson>[
     },
     ['page'],
   ),
-  _schema(
-    'blocked_words_list',
-    '读取屏蔽关键词。comic 屏蔽漫画列表中的标题和标签，comment 屏蔽评论',
-    {
-      'scope': {
-        'type': 'string',
-        'enum': ['comic', 'comment'],
-        'description': '默认 comic',
-      },
+  _schema('blocked_words_list', '读取屏蔽关键词。comic 屏蔽漫画列表中的标题和标签，comment 屏蔽评论', {
+    'scope': {
+      'type': 'string',
+      'enum': ['comic', 'comment'],
+      'description': '默认 comic',
     },
-  ),
-  _schema(
-    'blocked_words_update',
-    '批量添加或移除屏蔽关键词，返回更新后的列表',
-    {
-      'scope': {
-        'type': 'string',
-        'enum': ['comic', 'comment'],
-        'description': '默认 comic',
-      },
-      'add': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
-      'remove': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
+  }),
+  _schema('blocked_words_update', '批量添加或移除屏蔽关键词，返回更新后的列表', {
+    'scope': {
+      'type': 'string',
+      'enum': ['comic', 'comment'],
+      'description': '默认 comic',
     },
-  ),
+    'add': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
+    'remove': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
+  }),
   _schema('reading_stats', '读取阅读时长统计：总时长、每日时长和阅读最多的漫画', {
     'days': {
       'type': 'integer',
@@ -566,12 +558,17 @@ final _legacySchemas = <AgentJson>[
     },
     ['source_key', 'comic_id'],
   ),
-  _schema('fav_search', '', {
-    'keyword': _stringArg,
-    'folder': _stringArg,
-    'page': _pageArg,
-    'page_size': _pageSizeArg(20, 50),
-  }, ['keyword']),
+  _schema(
+    'fav_search',
+    '',
+    {
+      'keyword': _stringArg,
+      'folder': _stringArg,
+      'page': _pageArg,
+      'page_size': _pageSizeArg(20, 50),
+    },
+    ['keyword'],
+  ),
   _schema('fav_check', '', {'comics': _comicsArg(50)}, ['comics']),
   _schema('fav_create_folder', '', {'name': _stringArg}, ['name']),
   _schema('later_check', '', {'comics': _comicsArg(50)}, ['comics']),

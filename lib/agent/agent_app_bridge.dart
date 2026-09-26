@@ -191,8 +191,7 @@ class AgentAppBridge {
   }
 
   Object? setting(String key) => appdata.settings[key];
-  void setSetting(String key, Object? value) =>
-      appdata.settings[key] = value;
+  void setSetting(String key, Object? value) => appdata.settings[key] = value;
   Future<void> saveSettings() => appdata.saveData();
 
   /// Entries of all enabled libraries. A library that fails is reported and
@@ -311,15 +310,11 @@ class AgentAppBridge {
 
   void openComic(String sourceKey, String id, {String? title, String? cover}) =>
       open(
-        () => ComicPage(id: id, sourceKey: sourceKey, title: title, cover: cover),
+        () =>
+            ComicPage(id: id, sourceKey: sourceKey, title: title, cover: cover),
       );
 
-  void openReader(
-    ComicDetails details, {
-    int? chapter,
-    int? page,
-    int? group,
-  }) {
+  void openReader(ComicDetails details, {int? chapter, int? page, int? group}) {
     final history =
         findHistory(details.comicId, details.comicType) ??
         History.fromModel(model: details, ep: 0, page: 0);

@@ -74,6 +74,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         return;
       }
       controller.addListener(_onUpdate);
+      controller.streamRevision.addListener(_scheduleFollow);
       setState(() {
         _controller = controller;
         _loadError = null;
@@ -196,6 +197,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     if (_controller != null) widget.modelHeaderBridge?.unbind(_controller!);
     _controller?.removeListener(_onUpdate);
+    _controller?.streamRevision.removeListener(_scheduleFollow);
     _controller?.dispose();
     _draft.dispose();
     _historySearch.dispose();
@@ -664,59 +666,60 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                             );
                           }
                           final current = index == entries.length - 1;
+                          Widget turn(BuildContext context) => AgentTurnView(
+                            messages: messages,
+                            imageLoader: (message, image) => controller.store
+                                .imageBytes(message.conversationId, image.id),
+                            fileLoader: (message, file) => controller.store
+                                .textFileBytes(message.conversationId, file.id),
+                            running: current && controller.busy,
+                            interrupted:
+                                current &&
+                                controller.error != null &&
+                                controller.hasUnfinishedTask,
+                            modelName:
+                                controller.store.settings
+                                    .findModel(message.modelId)
+                                    ?.name ??
+                                '未配置模型',
+                            busy: controller.busy,
+                            onRegenerate: current
+                                ? () => _act(controller.regenerate)
+                                : null,
+                            canRetry: controller.canRetry,
+                            onRetry: (message, call) =>
+                                _act(() => controller.retryTool(message, call)),
+                            onShowcase: (id) => _showcase(id),
+                            hasUndo: (id) => controller.store.hasUndo(
+                              id,
+                              controller.conversation.id,
+                            ),
+                            onUndo: (id) => _act(() async {
+                              final result = await controller.undo(id);
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
+                                    ),
+                                  ),
+                                );
+                              }
+                            }),
+                          );
                           return Align(
                             key: ValueKey(message.id),
                             alignment: Alignment.topCenter,
                             child: ConstrainedBox(
                               constraints: const BoxConstraints(maxWidth: 860),
-                              child: AgentTurnView(
-                                messages: messages,
-                                imageLoader: (message, image) =>
-                                    controller.store.imageBytes(
-                                      message.conversationId,
-                                      image.id,
-                                    ),
-                                fileLoader: (message, file) =>
-                                    controller.store.textFileBytes(
-                                      message.conversationId,
-                                      file.id,
-                                    ),
-                                running: current && controller.busy,
-                                interrupted:
-                                    current &&
-                                    controller.error != null &&
-                                    controller.hasUnfinishedTask,
-                                modelName:
-                                    controller.store.settings
-                                        .findModel(message.modelId)
-                                        ?.name ??
-                                    '未配置模型',
-                                busy: controller.busy,
-                                onRegenerate: current
-                                    ? () => _act(controller.regenerate)
-                                    : null,
-                                canRetry: controller.canRetry,
-                                onRetry: (message, call) => _act(
-                                  () => controller.retryTool(message, call),
-                                ),
-                                onShowcase: (id) => _showcase(id),
-                                hasUndo: (id) => controller.store.hasUndo(
-                                  id,
-                                  controller.conversation.id,
-                                ),
-                                onUndo: (id) => _act(() async {
-                                  final result = await controller.undo(id);
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          '恢复 ${result['restored']} 本，跳过 ${result['skipped']} 本，失败 ${result['failed']} 本',
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                }),
-                              ),
+                              // Only the running turn follows streamed text.
+                              child: current && controller.busy
+                                  ? ValueListenableBuilder<int>(
+                                      valueListenable:
+                                          controller.streamRevision,
+                                      builder: (context, _, _) => turn(context),
+                                    )
+                                  : turn(context),
                             ),
                           );
                         },

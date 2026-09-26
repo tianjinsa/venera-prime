@@ -194,21 +194,18 @@ extension _AgentLibraryTools on AgentTools {
     await c.run.wait(app.initHistory());
     await c.run.wait(initializeSources().catchError((Object _) {}));
     final keyword = _keyword(a);
-    final page = AgentTools._paged(
-      [
-        for (final history in app.histories())
-          if (_matches(keyword, [history.title, history.subtitle]))
-            {
-              'source_key': _sourceKeyOf(history.type),
-              'comic_id': history.id,
-              'title': history.title,
-              'subtitle': history.subtitle,
-              'cover': history.cover,
-              ..._progress(history),
-            },
-      ],
-      a,
-    );
+    final page = AgentTools._paged([
+      for (final history in app.histories())
+        if (_matches(keyword, [history.title, history.subtitle]))
+          {
+            'source_key': _sourceKeyOf(history.type),
+            'comic_id': history.id,
+            'title': history.title,
+            'subtitle': history.subtitle,
+            'cover': history.cover,
+            ..._progress(history),
+          },
+    ], a);
     final items = (page['items'] as List).cast<AgentJson>();
     _rememberItems(items, c);
     for (final item in items) {
@@ -278,22 +275,19 @@ extension _AgentLibraryTools on AgentTools {
     await c.run.wait(app.initLocal());
     await c.run.wait(initializeSources().catchError((Object _) {}));
     final keyword = _keyword(a);
-    final page = AgentTools._paged(
-      [
-        for (final comic in app.localComics())
-          if (_matches(keyword, [comic.title, comic.subtitle, ...comic.tags]))
-            {
-              'source_key': _sourceKeyOf(comic.comicType),
-              'comic_id': comic.id,
-              'title': comic.title,
-              'subtitle': comic.subtitle,
-              'downloaded_chapters': comic.downloadedChapters.length,
-              'total_chapters': comic.chapters?.length,
-              'added_at': comic.createdAt.toIso8601String(),
-            },
-      ],
-      a,
-    );
+    final page = AgentTools._paged([
+      for (final comic in app.localComics())
+        if (_matches(keyword, [comic.title, comic.subtitle, ...comic.tags]))
+          {
+            'source_key': _sourceKeyOf(comic.comicType),
+            'comic_id': comic.id,
+            'title': comic.title,
+            'subtitle': comic.subtitle,
+            'downloaded_chapters': comic.downloadedChapters.length,
+            'total_chapters': comic.chapters?.length,
+            'added_at': comic.createdAt.toIso8601String(),
+          },
+    ], a);
     _rememberItems((page['items'] as List).cast<AgentJson>(), c);
     return page;
   }
@@ -403,7 +397,9 @@ extension _AgentLibraryTools on AgentTools {
             );
           }
           final done = local?.downloadedChapters.toSet() ?? const <String>{};
-          pending = (chapters ?? all).where((ch) => !done.contains(ch)).toList();
+          pending = (chapters ?? all)
+              .where((ch) => !done.contains(ch))
+              .toList();
           if (pending.isEmpty) {
             row.addAll({'status': 'skipped', 'reason': 'ALREADY_DOWNLOADED'});
             continue;
@@ -458,7 +454,10 @@ extension _AgentLibraryTools on AgentTools {
     final action = AgentTools._text(a, 'action');
     const actions = ['pause', 'resume', 'retry', 'prioritize', 'cancel'];
     if (!actions.contains(action)) {
-      throw AgentException('INVALID_ARGUMENT', 'action 可用值：${actions.join('、')}');
+      throw AgentException(
+        'INVALID_ARGUMENT',
+        'action 可用值：${actions.join('、')}',
+      );
     }
     await c.run.wait(app.initLocal());
     final results = <AgentJson>[];
@@ -473,7 +472,10 @@ extension _AgentLibraryTools on AgentTools {
         ...AgentTools._identity(ref),
         if (applied)
           'status': 'done'
-        else ...{'status': 'skipped', 'reason': 'NOT_APPLICABLE'},
+        else ...{
+          'status': 'skipped',
+          'reason': 'NOT_APPLICABLE',
+        },
       });
     }
     return {
@@ -558,7 +560,10 @@ extension _AgentLibraryTools on AgentTools {
         ...AgentTools._identity(ref),
         if (present)
           'status': 'marked'
-        else ...{'status': 'skipped', 'reason': 'NOT_PRESENT'},
+        else ...{
+          'status': 'skipped',
+          'reason': 'NOT_PRESENT',
+        },
       });
     }
     return {
@@ -793,7 +798,9 @@ extension _AgentLibraryTools on AgentTools {
       if (chapter > count) {
         throw AgentException(
           'INVALID_CHAPTER',
-          chapters.isGrouped ? '分组漫画需要有效的 group 和组内 chapter' : '章节超出范围，共 $count 章',
+          chapters.isGrouped
+              ? '分组漫画需要有效的 group 和组内 chapter'
+              : '章节超出范围，共 $count 章',
         );
       }
     }
@@ -860,7 +867,10 @@ extension _AgentLibraryTools on AgentTools {
   static String _blockedKey(AgentJson a) {
     final scope = a['scope'] ?? 'comic';
     if (scope != 'comic' && scope != 'comment') {
-      throw const AgentException('INVALID_ARGUMENT', 'scope 只能为 comic 或 comment');
+      throw const AgentException(
+        'INVALID_ARGUMENT',
+        'scope 只能为 comic 或 comment',
+      );
     }
     return scope == 'comic' ? 'blockedWords' : 'blockedCommentWords';
   }
@@ -885,15 +895,14 @@ extension _AgentLibraryTools on AgentTools {
     };
   }
 
-  Future<AgentJson> _updateBlockedWords(
-    AgentJson a,
-    AgentToolContext c,
-  ) async {
+  Future<AgentJson> _updateBlockedWords(AgentJson a, AgentToolContext c) async {
     final key = _blockedKey(a);
     List<String> words(String name) {
       final value = a[name] ?? const [];
       if (value is! List ||
-          value.any((w) => w is! String || w.trim().isEmpty || w.length > 200)) {
+          value.any(
+            (w) => w is! String || w.trim().isEmpty || w.length > 200,
+          )) {
         throw AgentException('INVALID_ARGUMENT', '$name 需要非空关键词数组');
       }
       return [for (final w in value) (w as String).trim()];
@@ -908,7 +917,11 @@ extension _AgentLibraryTools on AgentTools {
     final results = <AgentJson>[];
     for (final word in add) {
       if (current.contains(word)) {
-        results.add({'word': word, 'status': 'skipped', 'reason': 'ALREADY_EXISTS'});
+        results.add({
+          'word': word,
+          'status': 'skipped',
+          'reason': 'ALREADY_EXISTS',
+        });
       } else {
         current.add(word);
         results.add({'word': word, 'status': 'added'});
@@ -918,7 +931,11 @@ extension _AgentLibraryTools on AgentTools {
       if (current.remove(word)) {
         results.add({'word': word, 'status': 'removed'});
       } else {
-        results.add({'word': word, 'status': 'skipped', 'reason': 'NOT_PRESENT'});
+        results.add({
+          'word': word,
+          'status': 'skipped',
+          'reason': 'NOT_PRESENT',
+        });
       }
     }
     c.run.check();

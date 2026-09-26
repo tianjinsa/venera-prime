@@ -209,7 +209,12 @@ abstract final class AgentProtocolCodec {
       'input': input,
       'stream': model.stream,
     };
-    for (final key in ['messages', 'n', 'stream_options', 'previous_response_id']) {
+    for (final key in [
+      'messages',
+      'n',
+      'stream_options',
+      'previous_response_id',
+    ]) {
       body.remove(key);
     }
     if (instructions.isEmpty) {
@@ -582,7 +587,9 @@ class _ResponsesStream extends AgentStreamState {
         _response(agentObject(event['response']));
       case 'response.failed':
         final response = event['response'];
-        AgentStreamState.providerError(response is Map ? response['error'] : null);
+        AgentStreamState.providerError(
+          response is Map ? response['error'] : null,
+        );
       case 'error':
         AgentStreamState.providerError(event['error'] ?? event);
     }
@@ -698,7 +705,9 @@ class _MessagesStream extends AgentStreamState {
   @override
   String? get finish => switch (_stop) {
     'end_turn' || 'stop_sequence' || 'refusal' =>
-      _blocks.values.any((b) => b['type'] == 'tool_use') ? 'tool_calls' : 'stop',
+      _blocks.values.any((b) => b['type'] == 'tool_use')
+          ? 'tool_calls'
+          : 'stop',
     'tool_use' => 'tool_calls',
     'max_tokens' => 'length',
     _ => null,
@@ -743,7 +752,8 @@ class _MessagesStream extends AgentStreamState {
             block['text'] = '${block['text'] ?? ''}${delta['text']}';
             emit('text', delta['text']);
           case 'thinking_delta':
-            block['thinking'] = '${block['thinking'] ?? ''}${delta['thinking']}';
+            block['thinking'] =
+                '${block['thinking'] ?? ''}${delta['thinking']}';
             emit('reasoning', delta['thinking']);
           case 'signature_delta':
             block['signature'] =
