@@ -8,6 +8,7 @@ import 'agent_attachment_view.dart';
 import 'agent_disclosure.dart';
 import 'agent_image_view.dart';
 import 'agent_models.dart';
+import 'agent_text_view.dart';
 
 class AgentUserMessageView extends StatelessWidget {
   final AgentMessage message;
@@ -65,7 +66,7 @@ class AgentUserMessageView extends StatelessWidget {
                     if (message.text.isNotEmpty) const SizedBox(height: 10),
                   ],
                   if (message.text.isNotEmpty)
-                    SelectableText(
+                    AgentSelectableText(
                       message.text,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         fontSize: 16,
@@ -213,9 +214,8 @@ class AgentMessageParts extends StatelessWidget {
           leading: const Icon(Icons.psychology_outlined),
           builder: (context) => _detail(
             context,
-            SelectableText(
+            AgentSelectableText(
               part['text'] as String? ?? '',
-              key: PageStorageKey('reasoning-text-${message.id}-$index'),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 fontSize: 13,
                 height: 1.7,
@@ -293,28 +293,9 @@ class AgentMessageParts extends StatelessWidget {
                 ),
           builder: (context) => _detail(
             context,
-            Container(
-              padding: const EdgeInsets.all(12),
-              constraints: const BoxConstraints(maxHeight: 280),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerLow,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SingleChildScrollView(
-                key: PageStorageKey('tool-scroll-$identity'),
-                child: SelectableText(
-                  const JsonEncoder.withIndent('  ').convert({
-                    'tool': part['name'],
-                    'arguments': part['arguments'],
-                    if (result != null) 'result': result,
-                  }),
-                  key: PageStorageKey('tool-text-$identity'),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    height: 1.6,
-                  ),
-                ),
-              ),
+            AgentToolDetail(
+              key: PageStorageKey('tool-detail-$identity'),
+              part: part,
             ),
           ),
         ),
@@ -411,6 +392,77 @@ class _CachedMarkdownState extends State<_CachedMarkdown> {
             color: theme.colorScheme.outlineVariant.withValues(alpha: .65),
             width: .6,
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Tool arguments and receipt. The JSON text is encoded once per receipt, and
+/// a large receipt is laid out lazily inside its bounded viewport.
+class AgentToolDetail extends StatelessWidget {
+  final AgentJson part;
+  const AgentToolDetail({super.key, required this.part});
+
+  static final _cache = Expando<(Object?, Object?, String)>();
+  static const _lazyChunks = 3;
+
+  static String _json(AgentJson part) {
+    final cached = _cache[part];
+    final result = part['result'];
+    if (cached != null &&
+        identical(cached.$1, part['arguments']) &&
+        identical(cached.$2, result)) {
+      return cached.$3;
+    }
+    final text = const JsonEncoder.withIndent('  ').convert({
+      'tool': part['name'],
+      'arguments': part['arguments'],
+      if (result is Map) 'result': result,
+    });
+    _cache[part] = (part['arguments'], result, text);
+    return text;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = theme.textTheme.bodySmall?.copyWith(
+      fontFamily: 'monospace',
+      height: 1.6,
+    );
+    final text = _json(part);
+    final chunks = agentTextChunks(text, size: 1024);
+    final decoration = BoxDecoration(
+      color: theme.colorScheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(8),
+    );
+    if (chunks.length <= _lazyChunks) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        constraints: const BoxConstraints(maxHeight: 280),
+        decoration: decoration,
+        child: SingleChildScrollView(
+          child: AgentSelectableText(text, style: style),
+        ),
+      );
+    }
+    return Container(
+      height: 280,
+      decoration: decoration,
+      child: SelectionArea(
+        child: ListView.builder(
+          padding: const EdgeInsets.all(12),
+          itemCount: chunks.length,
+          itemBuilder: (_, index) {
+            final chunk = chunks[index];
+            return Text(
+              index < chunks.length - 1 && chunk.endsWith('\n')
+                  ? chunk.substring(0, chunk.length - 1)
+                  : chunk,
+              style: style,
+            );
+          },
         ),
       ),
     );

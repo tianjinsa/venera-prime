@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
@@ -287,6 +288,77 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('dragging on a user message bubble scrolls the conversation', (
+    tester,
+  ) async {
+    await pumpAgent(tester);
+    final request = [
+      '请帮我整理这些漫画',
+      for (var i = 0; i < 16; i++) '第 $i 本：需要加入收藏并展示',
+    ].join('\n');
+    await tester.enterText(input, request);
+    await tester.pump();
+    await tester.tap(send);
+    await tester.pump();
+    await emit(
+      tester,
+      List.generate(60, (i) => '第 $i 行 **漫画介绍**。').join('\n\n'),
+    );
+    final position = tester.widget<ListView>(messages).controller!.position;
+    position.jumpTo(0);
+    await tester.pump();
+    // Accept either renderer so the gesture always starts on a glyph.
+    final editable = find.descendant(
+      of: messages,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is EditableText &&
+            widget.controller.text.startsWith('请帮我整理'),
+      ),
+    );
+    final paragraph = find.descendant(
+      of: messages,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is RichText &&
+            widget.text.toPlainText().startsWith('请帮我整理'),
+      ),
+    );
+    Offset glyph(int offset) {
+      if (editable.evaluate().isNotEmpty) {
+        final render = tester.state<EditableTextState>(editable).renderEditable;
+        return render.localToGlobal(
+          render.getLocalRectForCaret(TextPosition(offset: offset)).center,
+        );
+      }
+      final render = tester.renderObject<RenderParagraph>(paragraph);
+      return render.localToGlobal(
+        render
+            .getBoxesForSelection(
+              TextSelection(baseOffset: offset, extentOffset: offset + 1),
+            )
+            .first
+            .toRect()
+            .center,
+      );
+    }
+
+    for (final origin in [glyph(2), glyph(request.indexOf('第 8 本') + 2)]) {
+      position.jumpTo(0);
+      await tester.pump();
+      await tester.dragFrom(
+        origin,
+        const Offset(0, -200),
+        kind: PointerDeviceKind.touch,
+      );
+      await tester.pumpAndSettle();
+      expect(position.pixels, greaterThan(120));
+    }
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('holding rendered text at the bottom prevents streaming jumps', (
     tester,

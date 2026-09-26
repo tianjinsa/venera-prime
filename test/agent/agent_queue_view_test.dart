@@ -185,10 +185,10 @@ void main() {
         );
         expect(
           tester
-              .widget<SelectableText>(
+              .widget<Text>(
                 find.byWidgetPredicate(
                   (widget) =>
-                      widget is SelectableText &&
+                      widget is Text &&
                       widget.data == '第一条原始内容\n包含完整换行',
                 ),
               )
@@ -347,9 +347,9 @@ void main() {
         expect(find.text('排队 1 条'), findsOneWidget);
         await tester.tap(find.byKey(open));
         await tester.pumpAndSettle();
-        final text = tester.widget<SelectableText>(
+        final text = tester.widget<Text>(
           find.byWidgetPredicate(
-            (widget) => widget is SelectableText && widget.data == content,
+            (widget) => widget is Text && widget.data == content,
           ),
         );
         expect(text.data, content);
