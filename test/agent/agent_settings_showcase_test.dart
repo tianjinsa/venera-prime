@@ -116,6 +116,102 @@ void main() {
     },
   );
 
+  testWidgets('native protocols offer selectable thinking levels', (
+    tester,
+  ) async {
+    final root = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('agent-native-thinking-'),
+    ))!;
+    configureAgentTestPaths(root.path);
+    final store = (await tester.runAsync(
+      () => AgentStore.open('${root.path}/agent'),
+    ))!;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(850, 2400);
+    Finder field(String name) => find.byKey(ValueKey('agent-model-$name'));
+    Finder chip(String id) => field('thinking-$id');
+    bool selected(String id) => tester.widget<FilterChip>(chip(id)).selected;
+    try {
+      await tester.pumpWidget(
+        MaterialApp(home: AgentSettingsPage(store: store)),
+      );
+      await tester.tap(find.byKey(const ValueKey('agent-add-model')));
+      await tester.pumpAndSettle();
+      await tester.enterText(field('name'), 'Claude');
+      await tester.enterText(field('model'), 'claude-test');
+      await tester.tap(field('protocol'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Anthropic Messages').last);
+      await tester.pumpAndSettle();
+      // No JSON is needed: supported levels are listed as choices.
+      expect(field('thinking'), findsNothing);
+      expect(chip('off'), findsOneWidget);
+      expect(chip('max'), findsOneWidget);
+      expect(chip('minimal'), findsNothing);
+      for (final id in AgentThinkingLevel.nativeDefaults) {
+        expect(selected(id), true);
+      }
+      await tester.tap(chip('xhigh'));
+      await tester.tap(chip('default'));
+      await tester.pump();
+      expect(selected('xhigh'), true);
+      expect(selected('default'), false);
+      expect(
+        tester.widget<DropdownButton<String>>(field('default')).value,
+        'low',
+      );
+      await tester.tap(field('default'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('超高').last);
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('保存模型'));
+        for (var i = 0; i < 100 && store.settings.models.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+      });
+      await tester.pumpAndSettle();
+      final model = store.settings.models.single;
+      expect(model.protocol, AgentProtocol.messages);
+      expect(model.thinkingLevels.map((e) => e.id), [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+      ]);
+      expect(model.defaultThinking, 'xhigh');
+      expect(model.thinking('xhigh').params, {
+        'thinking': {'type': 'adaptive', 'display': 'summarized'},
+        'output_config': {'effort': 'xhigh'},
+      });
+
+      // Switching to Responses keeps the shared choices.
+      await tester.tap(find.text('Claude'));
+      await tester.pumpAndSettle();
+      await tester.tap(field('protocol'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('OpenAI Responses').last);
+      await tester.pumpAndSettle();
+      expect(chip('minimal'), findsOneWidget);
+      expect(chip('off'), findsNothing);
+      expect(selected('xhigh'), true);
+      expect(selected('none'), false);
+      // The last enabled level cannot be removed.
+      for (final id in ['low', 'medium', 'high', 'xhigh']) {
+        await tester.tap(chip(id));
+        await tester.pump();
+      }
+      expect(selected('xhigh'), true);
+      expect(tester.takeException(), isNull);
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+      store.close();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      await tester.runAsync(() => root.delete(recursive: true));
+    }
+  });
+
   for (final mode in ['detailed', 'brief']) {
     testWidgets(
       'collection showcases fold by operation and favorite folder in $mode mode',

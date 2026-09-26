@@ -88,7 +88,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
               ),
               const SizedBox(height: 8),
               const Text(
-                '使用兼容 Chat Completions 的接口。配置、密钥和历史仅保存在本机，不随应用备份或 WebDAV 同步。',
+                '支持 Chat Completions、OpenAI Responses 和 Anthropic Messages 接口。配置、密钥和历史仅保存在本机，不随应用备份或 WebDAV 同步。',
               ),
               const SizedBox(height: 20),
               for (final model in settings.models)
@@ -165,7 +165,9 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                       },
               ),
               const SizedBox(height: 12),
-              const Text('Agent 可以管理本地收藏和稍后再看。删除条目后可以在工具卡片中撤销。'),
+              const Text(
+                'Agent 可以搜索漫画，管理收藏、稍后再看、阅读历史和下载等。删除收藏、稍后再看和历史后可以在工具卡片中撤销。',
+              ),
             ],
           ),
         ),
@@ -195,6 +197,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   static const _encoder = JsonEncoder.withIndent('  ');
   List<AgentThinkingLevel> _levels = [];
   String? _defaultThinking;
+
+  /// Enabled levels of a protocol with a native thinking field.
+  late Set<String> _native;
   @override
   void initState() {
     super.initState();
@@ -224,6 +229,11 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     _stream = model?.stream ?? true;
     _protocol = model?.protocol ?? AgentProtocol.chat;
     _defaultThinking = model?.defaultThinking ?? 'default';
+    _native = {
+      ...model == null || model.protocol == AgentProtocol.chat
+          ? AgentThinkingLevel.nativeDefaults
+          : model.thinkingLevels.map((e) => e.id),
+    };
     _updateLevels();
     _fields['thinking']!.addListener(_thinkingChanged);
   }
@@ -240,18 +250,32 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     if (url.text.trim() == _defaultUrls[_protocol]) {
       url.text = _defaultUrls[protocol]!;
     }
-    setState(() => _protocol = protocol);
+    setState(() {
+      _protocol = protocol;
+      _updateLevels();
+    });
   }
 
-  String get _thinkingExample => switch (_protocol) {
-    AgentProtocol.chat => '{"reasoning_effort":"low"}',
-    AgentProtocol.responses =>
-      '{"reasoning":{"effort":"low","summary":"auto"}}',
-    AgentProtocol.messages =>
-      '{"thinking":{"type":"enabled","budget_tokens":4000}}',
-  };
+  bool get _isNative => _protocol != AgentProtocol.chat;
+
+  List<AgentThinkingLevel> get _nativeLevels => AgentThinkingLevel.native(
+    _protocol,
+  ).where((level) => _native.contains(level.id)).toList();
+
+  void _toggleNative(String id, bool selected) {
+    if (!selected && _nativeLevels.length == 1 && _native.contains(id)) return;
+    setState(() {
+      selected ? _native.add(id) : _native.remove(id);
+      _updateLevels();
+    });
+  }
 
   List<AgentThinkingLevel> _readLevels() {
+    if (_isNative) {
+      final levels = _nativeLevels;
+      if (levels.isEmpty) throw const FormatException('请至少选择一个思考深度');
+      return levels;
+    }
     try {
       final raw = jsonDecode(_value('thinking'));
       if (raw is! List) throw const FormatException();
@@ -270,6 +294,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   }
 
   void _updateLevels() {
+    if (_isNative && _nativeLevels.isEmpty) {
+      _native = {...AgentThinkingLevel.nativeDefaults};
+    }
     try {
       _levels = _readLevels();
       if (!_levels.any((level) => level.id == _defaultThinking)) {
@@ -425,6 +452,35 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     ),
   );
 
+  Widget _nativeThinking() => Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: InputDecorator(
+      decoration: InputDecoration(
+        labelText: '可选思考深度',
+        border: const OutlineInputBorder(),
+        helperText: _protocol == AgentProtocol.responses
+            ? '通过 reasoning.effort 设置，并请求思考摘要；“默认”不发送该参数。可用档位以模型为准'
+            : '通过自适应思考和 output_config.effort 设置，并显示思考摘要；“默认”不发送该参数。可用档位以模型为准',
+        helperMaxLines: 3,
+      ),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          for (final level in AgentThinkingLevel.native(_protocol))
+            FilterChip(
+              key: ValueKey('agent-model-thinking-${level.id}'),
+              label: Text(level.label),
+              selected: _native.contains(level.id),
+              onSelected: _saving
+                  ? null
+                  : (selected) => _toggleNative(level.id, selected),
+            ),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: Text(widget.original == null ? '添加模型' : '编辑模型')),
@@ -537,13 +593,16 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                   onChanged: (v) => setState(() => _reasoning = v),
                 ),
               const SizedBox(height: 16),
-              _field(
-                'thinking',
-                '思考深度列表（JSON）',
-                lines: 4,
-                hint:
-                    '每项包含 id、label 和 params；例如 params: $_thinkingExample，以服务商支持为准',
-              ),
+              if (_isNative)
+                _nativeThinking()
+              else
+                _field(
+                  'thinking',
+                  '思考深度列表（JSON）',
+                  lines: 4,
+                  hint:
+                      '每项包含 id、label 和 params；例如 params: {"reasoning_effort":"low"}，以服务商支持为准',
+                ),
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
                 child: InputDecorator(
@@ -552,7 +611,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                     border: const OutlineInputBorder(),
                     helperText: _levels.isEmpty
                         ? '请先填写有效的思考深度列表'
-                        : '选项来自上方思考深度列表',
+                        : '对话中可随时切换，选项来自上方思考深度',
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
@@ -588,7 +647,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                     ? '最大输出 tokens（可选，默认 8192）'
                     : '最大输出 tokens（可选）',
                 hint: _protocol == AgentProtocol.messages
-                    ? '该协议必填，留空时使用默认值；开启思考时会自动高于思考预算'
+                    ? '该协议必填，思考与回答共用此上限；留空时使用 8192，开启思考时使用 16000'
                     : null,
               ),
               ExpansionTile(

@@ -261,6 +261,47 @@ void main() {
     );
   });
 
+  test('native thinking levels use the fields of each protocol', () {
+    AgentJson body(AgentProtocol protocol, String level) =>
+        AgentClient.requestBody(
+          model: AgentModel.fromJson({
+            ..._model(protocol).toJson(),
+            'thinking_levels': AgentThinkingLevel.native(
+              protocol,
+            ).map((e) => e.toJson()).toList(),
+          }),
+          thinkingId: level,
+          messages: [],
+          tools: _tools,
+        );
+    expect(AgentThinkingLevel.native(AgentProtocol.chat), isEmpty);
+    expect(body(AgentProtocol.responses, 'high')['reasoning'], {
+      'effort': 'high',
+      'summary': 'auto',
+    });
+    expect(body(AgentProtocol.responses, 'none')['reasoning'], {
+      'effort': 'none',
+    });
+    expect(
+      body(AgentProtocol.responses, 'default').containsKey('reasoning'),
+      false,
+    );
+
+    final adaptive = body(AgentProtocol.messages, 'max');
+    expect(adaptive['thinking'], {'type': 'adaptive', 'display': 'summarized'});
+    expect(adaptive['output_config'], {'effort': 'max'});
+    // Adaptive thinking shares max_tokens with the answer.
+    expect(adaptive['max_tokens'], 16000);
+    final off = body(AgentProtocol.messages, 'off');
+    expect(off['thinking'], {'type': 'disabled'});
+    expect(off.containsKey('output_config'), false);
+    expect(off['max_tokens'], 8192);
+    expect(
+      body(AgentProtocol.messages, 'default').containsKey('thinking'),
+      false,
+    );
+  });
+
   test('summary requests flatten tool records for both new protocols', () {
     for (final protocol in [AgentProtocol.responses, AgentProtocol.messages]) {
       final model = _model(protocol);

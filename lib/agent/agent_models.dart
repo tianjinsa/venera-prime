@@ -128,6 +128,69 @@ class AgentThinkingLevel {
     params: agentObject(json['params'] ?? {}),
   );
   AgentJson toJson() => {'id': id, 'label': label, 'params': params};
+
+  /// Thinking levels a protocol configures through its own request field.
+  /// Chat Completions has no common field, so its levels stay user-defined.
+  static List<AgentThinkingLevel> native(AgentProtocol protocol) =>
+      switch (protocol) {
+        AgentProtocol.chat => const [],
+        AgentProtocol.responses => [
+          const AgentThinkingLevel(id: 'default', label: '默认'),
+          const AgentThinkingLevel(
+            id: 'none',
+            label: '不思考',
+            params: {
+              'reasoning': {'effort': 'none'},
+            },
+          ),
+          for (final (id, label) in _responsesEfforts)
+            AgentThinkingLevel(
+              id: id,
+              label: label,
+              params: {
+                'reasoning': {'effort': id, 'summary': 'auto'},
+              },
+            ),
+        ],
+        AgentProtocol.messages => [
+          const AgentThinkingLevel(id: 'default', label: '默认'),
+          const AgentThinkingLevel(
+            id: 'off',
+            label: '不思考',
+            params: {
+              'thinking': {'type': 'disabled'},
+            },
+          ),
+          for (final (id, label) in _messagesEfforts)
+            AgentThinkingLevel(
+              id: id,
+              label: label,
+              params: {
+                'thinking': {'type': 'adaptive', 'display': 'summarized'},
+                'output_config': {'effort': id},
+              },
+            ),
+        ],
+      };
+
+  /// Levels enabled for a newly configured native protocol.
+  static const nativeDefaults = ['default', 'low', 'medium', 'high'];
+
+  static const _responsesEfforts = [
+    ('minimal', '极低'),
+    ('low', '低'),
+    ('medium', '中'),
+    ('high', '高'),
+    ('xhigh', '超高'),
+    ('max', '最高'),
+  ];
+  static const _messagesEfforts = [
+    ('low', '低'),
+    ('medium', '中'),
+    ('high', '高'),
+    ('xhigh', '超高'),
+    ('max', '最高'),
+  ];
 }
 
 /// The wire protocol of a model service. Every protocol shares the same
