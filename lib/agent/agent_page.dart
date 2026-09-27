@@ -46,7 +46,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   bool _pickingAttachments = false;
   final _historySearch = TextEditingController();
   final _scroll = ScrollController();
-  static const _followThreshold = 160.0;
+
+  /// Following resumes only when a scroll ends at the bottom, within about a
+  /// line; elsewhere the jump arrow of the context row brings it back.
+  static const _followThreshold = 24.0;
   bool _followOutput = true;
   bool _userScrolling = false;
   bool _followScheduled = false;
@@ -113,7 +116,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   void _trackBottom(ScrollMetrics metrics) {
-    _belowBottom.value = metrics.extentAfter > 24;
+    _belowBottom.value = metrics.extentAfter > _followThreshold;
   }
 
   /// Move to the newest message and keep following streamed output.
@@ -652,10 +655,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                       child: ListView.builder(
                         key: const ValueKey('agent-messages'),
                         controller: _scroll,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
+                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
                         itemCount: entries.length,
                         itemBuilder: (_, index) {
                           final messages = entries[index];

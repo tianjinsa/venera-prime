@@ -241,7 +241,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('stream yields to drags and resumes only toward the nearby end', (
+  testWidgets('stream yields to drags and resumes only at the end', (
     tester,
   ) async {
     final position = await startLongReply(tester);
@@ -262,7 +262,7 @@ void main() {
     expect(position.extentAfter, lessThan(160));
     await emit(tester, '\n\n上滑期间也不抢占位置。');
     expect(position.pixels, closeTo(heldOffset, 1));
-    await toward.moveBy(const Offset(0, -40));
+    await toward.moveBy(const Offset(0, -200));
     await tester.pump();
     expect(position.extentAfter, lessThan(160));
     await endDrag(tester, toward);
@@ -441,6 +441,26 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('stopping just short of the end does not pull to the bottom', (
+    tester,
+  ) async {
+    final position = await startLongReply(tester);
+    await endDrag(tester, await startDrag(tester, 150));
+    await endDrag(tester, await startDrag(tester, -100));
+    expect(position.extentAfter, inExclusiveRange(24, 160));
+    final offset = position.pixels;
+    await emit(tester, '\n\n接近底部时新增的内容。');
+    expect(position.pixels, closeTo(offset, 1));
+
+    // The context row brings following back.
+    await tester.tap(find.byKey(const ValueKey('agent-jump-bottom-icon')));
+    await tester.pumpAndSettle();
+    await emit(tester, '\n\n恢复跟随后的内容。');
+    expect(position.extentAfter, lessThan(1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('streaming waits for a user fling to finish before following', (
     tester,
   ) async {
@@ -449,7 +469,7 @@ void main() {
     final rect = tester.getRect(messages);
     await tester.flingFrom(
       Offset(rect.left + 4, rect.center.dy),
-      const Offset(0, -90),
+      const Offset(0, -300),
       1000,
     );
     for (var frame = 0; frame < 30 && position.extentAfter > 150; frame++) {

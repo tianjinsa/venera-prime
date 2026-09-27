@@ -131,7 +131,7 @@ class AgentTurnView extends StatelessWidget {
     }
     flushActivity();
     return Padding(
-      padding: const EdgeInsets.only(top: 12, bottom: 24),
+      padding: const EdgeInsets.only(top: 12, bottom: 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
