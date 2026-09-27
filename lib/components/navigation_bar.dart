@@ -7,11 +7,20 @@ class PaneItemEntry {
 
   IconData activeIcon;
 
+  /// Wraps the icon, for example with a status badge.
+  Widget Function(BuildContext context, Widget icon)? iconBuilder;
+
   PaneItemEntry({
     required this.label,
     required this.icon,
     required this.activeIcon,
+    this.iconBuilder,
   });
+
+  Widget buildIcon(BuildContext context, bool active) {
+    final widget = Icon(active ? activeIcon : icon);
+    return iconBuilder?.call(context, widget) ?? widget;
+  }
 }
 
 class PaneActionEntry {
@@ -399,7 +408,7 @@ class _SideNaviWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final icon = Icon(enabled ? entry.activeIcon : entry.icon);
+    final icon = entry.buildIcon(context, enabled);
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -527,9 +536,7 @@ class _SingleBottomNaviWidgetState extends State<_SingleBottomNaviWidget>
   Widget buildContent() {
     final value = controller.value;
     final colorScheme = Theme.of(context).colorScheme;
-    final icon = Icon(
-      widget.enabled ? widget.entry.activeIcon : widget.entry.icon,
-    );
+    final icon = widget.entry.buildIcon(context, widget.enabled);
     return Center(
       child: Container(
         width: 64,

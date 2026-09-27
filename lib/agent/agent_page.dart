@@ -1,8 +1,8 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
-import 'package:venera/foundation/app.dart';
 import 'package:venera/pages/comic_source_page.dart';
 import 'agent_attachment_view.dart';
 import 'agent_controller.dart';
@@ -13,24 +13,32 @@ import 'agent_message_view.dart';
 import 'agent_model_header.dart';
 import 'agent_models.dart';
 import 'agent_queue_view.dart';
+import 'agent_session.dart';
 import 'agent_settings_page.dart';
 import 'agent_showcase_view.dart';
-import 'agent_store.dart';
 import 'agent_turn_view.dart';
 
 enum _AgentAttachmentType { images, files }
 
 class AgentPage extends StatefulWidget {
+  /// A controller owned by this page and disposed with it. Without one the
+  /// page shows the app-wide [AgentSession], which keeps running after the
+  /// page is left.
   final AgentController? controller;
   final Future<List<AgentImageDraft>> Function()? imagePicker;
   final Future<List<AgentTextDraft>> Function()? filePicker;
   final AgentModelHeaderBridge? modelHeaderBridge;
+
+  /// Shown on its own route instead of in the navigation tab: adds a back
+  /// button and keeps clear of the system bars.
+  final bool standalone;
   const AgentPage({
     super.key,
     this.controller,
     this.imagePicker,
     this.filePicker,
     this.modelHeaderBridge,
+    this.standalone = false,
   });
   @override
   State<AgentPage> createState() => _AgentPageState();
@@ -63,6 +71,10 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   String? _focusedGroup;
   int _focusRevision = 0;
 
+  /// Tickers stop while a route covers this page, which tells the shared
+  /// session whether the agent is in view.
+  ValueListenable<TickerModeData>? _tickerMode;
+
   @override
   void initState() {
     super.initState();
@@ -72,11 +84,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   Future<void> _load() async {
     try {
-      final controller =
-          widget.controller ??
-          AgentController(await AgentStore.open('${App.dataPath}/agent'));
+      final controller = widget.controller ?? await AgentSession.open();
       if (!mounted) {
-        controller.dispose();
+        if (widget.controller != null) controller.dispose();
         return;
       }
       controller.addListener(_onUpdate);
@@ -86,6 +96,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         _loadError = null;
       });
       widget.modelHeaderBridge?.bind(controller);
+      _visibilityChanged();
       _onUpdate();
     } catch (_) {
       if (mounted) {
@@ -208,8 +219,29 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final mode = TickerMode.getValuesNotifier(context);
+    if (mode == _tickerMode) return;
+    _tickerMode?.removeListener(_visibilityChanged);
+    _tickerMode = mode..addListener(_visibilityChanged);
+    _visibilityChanged();
+  }
+
+  void _visibilityChanged() {
+    if (widget.controller != null) return;
+    AgentSession.setPageVisible(
+      context,
+      _controller != null && _tickerMode!.value.enabled,
+    );
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) _controller?.checkpoint();
+    // The shared session saves its own checkpoints.
+    if (state != AppLifecycleState.resumed && widget.controller != null) {
+      _controller?.checkpoint();
+    }
   }
 
   @override
@@ -226,10 +258,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _tickerMode?.removeListener(_visibilityChanged);
+    if (widget.controller == null) AgentSession.setPageVisible(context, false);
     if (_controller != null) widget.modelHeaderBridge?.unbind(_controller!);
     _controller?.removeListener(_onUpdate);
     _controller?.streamRevision.removeListener(_scheduleFollow);
-    _controller?.dispose();
+    if (widget.controller != null) _controller?.dispose();
     _draft.dispose();
     _historySearch.dispose();
     _scroll.dispose();
@@ -481,7 +515,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         ),
       );
     }
-    return Scaffold(
+    final page = Scaffold(
       body: AnimatedBuilder(
         animation: controller,
         builder: (_, _) => LayoutBuilder(
@@ -508,6 +542,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
         ),
       ),
     );
+    if (!widget.standalone) return page;
+    // Its own route has no navigation bars to keep clear of the system bars.
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(child: page),
+    );
   }
 
   Widget _chat() {
@@ -532,6 +572,15 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           child: Row(
             children: [
               const SizedBox(width: 8),
+              if (widget.standalone) ...[
+                IconButton(
+                  key: const ValueKey('agent-back'),
+                  tooltip: '返回',
+                  onPressed: () => Navigator.of(context).maybePop(),
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                const SizedBox(width: 8),
+              ],
               if (_width < 1024) ...[
                 IconButton(
                   tooltip: '历史对话',

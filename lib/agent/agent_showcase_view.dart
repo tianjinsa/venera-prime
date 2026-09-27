@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart' show ComicTile;
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/context.dart';
+import 'package:venera/pages/comic_details_page/comic_page.dart';
 import 'agent_disclosure.dart';
 import 'agent_models.dart';
 import 'agent_tools.dart';
@@ -250,9 +252,22 @@ class AgentShowcasePanel extends StatelessWidget {
         delegate: SliverChildBuilderDelegate(
           (_, index) {
             final comic = group.comics[index];
+            final item = AgentTools.toComic(comic);
+            final heroID = Object.hash(group.id, comic.identity);
             final tile = ComicTile(
-              comic: AgentTools.toComic(comic),
-              heroID: Object.hash(group.id, comic.identity),
+              comic: item,
+              heroID: heroID,
+              // Above this panel's page, which may be the full-screen agent
+              // route rather than the navigation tab.
+              onTap: () => context.to(
+                () => ComicPage(
+                  id: item.id,
+                  sourceKey: item.sourceKey,
+                  cover: item.cover,
+                  title: item.title,
+                  heroID: heroID,
+                ),
+              ),
             );
             final remove = IconButton(
               key: ValueKey('remove-${group.id}-${comic.identity}'),

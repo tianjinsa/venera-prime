@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
+import 'agent_notice.dart';
 export 'agent_page.dart';
 export 'agent_model_header.dart';
 
@@ -8,6 +9,7 @@ final agentPaneItem = PaneItemEntry(
   label: 'Agent',
   icon: Icons.auto_awesome_outlined,
   activeIcon: Icons.auto_awesome,
+  iconBuilder: (_, icon) => AgentTabBadge(child: icon),
 );
 
 /// Stored values still belong to the upstream four-tab settings interface.

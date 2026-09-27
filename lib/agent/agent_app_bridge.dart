@@ -29,6 +29,7 @@ import 'package:venera/pages/reading_statistics_page.dart';
 import 'package:venera/pages/search_result_page.dart';
 import 'package:venera/utils/atomic_file.dart';
 import 'package:venera/utils/io.dart';
+import 'agent_session.dart';
 import 'agent_source_backups.dart';
 
 /// A download queue entry, detached from the task object for tool results.
@@ -384,9 +385,11 @@ class AgentAppBridge {
       ReadingStatisticsManager().recent(days: days);
   int readingSeconds() => ReadingStatisticsManager().totalDuration();
 
-  /// Opens a page in the main content area, above the agent page.
+  /// Opens a page above the agent page in view, or in the main content area
+  /// while the agent runs in the background.
   void open(Widget Function() builder) {
     final context =
+        AgentSession.pageContext ??
         App.mainNavigatorKey?.currentContext ??
         App.rootNavigatorKey.currentContext;
     if (context == null) throw StateError('No navigator');
