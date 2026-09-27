@@ -392,10 +392,20 @@ class AgentSettings {
   final List<AgentModel> models;
   final String? defaultModelId;
   final String confirmPolicy;
+
+  /// Automatic source backups kept per source; older ones are removed.
+  final int autoBackupLimit;
+
+  /// Backups the agent creates on purpose, per source. They are never removed
+  /// automatically; creating more fails until old ones are deleted. 0 means
+  /// no limit.
+  final int manualBackupLimit;
   const AgentSettings({
     this.models = const [],
     this.defaultModelId,
     this.confirmPolicy = 'never',
+    this.autoBackupLimit = 10,
+    this.manualBackupLimit = 20,
   });
   factory AgentSettings.fromJson(AgentJson json) => AgentSettings(
     models: (json['models'] as List? ?? [])
@@ -403,6 +413,8 @@ class AgentSettings {
         .toList(),
     defaultModelId: json['default_model_id'] as String?,
     confirmPolicy: json['confirm_policy'] as String? ?? 'never',
+    autoBackupLimit: json['auto_backup_limit'] as int? ?? 10,
+    manualBackupLimit: json['manual_backup_limit'] as int? ?? 20,
   );
   AgentModel? findModel(String? id) {
     for (final model in models) {
@@ -418,6 +430,8 @@ class AgentSettings {
     'models': models.map((e) => e.toJson()).toList(),
     'default_model_id': defaultModelId,
     'confirm_policy': confirmPolicy,
+    'auto_backup_limit': autoBackupLimit,
+    'manual_backup_limit': manualBackupLimit,
   };
 }
 

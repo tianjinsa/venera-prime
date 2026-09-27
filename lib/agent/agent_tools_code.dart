@@ -274,6 +274,7 @@ extension _AgentCodeTools on AgentTools {
       source.key,
       original,
       automatic: true,
+      keep: store.settings.autoBackupLimit,
       note: '修改前自动备份',
     );
     try {
@@ -339,6 +340,19 @@ extension _AgentCodeTools on AgentTools {
       results.add(row);
       try {
         final source = await _source(key, c);
+        final limit = store.settings.manualBackupLimit;
+        if (limit > 0 &&
+            (await backups.list(
+                  sourceKey: key,
+                )).where((b) => !b.automatic).length >=
+                limit) {
+          row.addAll({
+            'status': 'failed',
+            'reason': 'BACKUP_LIMIT',
+            'message': '该源的手动备份已达上限$limit个，请先删除不再需要的备份',
+          });
+          continue;
+        }
         final note = item['note'] is String ? item['note'] as String : '';
         final backup = await backups.create(
           key,
@@ -378,6 +392,7 @@ extension _AgentCodeTools on AgentTools {
           key,
           current,
           automatic: true,
+          keep: store.settings.autoBackupLimit,
           note: '还原 $id 前自动备份',
         );
         try {

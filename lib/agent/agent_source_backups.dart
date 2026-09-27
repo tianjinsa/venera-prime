@@ -38,9 +38,6 @@ class AgentSourceBackup {
 class AgentSourceBackups {
   final Directory directory;
 
-  /// Automatic copies kept per source; older ones are removed.
-  static const automaticLimit = 10;
-
   AgentSourceBackups(this.directory);
 
   File _file(String id) => File('${directory.path}/$id.json');
@@ -82,6 +79,10 @@ class AgentSourceBackups {
     String code, {
     bool automatic = false,
     String note = '',
+
+    /// Automatic copies kept for the source; older ones are removed. Manual
+    /// copies are never removed here.
+    int keep = 10,
   }) async {
     await directory.create(recursive: true);
     final now = DateTime.now();
@@ -100,7 +101,7 @@ class AgentSourceBackups {
     if (automatic) {
       final old = (await list(
         sourceKey: sourceKey,
-      )).where((b) => b.automatic).skip(automaticLimit);
+      )).where((b) => b.automatic).skip(keep);
       for (final backup in old) {
         await delete(backup.id);
       }

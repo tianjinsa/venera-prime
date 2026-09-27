@@ -222,7 +222,7 @@ final _agentToolSchemas = <AgentJson>[
   }),
   _schema(
     'source_backup_update',
-    '批量备份、还原或删除漫画源代码备份，按 create、restore、delete 顺序执行。还原前会自动备份当前代码，每个源一次只还原一个备份',
+    '批量备份、还原或删除漫画源代码备份，按 create、restore、delete 顺序执行。还原前会自动备份当前代码，每个源一次只还原一个备份。手动备份不会被自动清理，达到用户设置的上限后需先删除旧备份',
     {
       'create': {
         'type': 'array',

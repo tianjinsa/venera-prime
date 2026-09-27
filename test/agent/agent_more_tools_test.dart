@@ -1272,18 +1272,35 @@ void main() {
     expect(await app.backups.list(), isEmpty);
   });
 
-  test('automatic backups are capped per source', () async {
-    for (var i = 0; i < AgentSourceBackups.automaticLimit + 3; i++) {
-      await app.backups.create('a', 'v$i', automatic: true);
+  test('automatic and manual backups have separate limits', () async {
+    for (var i = 0; i < 5; i++) {
+      await app.backups.create('a', 'v$i', automatic: true, keep: 3);
     }
     await app.backups.create('a', 'manual');
-    await app.backups.create('b', 'other', automatic: true);
+    await app.backups.create('b', 'other', automatic: true, keep: 3);
     final all = await app.backups.list();
-    expect(
-      all.where((b) => b.sourceKey == 'a').length,
-      AgentSourceBackups.automaticLimit + 1,
-    );
+    expect(all.where((b) => b.sourceKey == 'a' && b.automatic).length, 3);
+    // Pruning automatic copies never removes manual ones.
+    expect(all.where((b) => b.sourceKey == 'a' && !b.automatic).length, 1);
     expect(all.where((b) => b.sourceKey == 'b').length, 1);
+
+    sources.add(RichSource('a'));
+    app.code['a'] = 'code';
+    await store.saveSettings(
+      const AgentSettings(manualBackupLimit: 2),
+      store.secrets,
+    );
+    final created = await call('source_backup_update', {
+      'create': [
+        {'source_key': 'a'},
+        {'source_key': 'a'},
+      ],
+    });
+    expect(created['results'][0]['status'], 'created');
+    expect(created['results'][1]['reason'], 'BACKUP_LIMIT');
+    final after = await app.backups.list(sourceKey: 'a');
+    expect(after.where((b) => b.automatic).length, 3);
+    expect(after.where((b) => !b.automatic).length, 2);
   });
 
   test('source libraries are listed, added and removed in batches', () async {

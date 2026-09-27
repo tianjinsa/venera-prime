@@ -68,6 +68,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
             ? (models.isEmpty ? null : models.first.id)
             : settings.defaultModelId,
         confirmPolicy: settings.confirmPolicy,
+        autoBackupLimit: settings.autoBackupLimit,
+        manualBackupLimit: settings.manualBackupLimit,
       ),
     );
   }
@@ -119,6 +121,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                               models: settings.models,
                               defaultModelId: model.id,
                               confirmPolicy: settings.confirmPolicy,
+                              autoBackupLimit: settings.autoBackupLimit,
+                              manualBackupLimit: settings.manualBackupLimit,
                             ),
                           );
                         }
@@ -162,6 +166,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                             models: settings.models,
                             defaultModelId: settings.defaultModelId,
                             confirmPolicy: value,
+                            autoBackupLimit: settings.autoBackupLimit,
+                            manualBackupLimit: settings.manualBackupLimit,
                           ),
                         );
                       },
@@ -175,6 +181,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                 AgentSourceBackups(
                   Directory('${widget.store.directory.path}/source_backups'),
                 ),
+                settings: settings,
+                onChanged: _saving ? null : _save,
               ),
             ],
           ),
@@ -422,6 +430,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
           models: models,
           defaultModelId: old.defaultModelId ?? model.id,
           confirmPolicy: old.confirmPolicy,
+          autoBackupLimit: old.autoBackupLimit,
+          manualBackupLimit: old.manualBackupLimit,
         ),
         {...widget.store.secrets, model.id: _value('key')},
       );
@@ -707,7 +717,13 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
 /// Backups of source code made by the agent, so they cannot grow unnoticed.
 class _SourceBackupsSection extends StatefulWidget {
   final AgentSourceBackups backups;
-  const _SourceBackupsSection(this.backups);
+  final AgentSettings settings;
+  final ValueChanged<AgentSettings>? onChanged;
+  const _SourceBackupsSection(
+    this.backups, {
+    required this.settings,
+    required this.onChanged,
+  });
   @override
   State<_SourceBackupsSection> createState() => _SourceBackupsSectionState();
 }
@@ -757,9 +773,52 @@ class _SourceBackupsSectionState extends State<_SourceBackupsSection> {
       ? '${(bytes / 1024).toStringAsFixed(1)} KB'
       : '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
 
+  void _setLimits({int? automatic, int? manual}) {
+    final s = widget.settings;
+    widget.onChanged?.call(
+      AgentSettings(
+        models: s.models,
+        defaultModelId: s.defaultModelId,
+        confirmPolicy: s.confirmPolicy,
+        autoBackupLimit: automatic ?? s.autoBackupLimit,
+        manualBackupLimit: manual ?? s.manualBackupLimit,
+      ),
+    );
+  }
+
+  Widget _limit(
+    String label,
+    int value,
+    List<int> options,
+    ValueChanged<int> onChanged,
+  ) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+    child: DropdownButtonFormField<int>(
+      key: ValueKey('$label-$value'),
+      initialValue: value,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      ),
+      items: [
+        for (final option in {...options, value}.toList()..sort())
+          DropdownMenuItem(
+            value: option,
+            child: Text(option == 0 ? '不限' : '每个源 $option 个'),
+          ),
+      ],
+      onChanged: widget.onChanged == null
+          ? null
+          : (v) {
+              if (v != null) onChanged(v);
+            },
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final items = _items;
+    final settings = widget.settings;
     final total = items?.fold<int>(0, (sum, b) => sum + b.bytes) ?? 0;
     return Card(
       child: ExpansionTile(
@@ -771,9 +830,21 @@ class _SourceBackupsSectionState extends State<_SourceBackupsSection> {
               ? '读取中'
               : items.isEmpty
               ? 'Agent 修改或还原漫画源前会自动备份，目前没有备份'
-              : '${items.length} 个，共 ${_size(total)}；每个源最多保留 ${AgentSourceBackups.automaticLimit} 个自动备份',
+              : '${items.length} 个，共 ${_size(total)}',
         ),
         children: [
+          _limit(
+            '自动备份上限（超出时删除最旧的自动备份）',
+            settings.autoBackupLimit,
+            const [3, 5, 10, 20, 50],
+            (v) => _setLimits(automatic: v),
+          ),
+          _limit(
+            '手动备份上限（不会自动删除，达到后 Agent 需先删旧备份）',
+            settings.manualBackupLimit,
+            const [0, 10, 20, 50, 100],
+            (v) => _setLimits(manual: v),
+          ),
           if (items != null && items.isNotEmpty) ...[
             for (final item in items)
               ListTile(

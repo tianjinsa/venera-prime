@@ -117,7 +117,7 @@
 | 源代码 | app_logs | 本次启动的日志，最新在前、相同内容合并计数；默认错误和警告，可按关键词、最近分钟数过滤；返回 latest_id，重现问题后用 after_id 只读新日志 |
 | 源代码 | source_code_read / source_code_grep | 一次读取多个源或片段（带行号，合计≤1000行）；跨源按文本或正则搜索并附上下文 |
 | 源代码 | source_code_edit | 对一个已安装源按顺序做精确替换；任一处不匹配、不唯一或新代码不能以同一 key 解析则不写入；成功后立即生效并自动备份原代码；不创建新源 |
-| 源代码 | source_backups / source_backup_update | 分页查看备份；批量创建、还原（还原前自动备份当前代码）、删除。每个源最多保留10个自动备份，设置页可查看和清理 |
+| 源代码 | source_backups / source_backup_update | 分页查看备份；批量创建、还原（还原前自动备份当前代码）、删除。自动备份与手动备份分别限额（设置页可配，默认每源10/20个）：自动备份超出时删最旧的自动备份，手动备份从不自动删除，达到上限后新建失败（BACKUP_LIMIT）；设置页可查看和清理 |
 | 查找 | search_source / search_all | 单源或多源；页码式返回 page、max_page、next_page，游标式返回 next_cursor；多源逐源返回，失败互不影响 |
 | 查找 | comic_resolve | query、可选 source_key → 候选和 resolved_by |
 | 查找 | explore_load / category_comics / ranking_comics | 发现页（列表、多分区、混合）、分类（默认筛选按分类页规则）、排行，均分页 |
