@@ -41,7 +41,17 @@ const agentToolLabels = {
   'later_add': '加入稍后再看',
   'later_remove': '移出稍后再看',
   'updates_list': '查看追更',
-  'updates_mark_read': '标记追更已读',
+  'updates_set_folder': '设置追更收藏夹',
+  'fav_delete_folder': '删除收藏夹',
+  'local_chapters': '已下载章节',
+  'source_library_list': '漫画源仓库',
+  'source_library_update': '管理漫画源仓库',
+  'app_logs': '查看应用日志',
+  'source_code_read': '读取漫画源代码',
+  'source_code_grep': '搜索漫画源代码',
+  'source_code_edit': '修改漫画源代码',
+  'source_backups': '查看源代码备份',
+  'source_backup_update': '管理源代码备份',
   'history_list': '读取阅读历史',
   'history_remove': '删除阅读历史',
   'local_list': '读取本地漫画',
@@ -112,6 +122,33 @@ class AgentRun {
     }
   }
 }
+
+/// Output limit sent to Anthropic Messages when none is configured.
+const agentDefaultMaxTokens = 32000;
+
+/// Parse a token count such as `32000`, `32k` or `1m` (k = 1000).
+int? agentParseTokens(String text) {
+  final match = RegExp(
+    r'^(\d+(?:\.\d+)?)\s*([km]?)$',
+    caseSensitive: false,
+  ).firstMatch(text.trim().replaceAll(',', '').replaceAll('_', ''));
+  if (match == null) return null;
+  final value =
+      double.parse(match[1]!) *
+      switch (match[2]!.toLowerCase()) {
+        'k' => 1000,
+        'm' => 1000000,
+        _ => 1,
+      };
+  return value >= 1 && value == value.roundToDouble() ? value.round() : null;
+}
+
+/// Show a token count in the short form accepted by [agentParseTokens].
+String agentFormatTokens(int tokens) => tokens % 1000000 == 0
+    ? '${tokens ~/ 1000000}m'
+    : tokens % 1000 == 0
+    ? '${tokens ~/ 1000}k'
+    : '$tokens';
 
 class AgentThinkingLevel {
   final String id;

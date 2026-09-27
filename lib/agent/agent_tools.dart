@@ -4,10 +4,12 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:venera/foundation/comic_source/comic_source.dart';
+import 'package:venera/foundation/comic_source/source_library.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/follow_updates.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/res.dart';
 import 'agent_app_bridge.dart';
@@ -16,6 +18,7 @@ import 'agent_store.dart';
 
 part 'agent_tool_schemas.dart';
 part 'agent_tools_catalog.dart';
+part 'agent_tools_code.dart';
 part 'agent_tools_library.dart';
 
 class AgentToolContext {
@@ -67,18 +70,22 @@ class AgentTools {
     'fav_move',
     'fav_create_folder',
     'fav_rename_folder',
+    'fav_delete_folder',
     'later_add',
     'later_remove',
     'history_remove',
     'local_delete',
     'download_start',
     'download_control',
-    'updates_mark_read',
+    'updates_set_folder',
     'net_fav_add',
     'net_fav_remove',
     'source_install',
     'source_update',
+    'source_library_update',
     'blocked_words_update',
+    'source_code_edit',
+    'source_backup_update',
   };
   static const destructiveTools = {
     'fav_remove',
@@ -88,6 +95,9 @@ class AgentTools {
     'local_delete',
     'download_control',
     'net_fav_remove',
+    'fav_delete_folder',
+    'source_library_update',
+    'source_backup_update',
   };
 
   static String _text(AgentJson args, String key, {String? fallback}) {
@@ -203,6 +213,15 @@ class AgentTools {
             (params['required'] as List).every(args.containsKey);
       }
 
+      // Names used by earlier versions, kept for saved conversations.
+      if (name.startsWith('net_fav_') &&
+          args.containsKey('folder') &&
+          !args.containsKey('folder_id')) {
+        args = {...args, 'folder_id': args['folder']}..remove('folder');
+      }
+      if (name == 'open_page' && args['page'] == 'read_later') {
+        args = {...args, 'page': 'later'};
+      }
       final known = [
         ..._agentToolSchemas,
         ..._legacySchemas,
@@ -338,7 +357,7 @@ class AgentTools {
           'later_remove':
         return _write(name, a, c);
       default:
-        return _dispatchMore(name, a, c);
+        return _dispatchCode(name, a, c);
     }
   }
 
@@ -516,7 +535,7 @@ class AgentTools {
 
   AgentJson _laterStatus((String, String) ref) {
     final exists = later.contains(ref.$2, _type(ref.$1));
-    return {'in_read_later': exists, 'marker': exists ? 1 : -1};
+    return {'in_later': exists, 'marker': exists ? 1 : -1};
   }
 
   AgentJson _status((String, String) ref) => {
@@ -1182,6 +1201,13 @@ class AgentTools {
       () => later.batchNotifications(() {
         for (final entry in entries) {
           try {
+            if (entry['kind'] == 'folder') {
+              final folder = entry['folder'] as String;
+              if (!favorites.existsFolder(folder)) {
+                favorites.createFolder(folder);
+              }
+              continue;
+            }
             if (entry['kind'] == 'history') {
               if (!app.historyReady) throw StateError('History is closed');
               final history = _AgentLibraryTools._historyFromMap(

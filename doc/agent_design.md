@@ -113,6 +113,11 @@
 | 源 | source_categories | 按分组分页读取分类条目 → category/param 或搜索关键词 |
 | 源 | source_catalog / source_install | 分页浏览已启用仓库；按仓库中的 key 批量安装，不接受任意链接 |
 | 源 | source_update | 可选 source_keys → 检查并批量更新，逐项回执 |
+| 源 | source_library_list / source_library_update | 分页列出漫画源仓库；批量添加或删除仓库，删除不卸载已安装的源 |
+| 源代码 | app_logs | 本次启动的日志，最新在前、相同内容合并计数；默认错误和警告，可按关键词、最近分钟数过滤；返回 latest_id，重现问题后用 after_id 只读新日志 |
+| 源代码 | source_code_read / source_code_grep | 一次读取多个源或片段（带行号，合计≤1000行）；跨源按文本或正则搜索并附上下文 |
+| 源代码 | source_code_edit | 对一个已安装源按顺序做精确替换；任一处不匹配、不唯一或新代码不能以同一 key 解析则不写入；成功后立即生效并自动备份原代码；不创建新源 |
+| 源代码 | source_backups / source_backup_update | 分页查看备份；批量创建、还原（还原前自动备份当前代码）、删除。每个源最多保留10个自动备份，设置页可查看和清理 |
 | 查找 | search_source / search_all | 单源或多源；页码式返回 page、max_page、next_page，游标式返回 next_cursor；多源逐源返回，失败互不影响 |
 | 查找 | comic_resolve | query、可选 source_key → 候选和 resolved_by |
 | 查找 | explore_load / category_comics / ranking_comics | 发现页（列表、多分区、混合）、分类（默认筛选按分类页规则）、排行，均分页 |
@@ -124,18 +129,19 @@
 | 收藏 | fav_list_folders | 分页，可按名称过滤，标明追更收藏夹 |
 | 收藏 | fav_list | 可选 folder、keyword → 分页浏览或搜索本地收藏 |
 | 收藏 | fav_add / fav_remove / fav_move | comics 数组 → 逐项回执；移除可撤销 |
-| 收藏 | fav_create_folder / fav_rename_folder | names / renames 数组；不提供删除收藏夹 |
+| 收藏 | fav_create_folder / fav_rename_folder / fav_delete_folder | names / renames 数组；批量删除收藏夹，可撤销 |
 | 稍后再看 | later_list / later_add / later_remove | 分页浏览或搜索；批量写入与撤销 |
-| 追更 | updates_list / updates_mark_read | 分页读取有更新的漫画，refresh 时先联网检查；批量标记已读 |
+| 追更 | updates_list / updates_set_folder | 分页读取有更新的漫画，refresh 时先联网检查；设置或关闭追更收藏夹（已读由用户在应用内标记） |
 | 历史 | history_list / history_remove | 分页浏览或搜索进度；批量删除可撤销 |
 | 本地与下载 | local_list / local_delete | 分页浏览或搜索本地漫画；批量删除下载文件，不可撤销 |
-| 本地与下载 | download_start / download_list / download_control | 批量加入下载（跳过已下载章节和已排队漫画）；分页查看队列；批量暂停/继续/重试/置顶/取消 |
-| 网络收藏 | net_fav_folders / net_fav_list / net_fav_add / net_fav_remove | 需源已登录；多收藏夹源需指定 folder；删除所需的 favorite_id 由工具记住 |
+| 本地与下载 | local_chapters | 分页查看已下载章节；local_delete 每项可带 chapters 批量删除指定章节，删光时移除整部漫画，不可撤销 |
+| 本地与下载 | download_start / download_list / download_control | 批量加入下载（每项可指定章节 ID，或用 latest 按源返回的章节顺序取末尾 N 章；跳过已下载章节和已排队漫画）；分页查看队列；批量暂停/继续/重试/置顶/取消 |
+| 网络收藏 | net_fav_folders / net_fav_list / net_fav_add / net_fav_remove | 需源已登录；多收藏夹源需指定 folder_id（本地收藏的 folder 始终是收藏夹名称）；删除所需的 favorite_id 由工具记住 |
 | 应用 | open_comic / open_page | 为用户打开详情、阅读器或页面，模型看不到页面内容 |
 | 应用 | blocked_words_list / blocked_words_update | 漫画或评论屏蔽词；批量增删 |
 | 应用 | reading_stats | 最近若干天的每日时长与阅读最多的漫画 |
 
-旧工具 fav_check、later_check、fav_search、comic_open_by_id、list_search_options 以及单个 name 的 fav_create_folder 不再提供给模型，但仍可执行，以兼容已保存会话中的调用和重试。不提供应用设置修改工具。
+旧工具 fav_check、later_check、fav_search、comic_open_by_id、list_search_options 以及单个 name 的 fav_create_folder 不再提供给模型，但仍可执行，以兼容已保存会话中的调用和重试；网络收藏旧参数 folder 自动视为 folder_id，open_page 的 read_later 自动视为 later。不提供应用设置修改工具。
 
 工具通过 AgentAppBridge 访问历史、本地漫画、下载、追更、漫画源仓库、统计和导航，测试以替身替换。源列表页（搜索、发现、分类、排行、评论）按全部请求参数缓存5分钟，只缓存成功结果；详情缓存10分钟，供章节翻页、下载和阅读器复用；网络收藏属于账号数据，不缓存。
 
@@ -212,7 +218,7 @@ SQLite 启用 foreign_keys=ON 和 user_version=4；消息、图片、文本附�
 
 - Chat Completions：/chat/completions，Bearer 认证，stream_options.include_usage。
 - OpenAI Responses：/responses，instructions + input、function_call/function_call_output，默认 store=false；开启思考回传时请求 reasoning.encrypted_content，并在工具调用之间原样回传推理条目。
-- Anthropic Messages：/messages，x-api-key 与 anthropic-version，system、交替角色、tool_use/tool_result；自动补 max_tokens（思考与回答共用：有思考预算时为预算+8192，自适应思考时为16000，否则为8192，用户配置优先）；签名思考块原样回传。
+- Anthropic Messages：/messages，x-api-key 与 anthropic-version，system、交替角色、tool_use/tool_result；自动补 max_tokens（思考与回答共用，未配置时为32000）；签名思考块原样回传。
 
 回传数据只发给产生它的同一模型；压缩摘要请求不带工具，工具记录展开为文本。HTTP 错误附带服务商返回的简短原因，并移除回显的密钥。
 

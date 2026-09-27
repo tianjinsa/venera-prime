@@ -345,18 +345,9 @@ abstract final class AgentProtocolCodec {
     } else {
       body['system'] = system.join('\n\n');
     }
-    final thinking = body['thinking'];
-    final budget = thinking is Map ? thinking['budget_tokens'] : null;
-    // Required by the protocol and shared with thinking, so it must leave
-    // room for the answer after any thinking budget or adaptive thinking.
+    // Required by the protocol; thinking and the answer share this limit.
     body['max_tokens'] =
-        model.maxOutputTokens ??
-        body['max_tokens'] ??
-        (budget is int
-            ? budget + 8192
-            : thinking is Map && thinking['type'] == 'adaptive'
-            ? 16000
-            : 8192);
+        model.maxOutputTokens ?? body['max_tokens'] ?? agentDefaultMaxTokens;
     if (tools.isEmpty) {
       _removeTools(body);
     } else {

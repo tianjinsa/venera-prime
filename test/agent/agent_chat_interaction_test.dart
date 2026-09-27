@@ -380,6 +380,32 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('the context status jumps to the newest message', (tester) async {
+    final position = await startLongReply(tester);
+    final icon = find.byKey(const ValueKey('agent-jump-bottom-icon'));
+    expect(icon, findsNothing);
+    await tester.dragFrom(
+      tester.getRect(messages).centerLeft + const Offset(4, 0),
+      const Offset(0, 600),
+    );
+    await tester.pumpAndSettle();
+    expect(position.extentAfter, greaterThan(200));
+    expect(icon, findsOneWidget);
+    // Output that arrives while reading history does not move the list.
+    await emit(tester, '\n\n新的一段');
+    expect(position.extentAfter, greaterThan(200));
+
+    await tester.tap(find.byKey(const ValueKey('agent-jump-bottom')));
+    await tester.pumpAndSettle();
+    expect(position.extentAfter, lessThan(1));
+    expect(icon, findsNothing);
+    // Following resumes after the jump.
+    await emit(tester, List.filled(20, '\n\n继续输出').join());
+    expect(position.extentAfter, lessThan(1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('holding rendered text at the bottom prevents streaming jumps', (
     tester,
   ) async {

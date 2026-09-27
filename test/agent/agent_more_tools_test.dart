@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/agent/agent_app_bridge.dart';
 import 'package:venera/agent/agent_message_view.dart';
 import 'package:venera/agent/agent_models.dart';
+import 'package:venera/agent/agent_source_backups.dart';
 import 'package:venera/agent/agent_store.dart';
 import 'package:venera/agent/agent_tools.dart';
 import 'package:venera/foundation/appdata.dart';
@@ -16,6 +17,7 @@ import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/follow_updates.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/reading_statistics.dart';
 import 'package:venera/foundation/res.dart';
@@ -52,6 +54,8 @@ class RichSource implements ComicSource {
   RegExp? get idMatcher => null;
   @override
   LinkHandler? get linkHandler => null;
+  @override
+  String get filePath => '/sources/$key.js';
   RichSource(
     this.key, {
     this.version = '1.0.0',
@@ -96,13 +100,17 @@ class FakeBridge extends AgentAppBridge {
   final opened = <String>[];
   final settings = <String, Object?>{};
   final updateItems = <AgentComicUpdate>[];
-  final markedRead = <String>[];
+  final deletedChapters = <String>[];
+  final libraries = <AgentSourceLibrary>[];
   final catalog = <AgentCatalogSource>[];
   final installed = <String>[];
   final statistics = <ReadingStatistic>[];
   final updatesAvailable = <String, String>{};
   final updatedSources = <String>[];
   List<ComicSource>? sources;
+  final logItems = <LogItem>[];
+  final code = <String, String>{};
+  late AgentSourceBackups backups;
   String? followed;
   var saves = 0;
 
@@ -133,6 +141,31 @@ class FakeBridge extends AgentAppBridge {
   @override
   void deleteLocal(LocalComic comic) => localItems.remove(comic);
   @override
+  void deleteLocalChapters(LocalComic comic, List<String> chapters) {
+    deletedChapters.add('${comic.id}:${chapters.join(',')}');
+    final index = localItems.indexOf(comic);
+    final remaining = comic.downloadedChapters
+        .where((id) => !chapters.contains(id))
+        .toList();
+    if (remaining.isEmpty) {
+      localItems.removeAt(index);
+    } else {
+      localItems[index] = LocalComic(
+        id: comic.id,
+        title: comic.title,
+        subtitle: comic.subtitle,
+        tags: comic.tags,
+        directory: comic.directory,
+        chapters: comic.chapters,
+        cover: comic.cover,
+        comicType: comic.comicType,
+        downloadedChapters: remaining,
+        createdAt: comic.createdAt,
+      );
+    }
+  }
+
+  @override
   List<AgentDownloadTask> downloads() => queue.toList();
   @override
   bool isDownloading(String id, ComicType type) => queue.any(
@@ -162,7 +195,25 @@ class FakeBridge extends AgentAppBridge {
   }
 
   @override
-  void markUpdateRead(String id, ComicType type) => markedRead.add(id);
+  Future<void> setFollowedFolder(String? folder) async {
+    followed = folder;
+    saves++;
+  }
+
+  @override
+  List<AgentSourceLibrary> sourceLibraries() => libraries.toList();
+  @override
+  void addSourceLibrary(String name, String url) => libraries.add(
+    AgentSourceLibrary(
+      id: 'lib${libraries.length + 1}',
+      name: name.isEmpty ? Uri.parse(url).host : name,
+      url: url,
+      enabled: true,
+    ),
+  );
+  @override
+  void removeSourceLibrary(String id) =>
+      libraries.removeWhere((library) => library.id == id);
   @override
   Object? setting(String key) => settings[key];
   @override
@@ -189,6 +240,19 @@ class FakeBridge extends AgentAppBridge {
     sources?.add(source);
     return source;
   }
+
+  @override
+  List<LogItem> logs() => logItems.toList();
+  @override
+  Future<String> readSourceCode(ComicSource source) async => code[source.key]!;
+  @override
+  Future<void> writeSourceCode(ComicSource source, String value) async {
+    if (value.contains('BROKEN')) throw Exception('SyntaxError: BROKEN');
+    code[source.key] = value;
+  }
+
+  @override
+  AgentSourceBackups get sourceBackups => backups;
 
   @override
   Future<void> initStatistics() async {}
@@ -251,7 +315,9 @@ void main() {
     await later.init();
     store = await AgentStore.open('${root.path}/agent');
     sources = [];
-    app = FakeBridge()..sources = sources;
+    app = FakeBridge()
+      ..sources = sources
+      ..backups = AgentSourceBackups(Directory('${root.path}/backups'));
     detailRequests = 0;
     tools = AgentTools(
       store,
@@ -295,7 +361,7 @@ void main() {
         .map((s) => s['function']['name'] as String)
         .toList();
     expect(names.toSet().length, names.length);
-    expect(names.length, 45);
+    expect(names.length, 55);
     for (final name in names) {
       expect(agentToolLabels, contains(name), reason: name);
       final params = AgentTools.schemas.firstWhere(
@@ -319,7 +385,7 @@ void main() {
       'fav_search',
       'comic_open_by_id',
       'list_search_options',
-      'fav_delete_folder',
+      'updates_mark_read',
       'settings_get',
       'settings_set',
     ]) {
@@ -777,6 +843,46 @@ void main() {
     expect(restored.readEpisode, {'1', '2'});
   });
 
+  test('latest downloads the last chapters in the returned order', () async {
+    detailSource('jm', chapters: 4);
+    app.localItems.add(
+      LocalComic(
+        id: '5',
+        title: '已下',
+        subtitle: '',
+        tags: const [],
+        directory: 'd',
+        chapters: ComicChapters({for (var i = 1; i <= 4; i++) 'c$i': '$i'}),
+        cover: '',
+        comicType: ComicType.fromKey('jm'),
+        downloadedChapters: const ['c2'],
+        createdAt: DateTime(2026),
+      ),
+    );
+    final started = await call('download_start', {
+      'comics': [
+        {'source_key': 'jm', 'comic_id': '5', 'latest': 3},
+        {'source_key': 'jm', 'comic_id': '6', 'latest': 10},
+      ],
+    });
+    expect(started['summary']['ok'], 2);
+    expect(app.downloaded.map((d) => '${d.$1} ${d.$2}'), [
+      'jm:5 [c3, c4]',
+      'jm:6 [c1, c2, c3, c4]',
+    ]);
+    final mixed = await tools.execute('download_start', {
+      'comics': [
+        {
+          'source_key': 'jm',
+          'comic_id': '7',
+          'latest': 1,
+          'chapters': ['c1'],
+        },
+      ],
+    }, context);
+    expect(mixed['error']['code'], 'INVALID_ARGUMENT');
+  });
+
   test('downloads queue missing chapters and control existing tasks', () async {
     detailSource('jm', chapters: 4);
     app.localItems.add(
@@ -863,7 +969,7 @@ void main() {
     expect(app.localItems, isEmpty);
   });
 
-  test('follow updates refresh, page and mark read', () async {
+  test('follow updates refresh, page and choose the folder', () async {
     final missing = await tools.execute('updates_list', {}, context);
     expect(missing['error']['code'], 'NO_FOLLOW_FOLDER');
     favorites.createFolder('追更');
@@ -887,11 +993,329 @@ void main() {
       'error_samples': ['：源超时'],
     });
     expect(listed['items'][0]['update_time'], '2026-09-01');
-    final marked = await call('updates_mark_read', {
-      'comics': ['jm:1', 'jm:2'],
+    // Reading state belongs to the user.
+    expect(
+      AgentTools.schemas.map((s) => s['function']['name']),
+      isNot(contains('updates_mark_read')),
+    );
+
+    favorites.createFolder('新追更');
+    final same = await call('updates_set_folder', {'folder': '追更'});
+    expect(same['reason'], 'ALREADY_FOLLOWED');
+    final changed = await call('updates_set_folder', {'folder': '新追更'});
+    expect(changed, containsPair('status', 'set'));
+    expect(changed['previous'], '追更');
+    expect(app.followed, '新追更');
+    final missingFolder = await tools.execute('updates_set_folder', {
+      'folder': '不存在',
+    }, context);
+    expect(missingFolder['error']['code'], 'FOLDER_NOT_FOUND');
+    final disabled = await call('updates_set_folder', {});
+    expect(disabled['status'], 'disabled');
+    expect(app.followed, isNull);
+  });
+
+  test('downloaded chapters are listed and deleted in batches', () async {
+    LocalComic local(String id, List<String> downloaded) => LocalComic(
+      id: id,
+      title: '本地$id',
+      subtitle: '',
+      tags: const [],
+      directory: 'd$id',
+      chapters: ComicChapters({for (var i = 1; i <= 4; i++) 'c$i': '第$i话'}),
+      cover: '',
+      comicType: ComicType.fromKey('jm'),
+      downloadedChapters: downloaded,
+      createdAt: DateTime(2026),
+    );
+    app.localItems.addAll([
+      local('1', ['c1', 'c2', 'c3']),
+      local('2', ['c1']),
+      local('3', ['c4']),
+    ]);
+    final chapters = await call('local_chapters', {
+      'source_key': 'jm',
+      'comic_id': '1',
     });
-    expect(marked['summary'], {'total': 2, 'ok': 1, 'skipped': 1, 'failed': 0});
-    expect(app.markedRead, ['1']);
+    expect(chapters['total'], 3);
+    expect(chapters['items'][1], {'id': 'c2', 'title': '第2话'});
+    final missing = await tools.execute('local_chapters', {
+      'source_key': 'jm',
+      'comic_id': '9',
+    }, context);
+    expect(missing['error']['code'], 'NOT_PRESENT');
+
+    final deleted = await call('local_delete', {
+      'comics': [
+        // By id and by title; an unknown chapter is reported.
+        {
+          'source_key': 'jm',
+          'comic_id': '1',
+          'chapters': ['c1', '第3话', '第9话'],
+        },
+        // Removing the last chapter removes the comic.
+        {
+          'source_key': 'jm',
+          'comic_id': '2',
+          'chapters': ['c1'],
+        },
+        {
+          'source_key': 'jm',
+          'comic_id': '3',
+          'chapters': ['c1'],
+        },
+      ],
+    });
+    expect(deleted['summary'], {
+      'total': 3,
+      'ok': 2,
+      'skipped': 1,
+      'failed': 0,
+    });
+    expect(deleted['results'][0], containsPair('status', 'chapters_deleted'));
+    expect(deleted['results'][0]['missing_chapters'], ['第9话']);
+    expect(deleted['results'][0]['remaining_chapters'], 1);
+    expect(deleted['results'][1]['status'], 'deleted');
+    expect(deleted['results'][2]['reason'], 'CHAPTERS_NOT_PRESENT');
+    expect(app.deletedChapters, ['1:c1,c3', '2:c1']);
+    expect(app.localItems.map((c) => c.id), ['1', '3']);
+    expect(app.localItems.first.downloadedChapters, ['c2']);
+    final invalid = await tools.execute('local_delete', {
+      'comics': [
+        {'source_key': 'jm', 'comic_id': '1', 'chapters': []},
+      ],
+    }, context);
+    expect(invalid['error']['code'], 'INVALID_ARGUMENT');
+  });
+
+  test('deleted folders can be restored with their comics', () async {
+    favorites.createFolder('旧');
+    favorites.createFolder('追');
+    for (final (folder, id) in [('旧', '1'), ('旧', '2'), ('追', '3')]) {
+      favorites.addComic(
+        folder,
+        FavoriteItem(
+          id: id,
+          name: '漫画$id',
+          coverPath: '',
+          author: '',
+          type: ComicType.fromKey('jm'),
+          tags: const [],
+        ),
+      );
+    }
+    app.followed = '追';
+    app.settings['quickFavorite'] = '旧';
+    final deleted = await call('fav_delete_folder', {
+      'names': ['旧', '追', '旧', '无'],
+    });
+    expect(deleted['summary'], {
+      'total': 4,
+      'ok': 2,
+      'skipped': 2,
+      'failed': 0,
+    });
+    expect(deleted['results'][0]['comics'], 2);
+    expect(deleted['results'][1]['follow_updates_disabled'], true);
+    expect(favorites.existsFolder('旧'), false);
+    expect(app.followed, isNull);
+    expect(app.settings['quickFavorite'], isNull);
+
+    final restored = tools.undo(deleted['undo_id'] as String, context);
+    expect(restored, {'restored': 3, 'skipped': 0, 'failed': 0});
+    expect(favorites.existsFolder('旧'), true);
+    expect(favorites.getFolderComics('旧').map((c) => c.id).toSet(), {'1', '2'});
+    expect(favorites.getFolderComics('追').single.id, '3');
+  });
+
+  test(
+    'logs are newest first, merged, filtered and read after a mark',
+    () async {
+      app.logItems.addAll([
+        LogItem(LogLevel.info, 'App', '启动'),
+        for (var i = 0; i < 3; i++) LogItem(LogLevel.warning, 'JsEngine', '慢'),
+        LogItem(LogLevel.error, 'Network', 'copy 源 404'),
+      ]);
+      final first = await call('app_logs', {});
+      expect(first['total'], 2);
+      expect(first['items'][0]['title'], 'Network');
+      expect(first['items'][1]['repeats'], 3);
+      expect(first['latest_id'], app.logItems.last.id);
+      expect((await call('app_logs', {'level': 'all'}))['total'], 3);
+      expect((await call('app_logs', {'keyword': 'COPY'}))['total'], 1);
+
+      app.logItems.add(LogItem(LogLevel.error, 'Network', '新错误'));
+      final after = await call('app_logs', {'after_id': first['latest_id']});
+      expect(after['items'].single['content'], '新错误');
+    },
+  );
+
+  test('source code is read in ranges and searched across sources', () async {
+    sources.addAll([RichSource('a'), RichSource('b')]);
+    app.code['a'] = List.generate(300, (i) => 'line $i').join('\r\n');
+    app.code['b'] = 'class B extends ComicSource {\n  baseUrl = "x";\n}';
+    final read = await call('source_code_read', {
+      'reads': [
+        {'source_key': 'a', 'start_line': 250},
+        {'source_key': 'b'},
+        {'source_key': 'none'},
+      ],
+    });
+    final results = read['results'] as List;
+    expect(results[0]['end_line'], 300);
+    expect(results[0]['content'], startsWith('250| line 249'));
+    expect(results[0].containsKey('next_start_line'), false);
+    expect(results[1]['file_name'], 'b.js');
+    expect(results[2]['error']['code'], 'SOURCE_NOT_FOUND');
+
+    final grep = await call('source_code_grep', {
+      'pattern': r'line 1\d\d$',
+      'regex': true,
+      'context_lines': 0,
+    });
+    expect(grep['total'], 100);
+    expect(grep['matches_by_source'], {'a': 100});
+    final literal = await call('source_code_grep', {'pattern': 'BASEURL'});
+    expect(literal['items'].single['line'], 2);
+    expect(literal['items'].single['content'], contains('1| class B'));
+  });
+
+  test(
+    'edits are all-or-nothing, parsed and backed up automatically',
+    () async {
+      sources.add(RichSource('a'));
+      app.code['a'] = 'const host = "old";\nfetch(host);\nfetch(host);';
+
+      Future<AgentJson> edit(List<AgentJson> edits) => tools.execute(
+        'source_code_edit',
+        {'source_key': 'a', 'edits': edits},
+        context,
+      );
+
+      final missing = await edit([
+        {'old_text': '"old"', 'new_text': '"new"'},
+        {'old_text': 'absent', 'new_text': 'x'},
+      ]);
+      expect(missing['error']['code'], 'EDIT_NOT_FOUND');
+      final ambiguous = await edit([
+        {'old_text': 'fetch(host)', 'new_text': 'get(host)'},
+      ]);
+      expect(ambiguous['error']['code'], 'EDIT_AMBIGUOUS');
+      final broken = await edit([
+        {'old_text': '"old"', 'new_text': 'BROKEN'},
+      ]);
+      expect(broken['error']['code'], 'PARSE_FAILED');
+      expect(app.code['a'], contains('"old"'));
+      expect(await app.backups.list(), isEmpty);
+
+      final saved = await call('source_code_edit', {
+        'source_key': 'a',
+        'edits': [
+          {'old_text': '"old"', 'new_text': '"new"'},
+          {
+            'old_text': 'fetch(host)',
+            'new_text': 'get(host)',
+            'replace_all': true,
+          },
+        ],
+      });
+      expect(saved['edits'], [
+        {'replacements': 1, 'line': 1},
+        {'replacements': 2, 'line': 2},
+      ]);
+      expect(app.code['a'], 'const host = "new";\nget(host);\nget(host);');
+      final backups = await app.backups.list();
+      expect(backups.single.id, saved['backup_id']);
+      expect(backups.single.automatic, true);
+    },
+  );
+
+  test('backups are created, restored and deleted in one batch', () async {
+    sources.addAll([RichSource('a'), RichSource('b')]);
+    app.code['a'] = 'v1';
+    app.code['b'] = 'b1';
+    final created = await call('source_backup_update', {
+      'create': [
+        {'source_key': 'a', 'note': '修改前'},
+        {'source_key': 'missing'},
+      ],
+    });
+    expect(created['summary'], {
+      'total': 2,
+      'ok': 1,
+      'skipped': 0,
+      'failed': 1,
+    });
+    final id = created['results'][0]['backup_id'] as String;
+    app.code['a'] = 'v2';
+
+    final changed = await call('source_backup_update', {
+      'restore': [id, id, 'nope'],
+      'delete': ['nope'],
+    });
+    final rows = changed['results'] as List;
+    expect(rows[0]['status'], 'restored');
+    expect(rows[1]['reason'], 'SOURCE_ALREADY_RESTORED');
+    expect(rows[2]['reason'], 'NOT_FOUND');
+    expect(rows[3]['status'], 'skipped');
+    expect(app.code['a'], 'v1');
+
+    final listed = await call('source_backups', {'source_key': 'a'});
+    expect(listed['total'], 2);
+    expect(listed['items'][0]['backup_id'], rows[0]['previous_backup_id']);
+    expect(listed['items'][1]['note'], '修改前');
+
+    final deleted = await call('source_backup_update', {
+      'delete': [id, rows[0]['previous_backup_id']],
+    });
+    expect(deleted['summary']['ok'], 2);
+    expect(await app.backups.list(), isEmpty);
+  });
+
+  test('automatic backups are capped per source', () async {
+    for (var i = 0; i < AgentSourceBackups.automaticLimit + 3; i++) {
+      await app.backups.create('a', 'v$i', automatic: true);
+    }
+    await app.backups.create('a', 'manual');
+    await app.backups.create('b', 'other', automatic: true);
+    final all = await app.backups.list();
+    expect(
+      all.where((b) => b.sourceKey == 'a').length,
+      AgentSourceBackups.automaticLimit + 1,
+    );
+    expect(all.where((b) => b.sourceKey == 'b').length, 1);
+  });
+
+  test('source libraries are listed, added and removed in batches', () async {
+    app.libraries.add(
+      const AgentSourceLibrary(
+        id: 'old',
+        name: '旧仓库',
+        url: 'https://a.example/index.json',
+        enabled: true,
+      ),
+    );
+    final listed = await call('source_library_list', {});
+    expect(listed['items'].single, containsPair('name', '旧仓库'));
+    final updated = await call('source_library_update', {
+      'add': [
+        {'url': 'https://b.example/index.json', 'name': '新仓库'},
+        {'url': 'https://a.example/index.json/'},
+        {'url': 'ftp://c.example/index.json'},
+      ],
+      'remove': ['old', 'missing'],
+    });
+    expect(updated['summary'], {
+      'total': 5,
+      'ok': 2,
+      'skipped': 2,
+      'failed': 1,
+    });
+    expect(updated['results'][1]['reason'], 'ALREADY_EXISTS');
+    expect(updated['results'][2]['reason'], 'INVALID_URL');
+    expect(app.libraries.map((l) => l.name), ['新仓库']);
+    final empty = await tools.execute('source_library_update', {}, context);
+    expect(empty['error']['code'], 'INVALID_ARGUMENT');
   });
 
   test('network favorites need login and reuse favorite ids', () async {
@@ -941,9 +1365,10 @@ void main() {
     expect(required['error']['code'], 'FOLDER_REQUIRED');
     final listed = await call('net_fav_list', {
       'source_key': 'net',
-      'folder': '2',
+      'folder_id': '2',
     });
     expect(listed['max_page'], 1);
+    // Saved conversations may still retry with the earlier name.
     final removed = await call('net_fav_remove', {
       'source_key': 'net',
       'folder': '2',

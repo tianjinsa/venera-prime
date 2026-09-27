@@ -222,7 +222,7 @@ void main() {
       tools: _tools,
     );
     expect(body['system'], agentSystemPrompt);
-    expect(body['max_tokens'], 4000 + 8192);
+    expect(body['max_tokens'], agentDefaultMaxTokens);
     expect(body.containsKey('input'), false);
     expect(body['tool_choice'], {'type': 'auto'});
     expect(body['tools'], [
@@ -291,11 +291,20 @@ void main() {
     expect(adaptive['thinking'], {'type': 'adaptive', 'display': 'summarized'});
     expect(adaptive['output_config'], {'effort': 'max'});
     // Adaptive thinking shares max_tokens with the answer.
-    expect(adaptive['max_tokens'], 16000);
+    expect(adaptive['max_tokens'], 32000);
     final off = body(AgentProtocol.messages, 'off');
     expect(off['thinking'], {'type': 'disabled'});
     expect(off.containsKey('output_config'), false);
-    expect(off['max_tokens'], 8192);
+    expect(off['max_tokens'], 32000);
+    expect(agentParseTokens('32k'), 32000);
+    expect(agentParseTokens(' 1.5K '), 1500);
+    expect(agentParseTokens('1m'), 1000000);
+    expect(agentParseTokens('128,000'), 128000);
+    for (final bad in ['', '0', 'k', '1.2345k', '-3', '3g']) {
+      expect(agentParseTokens(bad), isNull, reason: bad);
+    }
+    expect(agentFormatTokens(32000), '32k');
+    expect(agentFormatTokens(12345), '12345');
     expect(
       body(AgentProtocol.messages, 'default').containsKey('thinking'),
       false,

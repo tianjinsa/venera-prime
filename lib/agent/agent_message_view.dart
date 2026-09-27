@@ -331,6 +331,9 @@ class AgentMessageParts extends StatelessWidget {
     if (name.startsWith('updates_')) return Icons.update;
     if (name.startsWith('open_')) return Icons.open_in_new;
     if (name.startsWith('blocked_')) return Icons.block;
+    if (name == 'app_logs') return Icons.receipt_long_outlined;
+    if (name.startsWith('source_code_')) return Icons.code;
+    if (name.startsWith('source_backup')) return Icons.settings_backup_restore;
     if (name.startsWith('source_') || name == 'list_sources') {
       return Icons.travel_explore;
     }
@@ -401,6 +404,26 @@ String agentToolCaption(AgentJson part) {
       ]);
     case 'open_comic' || 'open_page':
       return '已打开';
+    case 'app_logs':
+      return join([
+        pages(data['page'], data['total_pages']),
+        '${data['total']} 条日志',
+      ]);
+    case 'source_code_edit':
+      return '已修改 ${(data['edits'] as List?)?.length ?? 0} 处';
+    case 'source_code_grep':
+      return join([
+        pages(data['page'], data['total_pages']),
+        '${data['total']} 处匹配',
+      ]);
+    case 'source_backups':
+      return '${data['total']} 个备份';
+    case 'updates_set_folder':
+      return switch (data['status']) {
+        'set' => '追更“${data['folder']}”',
+        'disabled' => '已关闭追更',
+        _ => '未变化',
+      };
     case 'reading_stats':
       final seconds = data['total_seconds'];
       return seconds is int

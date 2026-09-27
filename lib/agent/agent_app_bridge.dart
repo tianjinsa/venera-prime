@@ -10,6 +10,7 @@ import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/follow_updates.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/reading_statistics.dart';
 import 'package:venera/network/app_dio.dart';
 import 'package:venera/network/download.dart';
@@ -26,6 +27,9 @@ import 'package:venera/pages/read_later_page.dart';
 import 'package:venera/pages/reader/reader.dart';
 import 'package:venera/pages/reading_statistics_page.dart';
 import 'package:venera/pages/search_result_page.dart';
+import 'package:venera/utils/atomic_file.dart';
+import 'package:venera/utils/io.dart';
+import 'agent_source_backups.dart';
 
 /// A download queue entry, detached from the task object for tool results.
 class AgentDownloadTask {
@@ -67,6 +71,20 @@ class AgentCatalogSource {
   });
 }
 
+/// A catalog of comic sources configured by the user.
+class AgentSourceLibrary {
+  final String id;
+  final String name;
+  final String url;
+  final bool enabled;
+  const AgentSourceLibrary({
+    required this.id,
+    required this.name,
+    required this.url,
+    required this.enabled,
+  });
+}
+
 /// A comic of the followed favorites folder with a new chapter.
 class AgentComicUpdate {
   final FavoriteItem comic;
@@ -80,7 +98,7 @@ enum AgentAppPage {
   history('history', '阅读历史'),
   downloads('downloads', '下载队列'),
   local('local', '本地漫画'),
-  readLater('read_later', '稍后再看'),
+  readLater('later', '稍后再看'),
   updates('updates', '追更'),
   sources('sources', '漫画源管理'),
   statistics('statistics', '阅读统计');
@@ -114,6 +132,10 @@ class AgentAppBridge {
 
   /// Local files are removed only when the app manages their directory.
   void deleteLocal(LocalComic comic) => LocalManager().deleteComic(comic);
+
+  /// Removing every downloaded chapter removes the local comic as well.
+  void deleteLocalChapters(LocalComic comic, List<String> chapters) =>
+      LocalManager().deleteComicChapters(comic, chapters);
 
   List<AgentDownloadTask> downloads() => [
     for (final task in LocalManager().downloadingTasks)
@@ -185,10 +207,37 @@ class AgentAppBridge {
   /// Checks every comic of the folder, including recently checked ones.
   Stream<UpdateProgress> checkUpdates(String folder) =>
       updateFolder(folder, true);
-  void markUpdateRead(String id, ComicType type) {
-    LocalFavoritesManager().markAsRead(id, type);
-    LocalFavoritesManager().notifyChanges();
+
+  /// Follows updates of [folder], or stops following when it is null. As on
+  /// the follow updates page, update marks start empty.
+  Future<void> setFollowedFolder(String? folder) async {
+    if (folder != null) {
+      LocalFavoritesManager().prepareTableForFollowUpdates(folder);
+    }
+    appdata.settings['followUpdatesFolder'] = folder;
+    await appdata.saveData();
+    updateFollowUpdatesUI();
   }
+
+  List<AgentSourceLibrary> sourceLibraries() {
+    ComicSourceLibraryManager.migrateLegacy();
+    return [
+      for (final library in ComicSourceLibraryManager.all())
+        AgentSourceLibrary(
+          id: library.id,
+          name: library.name,
+          url: library.url,
+          enabled: library.enabled,
+        ),
+    ];
+  }
+
+  /// Adding an existing address renames that library instead.
+  void addSourceLibrary(String name, String url) =>
+      ComicSourceLibraryManager.add(name, url);
+
+  /// Installed sources are kept.
+  void removeSourceLibrary(String id) => ComicSourceLibraryManager.remove(id);
 
   Object? setting(String key) => appdata.settings[key];
   void setSetting(String key, Object? value) => appdata.settings[key] = value;
@@ -286,6 +335,49 @@ class AgentAppBridge {
   Future<bool> updateSource(ComicSource source) =>
       ComicSourcePage.update(source, false);
   Future<void> saveSourceData(ComicSource source) => source.saveData();
+
+  /// Logs of this launch, oldest first.
+  List<LogItem> logs() => List.of(Log.logs);
+
+  Future<String> readSourceCode(ComicSource source) =>
+      File(source.filePath).readAsString();
+
+  /// Replaces the code of an installed source after it parses with the same
+  /// key, then loads the new version in place of the old one, as updates do.
+  Future<void> writeSourceCode(ComicSource source, String code) async {
+    final parser = ComicSourceParser();
+    final target = File(source.filePath);
+    final temp = File('${target.path}.agent.tmp');
+    final backup = File('${target.path}.agent.bak');
+    try {
+      final candidate = await parser.parse(
+        code,
+        source.filePath,
+        allowExistingKey: true,
+        registerSource: false,
+      );
+      if (candidate.key != source.key) {
+        throw ComicSourceParseException(
+          'Source key changed from ${source.key} to ${candidate.key}',
+        );
+      }
+      await temp.writeAsString(code, flush: true);
+      await atomicReplaceWithBackup(
+        target: target,
+        temporary: temp,
+        backup: backup,
+      );
+      await backup.deleteIgnoreError();
+      parser.registerParsedSource();
+      ComicSourceManager().replace(candidate);
+    } finally {
+      parser.discardParsedSource();
+      await temp.deleteIgnoreError();
+    }
+  }
+
+  AgentSourceBackups get sourceBackups =>
+      AgentSourceBackups(Directory('${App.dataPath}/agent/source_backups'));
 
   Future<void> initStatistics() => ReadingStatisticsManager().init();
   List<ReadingStatistic> readingStatistics(int days) =>

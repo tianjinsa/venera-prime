@@ -122,7 +122,7 @@ void main() {
           .toSet();
       expect(names.length, AgentTools.schemas.length);
       expect(names, containsAll(['comic_status', 'showcase_comics']));
-      expect(names, isNot(contains('fav_delete_folder')));
+      expect(names, isNot(contains('updates_mark_read')));
     },
   );
 
@@ -692,7 +692,7 @@ void main() {
     final status = await tools.execute('later_check', {
       'comics': ['jm:jm123'],
     }, context);
-    expect(status['data']['results'][0]['in_read_later'], true);
+    expect(status['data']['results'][0]['in_later'], true);
     final removal = await tools.execute('later_remove', {
       'comics': ['jm:jm123'],
     }, context);
@@ -1219,8 +1219,8 @@ void main() {
       final checked = await call('later_check', {
         'comics': ['jm:123', 'jm:456'],
       });
-      expect(checked['results'][0]['in_read_later'], true);
-      expect(checked['results'][1]['in_read_later'], false);
+      expect(checked['results'][0]['in_later'], true);
+      expect(checked['results'][1]['in_later'], false);
       final existing = await call('later_add', {
         'comics': ['jm:123'],
       });

@@ -27,7 +27,11 @@ extension _AgentLibraryTools on AgentTools {
     'download_list' => _downloadList(a, c),
     'download_control' => _downloadControl(a, c),
     'updates_list' => _updatesList(a, c),
-    'updates_mark_read' => _updatesMarkRead(a, c),
+    'updates_set_folder' => _updatesSetFolder(a, c),
+    'fav_delete_folder' => _deleteFolders(a, c),
+    'local_chapters' => _localChapters(a, c),
+    'source_library_list' => _sourceLibraries(a),
+    'source_library_update' => _updateSourceLibraries(a, c),
     'net_fav_folders' => _networkFolders(a, c),
     'net_fav_list' => _networkList(a, c),
     'net_fav_add' || 'net_fav_remove' => _networkWrite(name, a, c),
@@ -190,6 +194,57 @@ extension _AgentLibraryTools on AgentTools {
     };
   }
 
+  /// Deleting keeps an undo record of every comic, so the folder and its
+  /// contents can be restored.
+  Future<AgentJson> _deleteFolders(AgentJson a, AgentToolContext c) async {
+    final names = _AgentCatalogTools._keys(a, 'names', 20);
+    final results = <AgentJson>[];
+    final undo = <AgentJson>[];
+    final undoId = agentId();
+    final seen = <String>{};
+    var settingsChanged = false;
+    for (final name in names) {
+      c.run.check();
+      final row = <String, dynamic>{'name': name};
+      results.add(row);
+      if (!seen.add(name)) {
+        row.addAll({'status': 'skipped', 'reason': 'DUPLICATE_IN_BATCH'});
+        continue;
+      }
+      if (!favorites.existsFolder(name)) {
+        row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+        continue;
+      }
+      final comics = favorites.getFolderComics(name);
+      undo.add({'kind': 'folder', 'folder': name});
+      for (final item in comics.reversed) {
+        undo.add({
+          'kind': 'favorite',
+          'folder': name,
+          'time': item.time,
+          'comic': AgentTools.fromComic(item).toJson(),
+        });
+      }
+      if (app.followedFolder() == name) {
+        await app.setFollowedFolder(null);
+        row['follow_updates_disabled'] = true;
+      }
+      if (app.setting('quickFavorite') == name) {
+        app.setSetting('quickFavorite', null);
+        settingsChanged = true;
+      }
+      favorites.deleteFolder(name);
+      row.addAll({'status': 'deleted', 'comics': comics.length});
+    }
+    if (settingsChanged) await app.saveSettings();
+    if (undo.isNotEmpty) store.saveUndo(undoId, c.conversationId, undo);
+    return {
+      'summary': _AgentCatalogTools._summary(results, {'deleted'}),
+      'results': results,
+      if (undo.isNotEmpty) 'undo_id': undoId,
+    };
+  }
+
   Future<AgentJson> _historyList(AgentJson a, AgentToolContext c) async {
     await c.run.wait(app.initHistory());
     await c.run.wait(initializeSources().catchError((Object _) {}));
@@ -292,13 +347,53 @@ extension _AgentLibraryTools on AgentTools {
     return page;
   }
 
+  Future<AgentJson> _localChapters(AgentJson a, AgentToolContext c) async {
+    await c.run.wait(app.initLocal());
+    final ref = _canonicalRef(AgentTools._ref(a), c);
+    final comic =
+        app.findLocal(ref.$2, AgentTools._type(ref.$1)) ??
+        (throw const AgentException('NOT_PRESENT', '该漫画没有下载到本地'));
+    return {
+      ...AgentTools._identity(ref),
+      'title': comic.title,
+      ...AgentTools._paged(
+        [
+          for (final id in comic.downloadedChapters)
+            {'id': id, 'title': comic.chapters?[id] ?? id},
+        ],
+        a,
+        size: 30,
+        maximum: 200,
+      ),
+    };
+  }
+
+  /// Chapter ids requested for one comic of local_delete, or null to delete
+  /// the whole comic.
+  static List<String>? _chapterArgs(Object? item) {
+    final chapters = item is Map ? item['chapters'] : null;
+    if (chapters == null) return null;
+    if (chapters is! List ||
+        chapters.isEmpty ||
+        chapters.length > 500 ||
+        chapters.any((e) => e is! String || e.trim().isEmpty)) {
+      throw const AgentException(
+        'INVALID_ARGUMENT',
+        'chapters 需要1到500个章节 ID 或章节名',
+      );
+    }
+    return chapters.cast<String>();
+  }
+
   Future<AgentJson> _localDelete(AgentJson a, AgentToolContext c) async {
     await c.run.wait(app.initLocal());
     final refs = AgentTools._refs(a).map((r) => _canonicalRef(r, c)).toList();
+    final chapterArgs = (a['comics'] as List).map(_chapterArgs).toList();
     final results = <AgentJson>[];
     final seen = <String>{};
-    for (final ref in refs) {
+    for (var i = 0; i < refs.length; i++) {
       c.run.check();
+      final ref = refs[i];
       final row = AgentTools._identity(ref);
       results.add(row);
       if (!seen.add(jsonEncode([ref.$1, ref.$2]))) {
@@ -320,15 +415,45 @@ extension _AgentLibraryTools on AgentTools {
         });
         continue;
       }
+      final requested = chapterArgs[i];
       try {
-        app.deleteLocal(comic);
-        row['status'] = 'deleted';
+        if (requested == null) {
+          app.deleteLocal(comic);
+          row['status'] = 'deleted';
+          continue;
+        }
+        // Chapters are matched by id first, then by their exact title.
+        final ids = <String>{};
+        final missing = <String>[];
+        for (final value in requested) {
+          final id = comic.downloadedChapters.contains(value)
+              ? value
+              : comic.downloadedChapters
+                    .where((id) => comic.chapters?[id] == value)
+                    .firstOrNull;
+          id == null ? missing.add(value) : ids.add(id);
+        }
+        if (missing.isNotEmpty) row['missing_chapters'] = missing;
+        if (ids.isEmpty) {
+          row.addAll({'status': 'skipped', 'reason': 'CHAPTERS_NOT_PRESENT'});
+          continue;
+        }
+        app.deleteLocalChapters(comic, ids.toList());
+        final remaining = comic.downloadedChapters.length - ids.length;
+        row.addAll({
+          'status': remaining == 0 ? 'deleted' : 'chapters_deleted',
+          'deleted_chapters': ids.length,
+          'remaining_chapters': remaining,
+        });
       } catch (_) {
         row.addAll({'status': 'failed', 'reason': 'WRITE_FAILED'});
       }
     }
     return {
-      'summary': _AgentCatalogTools._summary(results, {'deleted'}),
+      'summary': _AgentCatalogTools._summary(results, {
+        'deleted',
+        'chapters_deleted',
+      }),
       'results': results,
     };
   }
@@ -338,13 +463,21 @@ extension _AgentLibraryTools on AgentTools {
     if (raw is! List || raw.isEmpty || raw.length > 20) {
       throw const AgentException('BATCH_TOO_LARGE', 'comics 需要1到20项');
     }
-    final requests = <(String, String, List<String>?)>[];
+    final requests = <(String, String, List<String>?, int?)>[];
     for (final item in raw) {
       if (item is! Map) {
         throw const AgentException('INVALID_ARGUMENT', 'comics 每项需要对象');
       }
       final value = agentObject(item);
       final chapters = value['chapters'];
+      final latest = value['latest'];
+      if (latest != null &&
+          (latest is! int || latest < 1 || latest > 500 || chapters != null)) {
+        throw const AgentException(
+          'INVALID_ARGUMENT',
+          'latest 需要1到500的整数，且不能与 chapters 同用',
+        );
+      }
       if (chapters != null &&
           (chapters is! List ||
               chapters.isEmpty ||
@@ -355,12 +488,13 @@ extension _AgentLibraryTools on AgentTools {
         AgentTools._text(value, 'source_key'),
         AgentTools._text(value, 'comic_id'),
         chapters == null ? null : List<String>.from(chapters as List),
+        latest as int?,
       ));
     }
     await c.run.wait(app.initLocal());
     final results = <AgentJson>[];
     final seen = <String>{};
-    for (final (sourceKey, id, chapters) in requests) {
+    for (final (sourceKey, id, requested, latest) in requests) {
       c.run.check();
       final row = <String, dynamic>{'source_key': sourceKey, 'comic_id': id};
       results.add(row);
@@ -382,6 +516,11 @@ extension _AgentLibraryTools on AgentTools {
         }
         final local = app.findLocal(details.comicId, type);
         final all = details.chapters?.ids.toList();
+        // Chapter ids of some sources are resource ids, not indexes, so the
+        // newest chapters are taken by position in the returned order.
+        final chapters = latest != null && all != null
+            ? all.sublist(math.max(0, all.length - latest))
+            : requested;
         List<String>? pending;
         if (all == null) {
           if (local != null) {
@@ -549,26 +688,118 @@ extension _AgentLibraryTools on AgentTools {
     return {'folder': folder, 'refresh': ?checked, ...page};
   }
 
-  Future<AgentJson> _updatesMarkRead(AgentJson a, AgentToolContext c) async {
-    final folder = _followedFolder();
+  Future<AgentJson> _updatesSetFolder(AgentJson a, AgentToolContext c) async {
+    final previous = app.followedFolder();
+    final folder = a.containsKey('folder') ? _folder(a, 'folder') : null;
+    if (folder == previous) {
+      return {
+        'folder': folder,
+        'status': 'skipped',
+        'reason': folder == null ? 'NOT_FOLLOWING' : 'ALREADY_FOLLOWED',
+      };
+    }
+    c.run.check();
+    await app.setFollowedFolder(folder);
+    return {
+      'folder': folder,
+      'previous': previous,
+      'status': folder == null ? 'disabled' : 'set',
+      if (folder != null) 'comics': favorites.count(folder),
+    };
+  }
+
+  AgentJson _sourceLibraries(AgentJson a) => AgentTools._paged(
+    [
+      for (final library in app.sourceLibraries())
+        {
+          'id': library.id,
+          'name': library.name,
+          'url': library.url,
+          'enabled': library.enabled,
+        },
+    ],
+    a,
+    size: 50,
+    maximum: 100,
+  );
+
+  Future<AgentJson> _updateSourceLibraries(
+    AgentJson a,
+    AgentToolContext c,
+  ) async {
+    final add = a['add'] ?? const [];
+    final remove = a['remove'] ?? const [];
+    if (add is! List ||
+        remove is! List ||
+        add.length + remove.length == 0 ||
+        add.length > 20 ||
+        remove.length > 20 ||
+        add.any((e) => e is! Map || e['url'] is! String) ||
+        remove.any((e) => e is! String || e.trim().isEmpty)) {
+      throw const AgentException(
+        'INVALID_ARGUMENT',
+        'add 需要最多20个 {url, name}，remove 需要最多20个仓库 ID 或地址',
+      );
+    }
     final results = <AgentJson>[];
-    for (final ref in AgentTools._refs(a).map((r) => _canonicalRef(r, c))) {
-      final type = AgentTools._type(ref.$1);
-      final present = favorites.comicExists(folder, ref.$2, type);
-      if (present) app.markUpdateRead(ref.$2, type);
-      results.add({
-        ...AgentTools._identity(ref),
-        if (present)
-          'status': 'marked'
-        else ...{
+    for (final raw in add) {
+      c.run.check();
+      final item = agentObject(raw);
+      final url = (item['url'] as String).trim();
+      final name = item['name'] is String ? (item['name'] as String) : '';
+      final row = <String, dynamic>{'action': 'add', 'url': url};
+      results.add(row);
+      if (!isHttpSourceUrl(url)) {
+        row.addAll({'status': 'failed', 'reason': 'INVALID_URL'});
+        continue;
+      }
+      final existing = app.sourceLibraries().where(
+        (l) => canonicalLibraryUrl(l.url) == canonicalLibraryUrl(url),
+      );
+      if (existing.isNotEmpty) {
+        row.addAll({
           'status': 'skipped',
-          'reason': 'NOT_PRESENT',
+          'reason': 'ALREADY_EXISTS',
+          'id': existing.first.id,
+        });
+        continue;
+      }
+      app.addSourceLibrary(name, url);
+      final added = app.sourceLibraries().where(
+        (l) => canonicalLibraryUrl(l.url) == canonicalLibraryUrl(url),
+      );
+      row.addAll({
+        'status': 'added',
+        if (added.isNotEmpty) ...{
+          'id': added.first.id,
+          'name': added.first.name,
         },
       });
     }
+    for (final raw in remove) {
+      c.run.check();
+      final value = (raw as String).trim();
+      final row = <String, dynamic>{'action': 'remove', 'library': value};
+      results.add(row);
+      final match = app
+          .sourceLibraries()
+          .where(
+            (l) =>
+                l.id == value ||
+                canonicalLibraryUrl(l.url) == canonicalLibraryUrl(value),
+          )
+          .firstOrNull;
+      if (match == null) {
+        row.addAll({'status': 'skipped', 'reason': 'NOT_PRESENT'});
+        continue;
+      }
+      app.removeSourceLibrary(match.id);
+      row.addAll({'status': 'removed', 'id': match.id, 'name': match.name});
+    }
+    // Catalog pages must reflect the new set of libraries.
+    _pages.remove('["source_catalog"]');
     return {
-      'folder': folder,
-      'summary': _AgentCatalogTools._summary(results, {'marked'}),
+      'summary': _AgentCatalogTools._summary(results, {'added', 'removed'}),
       'results': results,
     };
   }
@@ -629,15 +860,15 @@ extension _AgentLibraryTools on AgentTools {
 
   Future<AgentJson> _networkList(AgentJson a, AgentToolContext c) async {
     final (source, data) = await _networkFavorites(a, c);
-    final folder = a.containsKey('folder')
-        ? AgentTools._text(a, 'folder')
+    final folder = a.containsKey('folder_id')
+        ? AgentTools._text(a, 'folder_id')
         : data.multiFolder
         ? data.allFavoritesId
         : null;
     if (data.multiFolder && folder == null) {
       throw const AgentException(
         'FOLDER_REQUIRED',
-        '该源有多个收藏夹，请先用 net_fav_folders 选择 folder',
+        '该源有多个收藏夹，请先用 net_fav_folders 选择 folder_id',
       );
     }
     final cursor = data.loadComic == null;
@@ -670,7 +901,7 @@ extension _AgentLibraryTools on AgentTools {
     }
     return {
       'source_key': source.key,
-      'folder': ?folder,
+      'folder_id': ?folder,
       ..._comicPage(result, c, cursor: cursor, page: page, current: next),
     };
   }
@@ -686,13 +917,13 @@ extension _AgentLibraryTools on AgentTools {
     final change =
         data.addOrDelFavorite ??
         (throw const AgentException('NO_NETWORK_FAVORITES', '该源不支持修改网络收藏'));
-    final folder = a.containsKey('folder')
-        ? AgentTools._text(a, 'folder')
+    final folder = a.containsKey('folder_id')
+        ? AgentTools._text(a, 'folder_id')
         : null;
     if (adding && data.multiFolder && folder == null) {
       throw const AgentException(
         'FOLDER_REQUIRED',
-        '该源有多个收藏夹，请先用 net_fav_folders 选择 folder',
+        '该源有多个收藏夹，请先用 net_fav_folders 选择 folder_id',
       );
     }
     final results = <AgentJson>[];
@@ -735,7 +966,7 @@ extension _AgentLibraryTools on AgentTools {
       }
     }
     return {
-      'folder': ?folder,
+      'folder_id': ?folder,
       'summary': _AgentCatalogTools._summary(results, {'added', 'removed'}),
       'results': results,
     };

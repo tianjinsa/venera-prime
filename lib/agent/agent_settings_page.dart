@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'agent_models.dart';
+import 'agent_source_backups.dart';
 import 'agent_store.dart';
 
 class AgentSettingsPage extends StatefulWidget {
@@ -168,6 +170,12 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
               const Text(
                 'Agent 可以搜索漫画，管理收藏、稍后再看、阅读历史和下载等。删除收藏、稍后再看和历史后可以在工具卡片中撤销。',
               ),
+              const SizedBox(height: 20),
+              _SourceBackupsSection(
+                AgentSourceBackups(
+                  Directory('${widget.store.directory.path}/source_backups'),
+                ),
+              ),
             ],
           ),
         ),
@@ -217,9 +225,11 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       ),
       'body': _encoder.convert(model?.extraBody ?? {}),
       'headers': _encoder.convert(model?.headers ?? {}),
-      'context': (model?.contextWindowTokens ?? 128000).toString(),
+      'context': agentFormatTokens(model?.contextWindowTokens ?? 128000),
       'temperature': model?.temperature?.toString() ?? '',
-      'max_output': model?.maxOutputTokens?.toString() ?? '',
+      'max_output': model?.maxOutputTokens == null
+          ? ''
+          : agentFormatTokens(model!.maxOutputTokens!),
     };
     for (final entry in values.entries) {
       _fields[entry.key] = TextEditingController(text: entry.value);
@@ -366,17 +376,20 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     });
     try {
       final levels = _readLevels();
-      final contextWindow = int.tryParse(_value('context'));
-      if (contextWindow == null || contextWindow < 1) {
-        throw const FormatException('上下文容量需要是正整数');
+      final contextWindow = agentParseTokens(_value('context'));
+      if (contextWindow == null) {
+        throw const FormatException('上下文容量需要是正整数，可写作 128k');
       }
       final temperature = _value('temperature');
       if (temperature.isNotEmpty && double.tryParse(temperature) == null) {
         throw const FormatException('temperature 需要数字，或留空');
       }
       final maxOutput = _value('max_output');
-      if (maxOutput.isNotEmpty && (int.tryParse(maxOutput) ?? 0) < 1) {
-        throw const FormatException('最大输出 tokens 需要正整数，或留空');
+      final maxOutputTokens = maxOutput.isEmpty
+          ? null
+          : agentParseTokens(maxOutput);
+      if (maxOutput.isNotEmpty && maxOutputTokens == null) {
+        throw const FormatException('最大输出 tokens 需要正整数（可写作 32k），或留空');
       }
       final model = AgentModel(
         id: widget.original?.id ?? agentId(),
@@ -393,7 +406,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         contextWindowTokens: contextWindow,
         temperature: temperature.isEmpty ? null : double.parse(temperature),
         protocol: _protocol,
-        maxOutputTokens: maxOutput.isEmpty ? null : int.parse(maxOutput),
+        maxOutputTokens: maxOutputTokens,
       );
       model.validate();
       final old = widget.store.settings;
@@ -638,17 +651,17 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 'context',
                 '模型上下文容量（tokens）',
                 required: true,
-                hint: '填写服务商提供的容量；达到90%时自动压缩，也可在对话中手动压缩',
+                hint: '可写作 128k 或 1m（k = 1000）；达到90%时自动压缩，也可在对话中手动压缩',
               ),
               _field('temperature', 'temperature（可选，0–2）'),
               _field(
                 'max_output',
                 _protocol == AgentProtocol.messages
-                    ? '最大输出 tokens（可选，默认 8192）'
+                    ? '最大输出 tokens（可选，默认 32k）'
                     : '最大输出 tokens（可选）',
                 hint: _protocol == AgentProtocol.messages
-                    ? '该协议必填，思考与回答共用此上限；留空时使用 8192，开启思考时使用 16000'
-                    : null,
+                    ? '该协议必填，思考与回答共用此上限；可写作 32k 或 64k'
+                    : '可写作 32k 等；留空时由服务商决定',
               ),
               ExpansionTile(
                 title: const Text('高级请求配置'),
@@ -689,4 +702,116 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       ),
     ),
   );
+}
+
+/// Backups of source code made by the agent, so they cannot grow unnoticed.
+class _SourceBackupsSection extends StatefulWidget {
+  final AgentSourceBackups backups;
+  const _SourceBackupsSection(this.backups);
+  @override
+  State<_SourceBackupsSection> createState() => _SourceBackupsSectionState();
+}
+
+class _SourceBackupsSectionState extends State<_SourceBackupsSection> {
+  List<AgentSourceBackup>? _items;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final items = await widget.backups.list();
+    if (mounted) setState(() => _items = items);
+  }
+
+  Future<void> _delete(Iterable<AgentSourceBackup> items, String title) async {
+    final list = items.toList();
+    if (list.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text('将删除 ${list.length} 个备份，删除后无法用它们还原漫画源。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    for (final item in list) {
+      await widget.backups.delete(item.id);
+    }
+    await _load();
+  }
+
+  static String _size(int bytes) => bytes < 1024 * 1024
+      ? '${(bytes / 1024).toStringAsFixed(1)} KB'
+      : '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    final total = items?.fold<int>(0, (sum, b) => sum + b.bytes) ?? 0;
+    return Card(
+      child: ExpansionTile(
+        key: const ValueKey('agent-source-backups'),
+        leading: const Icon(Icons.settings_backup_restore),
+        title: const Text('漫画源代码备份'),
+        subtitle: Text(
+          items == null
+              ? '读取中'
+              : items.isEmpty
+              ? 'Agent 修改或还原漫画源前会自动备份，目前没有备份'
+              : '${items.length} 个，共 ${_size(total)}；每个源最多保留 ${AgentSourceBackups.automaticLimit} 个自动备份',
+        ),
+        children: [
+          if (items != null && items.isNotEmpty) ...[
+            for (final item in items)
+              ListTile(
+                dense: true,
+                title: Text(item.sourceKey),
+                subtitle: Text(
+                  [
+                    item.createdAt.toLocal().toString().substring(0, 19),
+                    item.automatic ? '自动' : '手动',
+                    _size(item.bytes),
+                    if (item.note.isNotEmpty) item.note,
+                  ].join(' · '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: IconButton(
+                  tooltip: '删除',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => _delete([item], '删除备份？'),
+                ),
+              ),
+            OverflowBar(
+              alignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () =>
+                      _delete(items.where((b) => b.automatic), '删除全部自动备份？'),
+                  child: const Text('删除自动备份'),
+                ),
+                TextButton(
+                  onPressed: () => _delete(items, '删除全部备份？'),
+                  child: const Text('全部删除'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

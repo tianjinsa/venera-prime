@@ -53,6 +53,9 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   final _scrollPointers = <int>{};
   ScrollDirection _userScrollDirection = ScrollDirection.idle;
   final _showcaseScroll = ScrollController();
+
+  /// Whether newer content lies below the viewport of the message list.
+  final _belowBottom = ValueNotifier(false);
   double _width = 0;
   String? _focusedGroup;
   int _focusRevision = 0;
@@ -103,8 +106,31 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       _userScrolling = false;
       _scrollPointers.clear();
       _userScrollDirection = ScrollDirection.idle;
+      _belowBottom.value = false;
     }
+    if (_controller?.messages.isEmpty ?? true) _belowBottom.value = false;
     _scheduleFollow();
+  }
+
+  void _trackBottom(ScrollMetrics metrics) {
+    _belowBottom.value = metrics.extentAfter > 24;
+  }
+
+  /// Move to the newest message and keep following streamed output.
+  void _jumpToBottom() {
+    if (!_scroll.hasClients) return;
+    _followOutput = true;
+    _userScrolling = false;
+    final position = _scroll.position;
+    if (position.extentAfter <= 0) return;
+    position
+        .animateTo(
+          position.maxScrollExtent,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        )
+        // A lazy list may grow its extent while animating; settle at the end.
+        .whenComplete(_scheduleFollow);
   }
 
   void _scheduleFollow() {
@@ -143,6 +169,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
       return false;
     }
+    _trackBottom(notification.metrics);
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
       _followOutput = false;
@@ -171,6 +198,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
 
   bool _onMessageMetrics(ScrollMetricsNotification notification) {
     if (notification.depth == 0 && notification.metrics.axis == Axis.vertical) {
+      _trackBottom(notification.metrics);
       _scheduleFollow();
     }
     return false;
@@ -203,6 +231,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     _historySearch.dispose();
     _scroll.dispose();
     _showcaseScroll.dispose();
+    _belowBottom.dispose();
     super.dispose();
   }
 
@@ -848,27 +877,57 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     final detail = usage == null
         ? '等待模型返回 token 使用统计后更新占用量。达到容量90%时自动压缩。'
         : '最近一次响应：输入 ${usage.inputTokens ?? "未知"}（其中缓存 ${usage.cachedTokens ?? "未知"}），输出 ${usage.outputTokens ?? "未知"}。总计 ${usage.totalTokens} tokens。缓存属于输入时不重复计数。';
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 12, 0),
+      padding: const EdgeInsets.fromLTRB(8, 2, 8, 0),
       child: Row(
         children: [
-          Icon(
-            Icons.data_usage,
-            size: 14,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 6),
           Expanded(
-            child: Tooltip(
-              message: detail,
-              child: Text(
-                label,
-                key: const ValueKey('agent-context-status'),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+            // Tapping the status moves to the newest message.
+            child: ValueListenableBuilder<bool>(
+              valueListenable: _belowBottom,
+              builder: (context, below, _) => InkWell(
+                key: const ValueKey('agent-jump-bottom'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: _jumpToBottom,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.data_usage, size: 14, color: color),
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Tooltip(
+                          message: detail,
+                          child: Text(
+                            label,
+                            key: const ValueKey('agent-context-status'),
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodySmall?.copyWith(color: color),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                      if (below) ...[
+                        const SizedBox(width: 4),
+                        RotatedBox(
+                          key: const ValueKey('agent-jump-bottom-icon'),
+                          quarterTurns: 1,
+                          child: Icon(
+                            Icons.double_arrow_rounded,
+                            size: 14,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
           ),
@@ -883,6 +942,8 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                 ? null
                 : () => _act(controller.requestCompaction),
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+            padding: EdgeInsets.zero,
             icon: const Icon(Icons.compress_rounded, size: 18),
           ),
         ],
@@ -893,7 +954,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
   Widget _composer() {
     final controller = _controller!;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
       child: Shortcuts(
         shortcuts: {
           const SingleActivator(LogicalKeyboardKey.enter, control: true):

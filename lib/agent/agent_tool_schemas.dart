@@ -107,6 +107,173 @@ final _agentToolSchemas = <AgentJson>[
       'description': '只更新这些源',
     },
   }),
+  // Logs and source code, for fixing a broken source.
+  _schema(
+    'app_logs',
+    '读取本次启动以来的应用日志，最新在前，相同日志合并并给出 repeats。排查源问题时可先记下 latest_id，请用户重现问题后用 after_id 只读新日志',
+    {
+      'level': {
+        'type': 'string',
+        'enum': ['error', 'warning', 'all'],
+        'description': 'error 只看错误；warning（默认）含错误和警告；all 含普通信息',
+      },
+      'keyword': {'type': 'string', 'description': '在标题和内容中过滤，如源 key、源名或接口地址'},
+      'after_id': {
+        'type': 'integer',
+        'minimum': 0,
+        'description': '只返回 id 大于此值的日志',
+      },
+      'since_minutes': {
+        'type': 'integer',
+        'minimum': 1,
+        'maximum': 10080,
+        'description': '只返回最近若干分钟的日志',
+      },
+      'page': _pageArg,
+      'page_size': _pageSizeArg(20, 50),
+    },
+  ),
+  _schema(
+    'source_code_read',
+    '读取已安装漫画源的 JS 代码，带行号；一次可读多个源或多个片段，合计最多1000行',
+    {
+      'reads': {
+        'type': 'array',
+        'minItems': 1,
+        'maxItems': 5,
+        'items': {
+          'type': 'object',
+          'properties': {
+            'source_key': _sourceArg,
+            'start_line': {
+              'type': 'integer',
+              'minimum': 1,
+              'description': '起始行，默认1',
+            },
+            'line_count': {
+              'type': 'integer',
+              'minimum': 1,
+              'maximum': 500,
+              'description': '行数，默认200，最多500',
+            },
+          },
+          'required': ['source_key'],
+        },
+      },
+    },
+    ['reads'],
+  ),
+  _schema(
+    'source_code_grep',
+    '在漫画源代码中按行搜索文本或正则，返回行号和上下文；省略 source_keys 则搜索全部已安装源',
+    {
+      'pattern': {'type': 'string', 'description': '要搜索的文本'},
+      'regex': {'type': 'boolean', 'description': 'pattern 按正则解释，默认 false'},
+      'ignore_case': {'type': 'boolean', 'description': '忽略大小写，默认 true'},
+      'source_keys': {
+        'type': 'array',
+        'items': _stringArg,
+        'minItems': 1,
+        'maxItems': 50,
+      },
+      'context_lines': {
+        'type': 'integer',
+        'minimum': 0,
+        'maximum': 5,
+        'description': '每处匹配前后附带的行数，默认1',
+      },
+      'page': _pageArg,
+      'page_size': _pageSizeArg(30, 100),
+    },
+    ['pattern'],
+  ),
+  _schema(
+    'source_code_edit',
+    '修改一个已安装漫画源的代码：按顺序做精确文本替换。任一处不匹配或新代码无法作为同一个源加载时不写入；成功后立即生效，并自动备份修改前的代码（backup_id）。不能创建新源',
+    {
+      'source_key': _sourceArg,
+      'edits': {
+        'type': 'array',
+        'minItems': 1,
+        'maxItems': 20,
+        'items': {
+          'type': 'object',
+          'properties': {
+            'old_text': {
+              'type': 'string',
+              'description': '要替换的原文，不含行号前缀，须与代码完全一致且唯一',
+            },
+            'new_text': {'type': 'string'},
+            'replace_all': {
+              'type': 'boolean',
+              'description': '替换全部出现，默认 false',
+            },
+          },
+          'required': ['old_text', 'new_text'],
+        },
+      },
+    },
+    ['source_key', 'edits'],
+  ),
+  _schema('source_backups', '分页列出漫画源代码备份，最新在前；automatic 表示修改或还原前自动保存', {
+    'source_key': _sourceArg,
+    'page': _pageArg,
+    'page_size': _pageSizeArg(20, 50),
+  }),
+  _schema(
+    'source_backup_update',
+    '批量备份、还原或删除漫画源代码备份，按 create、restore、delete 顺序执行。还原前会自动备份当前代码，每个源一次只还原一个备份',
+    {
+      'create': {
+        'type': 'array',
+        'maxItems': 20,
+        'items': {
+          'type': 'object',
+          'properties': {
+            'source_key': _sourceArg,
+            'note': {'type': 'string', 'description': '备份说明，最长200字'},
+          },
+          'required': ['source_key'],
+        },
+      },
+      'restore': {
+        'type': 'array',
+        'maxItems': 20,
+        'items': _stringArg,
+        'description': '要还原的 backup_id',
+      },
+      'delete': {
+        'type': 'array',
+        'maxItems': 50,
+        'items': _stringArg,
+        'description': '要删除的 backup_id',
+      },
+    },
+  ),
+  _schema('source_library_list', '列出漫画源仓库（id、名称、地址、是否启用）', {
+    'page': _pageArg,
+    'page_size': _pageSizeArg(50, 100),
+  }),
+  _schema('source_library_update', '批量添加或删除漫画源仓库；删除仓库不会卸载已安装的源。只在用户明确要求时使用', {
+    'add': {
+      'type': 'array',
+      'maxItems': 20,
+      'items': {
+        'type': 'object',
+        'properties': {
+          'url': {'type': 'string', 'description': '仓库 JSON 的 http(s) 地址'},
+          'name': {'type': 'string', 'description': '可选显示名称'},
+        },
+        'required': ['url'],
+      },
+    },
+    'remove': {
+      'type': 'array',
+      'maxItems': 20,
+      'items': _stringArg,
+      'description': '仓库 id 或地址，来自 source_library_list',
+    },
+  }),
 
   // Search and comics.
   _schema(
@@ -305,6 +472,19 @@ final _agentToolSchemas = <AgentJson>[
     ['names'],
   ),
   _schema(
+    'fav_delete_folder',
+    '批量删除本地收藏夹及其中的收藏；只在用户明确要求时使用。可撤销，撤销会重建收藏夹并恢复收藏',
+    {
+      'names': {
+        'type': 'array',
+        'items': _stringArg,
+        'minItems': 1,
+        'maxItems': 20,
+      },
+    },
+    ['names'],
+  ),
+  _schema(
     'fav_rename_folder',
     '批量重命名本地收藏夹，收藏内容不变；逐项返回结果',
     {
@@ -352,10 +532,9 @@ final _agentToolSchemas = <AgentJson>[
     },
   ),
   _schema(
-    'updates_mark_read',
-    '将追更漫画标记为已读，清除新章节提示',
-    {'comics': _comicsArg(50)},
-    ['comics'],
+    'updates_set_folder',
+    '设置要追更的本地���藏夹，同一时间只追更一个；省略 folder 则关闭追更。设置后可用 updates_list refresh=true 检查更新',
+    {'folder': _stringArg},
   ),
 
   // History.
@@ -378,14 +557,51 @@ final _agentToolSchemas = <AgentJson>[
     'page_size': _pageSizeArg(20, 50),
   }),
   _schema(
+    'local_chapters',
+    '分页列出一本本地漫画已下载的章节（id、标题），用于 local_delete 删除指定章节',
+    {
+      'source_key': _sourceArg,
+      'comic_id': _comicIdArg,
+      'page': _pageArg,
+      'page_size': _pageSizeArg(30, 200),
+    },
+    ['source_key', 'comic_id'],
+  ),
+  _schema(
     'local_delete',
-    '删除本地漫画及应用管理的下载文件，不可撤销；只在用户明确要求删除下载时使用',
-    {'comics': _comicsArg(50)},
+    '批量删除已下载的本地漫画或其中的指定章节，同时删除应用管理的文件，不可撤销；只在用户明确要求删除下载时使用。每项省略 chapters 则删除整本，删除全部已下载章节也会移除整本',
+    {
+      'comics': {
+        'type': 'array',
+        'minItems': 1,
+        'maxItems': 50,
+        'items': {
+          'anyOf': [
+            {'type': 'string', 'description': 'source_key:comic_id'},
+            {
+              'type': 'object',
+              'properties': {
+                'source_key': _sourceArg,
+                'comic_id': _comicIdArg,
+                'chapters': {
+                  'type': 'array',
+                  'items': _stringArg,
+                  'minItems': 1,
+                  'maxItems': 500,
+                  'description': '要删除的已下载章节 ID 或章节名，来自 local_chapters',
+                },
+              },
+              'required': ['source_key', 'comic_id'],
+            },
+          ],
+        },
+      },
+    },
     ['comics'],
   ),
   _schema(
     'download_start',
-    '批量把漫画加入下载队列；每项省略 chapters 则下载全部章节。章节 ID 来自 comic_get 或 comic_chapters，已下载的章节和已在队列中的漫画自动跳过',
+    '批量把漫画加入下载队列；每项用 chapters 指定章节 ID（来自 comic_get 或 comic_chapters），或用 latest 取章节目录末尾 N 章，都省略则下载全部章节。已下载的章节和已在队列中的漫画自动跳过',
     {
       'comics': {
         'type': 'array',
@@ -401,6 +617,13 @@ final _agentToolSchemas = <AgentJson>[
               'items': _stringArg,
               'minItems': 1,
               'description': '章节 ID 列表',
+            },
+            'latest': {
+              'type': 'integer',
+              'minimum': 1,
+              'maximum': 500,
+              'description':
+                  '按源返回的章节顺序取最后 N 章（多数源即最新 N 章），不需先读取章节目录；不能与 chapters 同用',
             },
           },
           'required': ['source_key', 'comic_id'],
@@ -435,10 +658,13 @@ final _agentToolSchemas = <AgentJson>[
   ),
   _schema(
     'net_fav_list',
-    '分页读取源账号网络收藏；多收藏夹源需要 folder（来自 net_fav_folders）',
+    '分页读取源账号网络收藏；多收藏夹源需要 folder_id（来自 net_fav_folders）',
     {
       'source_key': _sourceArg,
-      'folder': {'type': 'string', 'description': '收藏夹 ID'},
+      'folder_id': {
+        'type': 'string',
+        'description': '网络收藏夹 ID，来自 net_fav_folders',
+      },
       'page': _pageArg,
       'cursor': _cursorArg,
     },
@@ -446,10 +672,13 @@ final _agentToolSchemas = <AgentJson>[
   ),
   _schema(
     'net_fav_add',
-    '把漫画加入源账号的网络收藏，会修改用户在该网站上的账号数据；多收藏夹源需要 folder',
+    '把漫画加入源账号的网络收藏，会修改用户在该网站上的账号数据；多收藏夹源需要 folder_id',
     {
       'source_key': _sourceArg,
-      'folder': {'type': 'string', 'description': '收藏夹 ID'},
+      'folder_id': {
+        'type': 'string',
+        'description': '网络收藏夹 ID，来自 net_fav_folders',
+      },
       'comic_ids': {
         'type': 'array',
         'items': _stringArg,
@@ -464,7 +693,10 @@ final _agentToolSchemas = <AgentJson>[
     '从源账号的网络收藏移除漫画，会修改用户在该网站上的账号数据',
     {
       'source_key': _sourceArg,
-      'folder': {'type': 'string', 'description': '收藏夹 ID'},
+      'folder_id': {
+        'type': 'string',
+        'description': '网络收藏夹 ID，来自 net_fav_folders',
+      },
       'comic_ids': {
         'type': 'array',
         'items': _stringArg,
