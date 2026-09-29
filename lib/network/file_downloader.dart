@@ -163,10 +163,7 @@ class FileDownloader {
     try {
       var proxy = await getProxy();
       _dio.httpClientAdapter = IOHttpClientAdapter(
-        createHttpClient: () {
-          return HttpClient()
-            ..findProxy = (uri) => proxy == null ? "DIRECT" : "PROXY $proxy";
-        },
+        createHttpClient: () => createProxyHttpClient(proxy),
       );
 
       // get file size
@@ -252,6 +249,11 @@ class FileDownloader {
       resultStream.add(DownloadingStatus(_currentBytes, _fileSize, 0, true));
       resultStream.close();
     } catch (e, s) {
+      _canceled = true;
+      await Future.wait(
+        _activeDownloads.map((task) => task.catchError((Object _) {})),
+        eagerError: false,
+      );
       await _file?.close();
       _file = null;
       resultStream.addError(e, s);
@@ -341,7 +343,7 @@ class FileDownloader {
       headers: {
         "Range": "bytes=${start + block.downloadedBytes}-${end - 1}",
         "Accept": "*/*",
-        "Accept-Encoding": "deflate, gzip",
+        "Accept-Encoding": "identity",
       },
       preserveHeaderCase: true,
     );

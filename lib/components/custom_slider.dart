@@ -121,7 +121,7 @@ class _CustomSliderState extends State<CustomSlider> {
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
             onTapDown: (details){
-              var dx = details.localPosition.dx;
+              var dx = details.localPosition.dx.clamp(0.0, constraints.maxWidth);
               if(widget.reversed){
                 dx = constraints.maxWidth - dx;
               }
@@ -129,8 +129,8 @@ class _CustomSliderState extends State<CustomSlider> {
               var gapValue = (widget.max - widget.min)  / widget.divisions;
               widget.onChanged.call((dx / gap).round() * gapValue + widget.min);
             },
-            onVerticalDragUpdate: (details){
-              var dx = details.localPosition.dx;
+            onHorizontalDragUpdate: (details){
+              var dx = details.localPosition.dx.clamp(0.0, constraints.maxWidth);
               if(dx > constraints.maxWidth || dx < 0)  return;
               if(widget.reversed){
                 dx = constraints.maxWidth - dx;

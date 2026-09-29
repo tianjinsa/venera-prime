@@ -912,13 +912,11 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
                             var comics = selectedComics.keys
                                 .map((e) => e as FavoriteItem)
                                 .toList();
-                            for (var f in selectedLocalFolders) {
-                              LocalFavoritesManager().batchMoveFavorites(
-                                favPage.folder as String,
-                                f,
-                                comics,
-                              );
-                            }
+                            LocalFavoritesManager().batchMoveFavoritesToFolders(
+                              favPage.folder as String,
+                              selectedLocalFolders,
+                              comics,
+                            );
                           } else {
                             var comics = selectedComics.keys
                                 .map((e) => e as FavoriteItem)

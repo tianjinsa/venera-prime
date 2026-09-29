@@ -212,10 +212,7 @@ class NaviPaneState extends State<NaviPane>
             ],
           );
           if (sideInsets != EdgeInsets.zero) {
-            content = Padding(
-              padding: sideInsets,
-              child: content,
-            );
+            content = Padding(padding: sideInsets, child: content);
           }
           return content;
         },
@@ -340,33 +337,46 @@ class NaviPaneState extends State<NaviPane>
             ),
           ),
         ),
-        child: Column(
-          children: [
-            const SizedBox(height: 16),
-            SizedBox(height: MediaQuery.of(context).padding.top),
-            ...List<Widget>.generate(
-              widget.paneItems.length,
-              (index) => _SideNaviWidget(
-                enabled: currentPage == index,
-                entry: widget.paneItems[index],
-                showTitle: value == 3,
-                onTap: () {
-                  updatePage(index);
-                },
-                key: ValueKey(index),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final topPadding = MediaQuery.of(context).padding.top;
+            final minHeight =
+                32.0 +
+                topPadding +
+                46.0 * (widget.paneItems.length + widget.paneActions.length);
+            final needsScroll = constraints.maxHeight < minHeight;
+            final children = <Widget>[
+              const SizedBox(height: 16),
+              SizedBox(height: topPadding),
+              ...List<Widget>.generate(
+                widget.paneItems.length,
+                (index) => _SideNaviWidget(
+                  enabled: currentPage == index,
+                  entry: widget.paneItems[index],
+                  showTitle: value == 3,
+                  onTap: () {
+                    updatePage(index);
+                  },
+                  key: ValueKey(index),
+                ),
               ),
-            ),
-            const Spacer(),
-            ...List<Widget>.generate(
-              widget.paneActions.length,
-              (index) => _PaneActionWidget(
-                entry: widget.paneActions[index],
-                showTitle: value == 3,
-                key: ValueKey(index + widget.paneItems.length),
+              if (needsScroll) const SizedBox(height: 16) else const Spacer(),
+              ...List<Widget>.generate(
+                widget.paneActions.length,
+                (index) => _PaneActionWidget(
+                  entry: widget.paneActions[index],
+                  showTitle: value == 3,
+                  key: ValueKey(index + widget.paneItems.length),
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-          ],
+              const SizedBox(height: 16),
+            ];
+            final column = Column(
+              mainAxisSize: needsScroll ? MainAxisSize.min : MainAxisSize.max,
+              children: children,
+            );
+            return needsScroll ? SingleChildScrollView(child: column) : column;
+          },
         ),
       ),
     );

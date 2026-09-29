@@ -986,27 +986,47 @@ class LocalFavoritesManager with ChangeNotifier {
     String targetFolder,
     List<FavoriteItem> items,
   ) {
+    batchMoveFavoritesToFolders(sourceFolder, [targetFolder], items);
+  }
+
+  void batchMoveFavoritesToFolders(
+    String sourceFolder,
+    Iterable<String> targetFolders,
+    List<FavoriteItem> items,
+  ) {
     if (!existsFolder(sourceFolder)) {
       throw Exception("Source folder does not exist");
     }
-    if (!existsFolder(targetFolder)) {
-      throw Exception("Target folder does not exist");
+    final targets = targetFolders
+        .toSet()
+        .where((folder) => folder != sourceFolder)
+        .toList();
+    for (final folder in targets) {
+      if (!existsFolder(folder)) {
+        throw Exception("Target folder does not exist");
+      }
     }
+    if (targets.isEmpty || items.isEmpty) return;
 
     _db.execute("BEGIN TRANSACTION");
-    var displayOrder = maxValue(targetFolder) + 1;
     try {
-      for (var item in items) {
-        _db.execute(
-          """
-          insert or ignore into "$targetFolder" (id, name, author, type, tags, cover_path, time, display_order)
-          select id, name, author, type, tags, cover_path, time, ?
-          from "$sourceFolder"
-          where id == ? and type == ?;
-        """,
-          [displayOrder, item.id, item.type.value],
-        );
-
+      for (final targetFolder in targets) {
+        var displayOrder = maxValue(targetFolder) + 1;
+        for (final item in items) {
+          _db.execute(
+            """
+            insert or ignore into "$targetFolder"
+              (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
+            select id, name, author, type, tags, cover_path, time, translated_tags, ?
+            from "$sourceFolder"
+            where id == ? and type == ?;
+          """,
+            [displayOrder, item.id, item.type.value],
+          );
+          displayOrder++;
+        }
+      }
+      for (final item in items) {
         _db.execute(
           """
           delete from "$sourceFolder"
@@ -1014,10 +1034,7 @@ class LocalFavoritesManager with ChangeNotifier {
         """,
           [item.id, item.type.value],
         );
-
-        displayOrder++;
       }
-      notifyListeners();
     } catch (e) {
       Log.error("Batch Move Favorites", e.toString());
       _db.execute("ROLLBACK");
@@ -1025,8 +1042,9 @@ class LocalFavoritesManager with ChangeNotifier {
     }
     _db.execute("COMMIT");
 
-    // Update counts
-    counts[targetFolder] = count(targetFolder);
+    for (final folder in targets) {
+      counts[folder] = count(folder);
+    }
     counts[sourceFolder] = count(sourceFolder);
     refreshHashedIds();
 
@@ -1044,6 +1062,9 @@ class LocalFavoritesManager with ChangeNotifier {
     if (!existsFolder(targetFolder)) {
       throw Exception("Target folder does not exist");
     }
+    if (sourceFolder == targetFolder || items.isEmpty) {
+      return;
+    }
 
     _db.execute("BEGIN TRANSACTION");
     var displayOrder = maxValue(targetFolder) + 1;
@@ -1051,8 +1072,9 @@ class LocalFavoritesManager with ChangeNotifier {
       for (var item in items) {
         _db.execute(
           """
-          insert or ignore into "$targetFolder" (id, name, author, type, tags, cover_path, time, display_order)
-          select id, name, author, type, tags, cover_path, time, ?
+          insert or ignore into "$targetFolder"
+            (id, name, author, type, tags, cover_path, time, translated_tags, display_order)
+          select id, name, author, type, tags, cover_path, time, translated_tags, ?
           from "$sourceFolder"
           where id == ? and type == ?;
         """,
@@ -1061,7 +1083,6 @@ class LocalFavoritesManager with ChangeNotifier {
 
         displayOrder++;
       }
-      notifyListeners();
     } catch (e) {
       Log.error("Batch Copy Favorites", e.toString());
       _db.execute("ROLLBACK");

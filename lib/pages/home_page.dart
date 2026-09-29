@@ -730,12 +730,14 @@ class _LocalState extends State<_Local> {
     local = LocalManager().getRecent();
     count = LocalManager().count;
     LocalManager().addListener(onLocalComicsChange);
+    ComicSourceManager().addListener(onLocalComicsChange);
     super.initState();
   }
 
   @override
   void dispose() {
     LocalManager().removeListener(onLocalComicsChange);
+    ComicSourceManager().removeListener(onLocalComicsChange);
     super.dispose();
   }
 

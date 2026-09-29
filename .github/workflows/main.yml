@@ -56,9 +56,21 @@ jobs:
   Validate_Version:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      notes: ${{ steps.version.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify automated release identity
+        if: ${{ github.event_name == 'release' || inputs.publish_release }}
+        env:
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: python3 tool/check_release_identity.py
       - name: Validate version consistency
+        id: version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: python3 tool/check_version.py
@@ -193,10 +205,13 @@ jobs:
           EOF
 
       - name: Verify Android signing keystore
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           keytool -list -keystore android/release.keystore \
-            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
-            -alias "${{ secrets.ANDROID_KEY_ALIAS }}" >/dev/null
+            -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
 
       - name: Check rust-toolchain.toml
         run: rustup show
@@ -377,8 +392,10 @@ jobs:
           path: outputs
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
-          body_path: doc/release-2.4.1.md
+          tag_name: ${{ needs.Validate_Version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Venera Prime ${{ needs.Validate_Version.outputs.version }}
+          body_path: ${{ needs.Validate_Version.outputs.notes }}
           files: |
             outputs/*.ipa
             outputs/*.dmg

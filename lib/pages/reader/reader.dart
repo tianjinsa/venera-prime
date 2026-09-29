@@ -123,7 +123,7 @@ class _ReaderState extends State<Reader>
         WidgetsBindingObserver {
   @override
   void update() {
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   /// The maximum page number for images only (excluding chapter comments page).
@@ -768,25 +768,42 @@ abstract mixin class _ReaderLocation {
   }
 
   int _animationCount = 0;
+  int _navigationId = 0;
 
-  bool toPage(int page) {
+  bool toPage(int page, {bool animate = true}) {
     if (_validatePage(page)) {
       if (page == this.page && page != 1 && page != totalPages) {
         return false;
       }
-      final hasAnimation = enablePageAnimation(cid, type);
+      final navigationId = ++_navigationId;
+      // Interrupt an earlier transition with a jump instead of overlapping it.
+      final hasAnimation =
+          animate && _animationCount == 0 && enablePageAnimation(cid, type);
       if (hasAnimation) {
         _pendingPage = page;
-        _animationCount++;
+        _animationCount = 1;
         update();
-        _imageViewController!.animateToPage(page).then((_) {
-          _animationCount--;
-          if (_pendingPage == page) {
-            _pendingPage = null;
-          }
+        void finishAnimation() {
+          if (navigationId != _navigationId) return;
+          _animationCount = 0;
+          _pendingPage = null;
           update();
-        });
+        }
+
+        _imageViewController!
+            .animateToPage(page)
+            .then(
+              (_) {
+                finishAnimation();
+              },
+              onError: (Object error, StackTrace stack) {
+                finishAnimation();
+                Log.error('Reader navigation', error, stack);
+              },
+            );
       } else {
+        _animationCount = 0;
+        _pendingPage = null;
         this.page = page;
         update();
         _imageViewController!.toPage(page);

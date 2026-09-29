@@ -79,3 +79,11 @@ print(
     f"pubspec={pubspec_version}, runtime={runtime_version}, "
     f"release notes={release_notes_path.relative_to(ROOT)}{release_suffix}"
 )
+
+# Share validated metadata with downstream release jobs.
+output_path = os.environ.get("GITHUB_OUTPUT")
+if output_path:
+    with open(output_path, "a", encoding="utf-8") as output:
+        output.write(f"version={pubspec_base_version}\n")
+        output.write(f"tag=v{pubspec_base_version}\n")
+        output.write(f"notes=doc/release-{pubspec_base_version}.md\n")

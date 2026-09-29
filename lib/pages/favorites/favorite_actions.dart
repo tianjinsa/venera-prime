@@ -132,8 +132,16 @@ void addFavorite(List<Comic> comics) {
   );
 }
 
-Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
-  var comics = LocalFavoritesManager().getFolderComics(folder);
+Future<List<FavoriteItem>> updateComicsInfo(String? folder) async {
+  final manager = LocalFavoritesManager();
+  final folders = folder == null ? manager.folderNames.toList() : [folder];
+  final memberships = <FavoriteItem, List<String>>{};
+  for (final name in folders) {
+    for (final comic in manager.getFolderComics(name)) {
+      memberships.putIfAbsent(comic, () => []).add(name);
+    }
+  }
+  final comics = memberships.keys.toList();
 
   Future<void> updateSingleComic(int index) async {
     int retry = 3;
@@ -142,9 +150,12 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
       try {
         var c = comics[index];
         var comicSource = c.type.comicSource;
-        if (comicSource == null) return;
+        if (c.type == ComicType.local) return;
+        if (comicSource?.loadComicInfo == null) {
+          throw StateError('Comic source is unavailable');
+        }
 
-        var newInfo = (await comicSource.loadComicInfo!(c.id)).data;
+        var newInfo = (await comicSource!.loadComicInfo!(c.id)).data;
 
         var newTags = <String>[];
         for (var entry in newInfo.tags.entries) {
@@ -162,14 +173,17 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
           id: c.id,
           name: newInfo.title,
           coverPath: newInfo.cover,
-          author: newInfo.subTitle ??
+          author:
+              newInfo.subTitle ??
               newInfo.tags['author']?.firstOrNull ??
               c.author,
           type: c.type,
           tags: newTags,
         );
 
-        LocalFavoritesManager().updateInfo(folder, comics[index]);
+        for (final name in memberships[c]!) {
+          manager.updateInfo(name, comics[index]);
+        }
         return;
       } catch (e) {
         retry--;
@@ -205,7 +219,7 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
               children: [
                 const SizedBox(height: 4),
                 LinearProgressIndicator(
-                  value: value / comics.length,
+                  value: comics.isEmpty ? 1 : value / comics.length,
                 ),
                 const SizedBox(height: 4),
                 Text("$value/${comics.length}"),
@@ -245,13 +259,18 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
 
     for (var i = 0; i < maxConcurrency; i++) {
       if (index + i >= comics.length) break;
-      futures.add(updateSingleComic(index + i).then((v) {
-        finished.value++;
-      }, onError: (error, _) {
-        errors++;
-        errorNames.add(comics[index + i].name);
-        finished.value++;
-      }));
+      futures.add(
+        updateSingleComic(index + i).then(
+          (v) {
+            finished.value++;
+          },
+          onError: (error, _) {
+            errors++;
+            errorNames.add(comics[index + i].name);
+            finished.value++;
+          },
+        ),
+      );
     }
 
     await Future.wait(futures);
@@ -261,12 +280,9 @@ Future<List<FavoriteItem>> updateComicsInfo(String folder) async {
   return comics;
 }
 
-/// Refresh metadata for every local favorites folder in sequence.
+/// Refresh all folders in one cancellable operation, fetching duplicates once.
 Future<void> updateAllComicsInfo() async {
-  final folders = LocalFavoritesManager().folderNames.toList();
-  for (final folder in folders) {
-    await updateComicsInfo(folder);
-  }
+  await updateComicsInfo(null);
 }
 
 Future<void> sortFolders() async {
