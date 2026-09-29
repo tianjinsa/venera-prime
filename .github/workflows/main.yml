@@ -42,6 +42,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_personal_trigger:
+        description: 'Allow a personal workflow actor; release still uses github-actions[bot]'
+        required: true
+        default: false
+        type: boolean
       release_tag:
         description: 'Existing tag to publish when publish_release is enabled'
         required: false
@@ -67,6 +72,7 @@ jobs:
         env:
           RELEASE_ACTOR: ${{ github.actor }}
           RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOW_PERSONAL_TRIGGER: ${{ inputs.allow_personal_trigger }}
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: python3 tool/check_release_identity.py
       - name: Validate version consistency
@@ -384,6 +390,11 @@ jobs:
     needs: [Validate_Version, Build_MacOS, Build_IOS, Build_Android, Build_Windows, Build_Linux, Build_Linux_ARM64]
     if: ${{ always() && (github.event_name == 'release' || inputs.publish_release) && needs.Validate_Version.result == 'success' }}
     steps:
+      - name: Require successful platform builds
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo '::error::One or more platform builds failed or were canceled. No release will be published.'
+          exit 1
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
@@ -407,8 +418,3 @@ jobs:
             outputs/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Report incomplete platform builds
-        if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
-        run: |
-          echo '::error::One or more platform builds failed or were canceled. Published artifacts are incomplete.'
-          exit 1

@@ -17,7 +17,7 @@ class ReleaseIdentityTests(unittest.TestCase):
                         GIT_COMMITTER_EMAIL='anonymous@users.noreply.github.com',
                         RELEASE_ACTOR='release-app[bot]',
                         RELEASE_TRIGGERING_ACTOR='release-app[bot]',
-                        RELEASE_TAG='v2.4.2')
+                        RELEASE_TAG='v2.4.2', ALLOW_PERSONAL_TRIGGER='false')
         self.git('init', '-q')
         self.git('-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Fixture')
 
@@ -40,11 +40,18 @@ class ReleaseIdentityTests(unittest.TestCase):
         self.env['RELEASE_TRIGGERING_ACTOR'] = 'personal-fixture'
         self.assertNotEqual(self.check(), 0)
 
+    def test_explicit_personal_trigger_opt_in(self):
+        self.env['RELEASE_ACTOR'] = 'personal-fixture'
+        self.env['RELEASE_TRIGGERING_ACTOR'] = 'personal-fixture'
+        self.env['ALLOW_PERSONAL_TRIGGER'] = 'true'
+        self.assertEqual(self.check(), 0)
+
     def test_missing_tag_rejected(self):
         self.env['RELEASE_TAG'] = ''
         self.assertNotEqual(self.check(), 0)
 
     def test_personal_committer_rejected(self):
+        self.env['ALLOW_PERSONAL_TRIGGER'] = 'true'
         self.env['GIT_COMMITTER_NAME'] = 'Personal Fixture'
         self.env['GIT_COMMITTER_EMAIL'] = 'fixture@example.test'
         self.git('-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'Fixture')

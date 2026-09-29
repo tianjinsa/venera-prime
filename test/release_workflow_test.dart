@@ -68,8 +68,8 @@ void main() {
     )['with'];
     expect(download['pattern'], '*_build');
     expect(download['merge-multiple'], isTrue);
-    expect(steps.last['run'], contains('exit 1'));
-    expect(steps.last['if'], contains("needs.*.result"));
+    expect(steps.first['run'], contains('exit 1'));
+    expect(steps.first['if'], contains("needs.*.result"));
   });
   test('release uses validated metadata and automated identity gate', () {
     final workflow = loadYaml(

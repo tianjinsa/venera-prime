@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Reject publishing with a personal actor or personal Git commit identity.
+"""Require anonymous commits; allow personal triggers only by explicit opt-in.
 
-This guard cannot hide the actor of a run that has already been triggered.
-The push/dispatch must itself use a dedicated GitHub App or bot credential.
+Deleting a completed run does not erase GitHub audit records or notifications.
 """
 
 import os
@@ -16,9 +15,11 @@ def fail(message: str) -> None:
 
 
 def main() -> None:
-    for key in ("RELEASE_ACTOR", "RELEASE_TRIGGERING_ACTOR"):
-        if not os.environ.get(key, "").endswith("[bot]"):
-            fail("Publishing requires a GitHub App/bot for both actor and triggering actor")
+    allow_personal = os.environ.get("ALLOW_PERSONAL_TRIGGER") == "true"
+    if not allow_personal:
+        for key in ("RELEASE_ACTOR", "RELEASE_TRIGGERING_ACTOR"):
+            if not os.environ.get(key, "").endswith("[bot]"):
+                fail("Publishing requires a bot trigger or explicit personal-trigger opt-in")
     if not os.environ.get("RELEASE_TAG", "").strip():
         fail("Publishing requires an explicit version tag")
 
