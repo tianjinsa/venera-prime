@@ -114,7 +114,7 @@ class NaviPaneState extends State<NaviPane>
   static const _kTopBarHeight = 48.0;
 
   double get bottomBarHeight =>
-      _kBottomBarHeight + MediaQuery.of(context).padding.bottom;
+      _kBottomBarHeight + MediaQuery.paddingOf(context).bottom;
 
   void onNavigatorStateChange() {
     onRebuild(context);
@@ -156,7 +156,7 @@ class NaviPaneState extends State<NaviPane>
   }
 
   double targetFormContext(BuildContext context) {
-    var width = MediaQuery.of(context).size.width;
+    var width = MediaQuery.sizeOf(context).width;
     double target = 0;
     if (width > changePoint) {
       target = 2;
@@ -187,11 +187,14 @@ class NaviPaneState extends State<NaviPane>
   @override
   Widget build(BuildContext context) {
     onRebuild(context);
-    final mq = MediaQuery.of(context);
-    final sideInsets = (App.isMobile && mq.orientation == Orientation.landscape)
+    final viewPadding = MediaQuery.viewPaddingOf(context);
+    final gestureInsets = MediaQuery.systemGestureInsetsOf(context);
+    final sideInsets =
+        (App.isMobile &&
+            MediaQuery.orientationOf(context) == Orientation.landscape)
         ? EdgeInsets.only(
-            left: math.max(mq.viewPadding.left, mq.systemGestureInsets.left),
-            right: math.max(mq.viewPadding.right, mq.systemGestureInsets.right),
+            left: math.max(viewPadding.left, gestureInsets.left),
+            right: math.max(viewPadding.right, gestureInsets.right),
           )
         : EdgeInsets.zero;
     return _NaviPopScope(
@@ -697,24 +700,33 @@ class _NaviMainViewState extends State<_NaviMainView> {
   @override
   Widget build(BuildContext context) {
     var shouldShowAppBar = state.controller.value < 2;
-    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final content = AnimatedSwitcher(
+      duration: _fastAnimationDuration,
+      child: state.buildMainViewContent(),
+    );
     return Column(
       children: [
         if (shouldShowAppBar) state.buildTop().paddingTop(context.padding.top),
         Expanded(
-          child: MediaQuery.removePadding(
-            context: context,
-            removeTop: shouldShowAppBar,
-            child: AnimatedSwitcher(
-              duration: _fastAnimationDuration,
-              child: state.buildMainViewContent(),
+          child: Builder(
+            builder: (context) => MediaQuery.removePadding(
+              context: context,
+              removeTop: shouldShowAppBar,
+              child: content,
             ),
           ),
         ),
         // The page's Scaffold already avoids the full keyboard inset. Keeping
         // the bottom bar in this Column would subtract its height a second time.
-        if (shouldShowAppBar && !keyboardVisible)
-          state.buildBottom().paddingBottom(context.padding.bottom),
+        if (shouldShowAppBar)
+          Builder(
+            builder: (context) {
+              if (MediaQuery.viewInsetsOf(context).bottom > 0) {
+                return const SizedBox.shrink();
+              }
+              return state.buildBottom().paddingBottom(context.padding.bottom);
+            },
+          ),
       ],
     );
   }

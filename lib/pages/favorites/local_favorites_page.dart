@@ -54,6 +54,17 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
 
   var searchResults = <FavoriteItem>[];
 
+  List<FavoriteItem>? _filteredInput;
+  List<FavoriteItem>? _filteredComics;
+  String? _filteredReadState;
+
+  void _onHistoryChanged() {
+    _filteredInput = null;
+    if (readFilterSelect == 'Completed' || readFilterSelect == 'UnCompleted') {
+      setState(() {});
+    }
+  }
+
   void updateSearchResult() {
     setState(() {
       if (keyword.trim().isEmpty) {
@@ -120,7 +131,16 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
   }
 
   List<FavoriteItem> filterComics(List<FavoriteItem> curComics) {
-    return curComics.where((comic) {
+    if (readFilterSelect != 'Completed' && readFilterSelect != 'UnCompleted') {
+      return curComics;
+    }
+    if (identical(_filteredInput, curComics) &&
+        _filteredReadState == readFilterSelect) {
+      return _filteredComics!;
+    }
+    _filteredInput = curComics;
+    _filteredReadState = readFilterSelect;
+    return _filteredComics = curComics.where((comic) {
       var history =
           HistoryManager().find(comic.id, ComicType(comic.sourceKey.hashCode));
       if (readFilterSelect == "UnCompleted") {
@@ -205,6 +225,7 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
     comics = [];
     updateComics();
     LocalFavoritesManager().addListener(updateComics);
+    HistoryManager().addListener(_onHistoryChanged);
     super.initState();
   }
 
@@ -212,6 +233,7 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
   void dispose() {
     super.dispose();
     LocalFavoritesManager().removeListener(updateComics);
+    HistoryManager().removeListener(_onHistoryChanged);
   }
 
   void selectAll() {

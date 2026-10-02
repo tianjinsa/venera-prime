@@ -819,15 +819,21 @@ class SliverGridComics extends StatefulWidget {
 
 class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> comics = [];
+  List<Comic> _sourceComics = [];
   List<int> heroIDs = [];
 
   static int _nextHeroID = 0;
 
-  void generateHeroID() {
-    heroIDs.clear();
-    for (var i = 0; i < comics.length; i++) {
-      heroIDs.add(_nextHeroID++);
-    }
+  void _refreshComics() {
+    final previousIDs = {
+      for (var i = 0; i < comics.length; i++) comics[i]: heroIDs[i],
+    };
+    _sourceComics = List.of(widget.comics);
+    comics = [
+      for (final comic in _sourceComics)
+        if (isBlocked(comic) == null) comic,
+    ];
+    heroIDs = [for (final comic in comics) previousIDs[comic] ?? _nextHeroID++];
   }
 
   @override
@@ -836,26 +842,15 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     // and title. A new list from HistoryPage must still replace the tile
     // objects so their image-provider keys use the refreshed cover URL.
     if (!identical(oldWidget.comics, widget.comics) ||
-        !comics.isEqualTo(widget.comics)) {
-      comics.clear();
-      for (var comic in widget.comics) {
-        if (isBlocked(comic) == null) {
-          comics.add(comic);
-        }
-      }
-      generateHeroID();
+        !_sourceComics.isEqualTo(widget.comics)) {
+      _refreshComics();
     }
     super.didUpdateWidget(oldWidget);
   }
 
   @override
   void initState() {
-    for (var comic in widget.comics) {
-      if (isBlocked(comic) == null) {
-        comics.add(comic);
-      }
-    }
-    generateHeroID();
+    _refreshComics();
     HistoryManager().addListener(update);
     super.initState();
   }
@@ -867,14 +862,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   }
 
   void update() {
-    setState(() {
-      comics.clear();
-      for (var comic in widget.comics) {
-        if (isBlocked(comic) == null) {
-          comics.add(comic);
-        }
-      }
-    });
+    setState(_refreshComics);
   }
 
   @override
