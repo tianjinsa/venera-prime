@@ -56,6 +56,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
   ) async {
     try {
       int retryTime = 1;
+      int attempts = 0;
 
       bool stop = false;
 
@@ -66,6 +67,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
       Uint8List? data;
 
       while (data == null && !stop) {
+        attempts++;
         try {
           data = await load(chunkEvents, () {
             if (stop) {
@@ -75,6 +77,7 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
         } on _ImageLoadingStopException {
           rethrow;
         } catch (e) {
+          if (attempts >= maxLoadAttempts) rethrow;
           if (e.toString().contains("Invalid Status Code: 404")) {
             rethrow;
           }
@@ -156,6 +159,8 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
   }
 
   bool get enableResize => false;
+
+  int get maxLoadAttempts => 4;
 }
 
 typedef FileDecoderCallback = Future<ui.Codec> Function(Uint8List);

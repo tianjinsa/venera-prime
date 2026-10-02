@@ -1,4 +1,5 @@
-import 'dart:async' show Future, unawaited;
+import 'dart:async' show Completer, Future, unawaited;
+import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/favorites.dart';
@@ -24,12 +25,20 @@ class HistoryImageProvider
   // burst of source requests. Keep a process-local refresh timestamp instead.
   static final _sourceRefreshAt = <String, DateTime>{};
   static const _sourceRefreshInterval = Duration(hours: 6);
+  static final _refreshing = <String, Future<String>>{};
+  static final _recoveryAt = <String, DateTime>{};
+  static final _refreshWaiters = Queue<Completer<void>>();
+  static int _activeRefreshes = 0;
+
+  @override
+  int get maxLoadAttempts => 1;
 
   Future<Uint8List> _loadThumbnail(String url, chunkEvents, checkStop) async {
     await for (var progress in ImageDownloader.loadThumbnail(
       url,
       history.type.sourceKey,
       history.id,
+      checkStop,
     )) {
       checkStop();
       chunkEvents.add(
@@ -59,7 +68,49 @@ class HistoryImageProvider
     }
   }
 
-  Future<String> _refreshCoverFromSource() async {
+  Future<String> _refreshCoverFromSource() {
+    final key = '${history.type.value}:${history.id}';
+    final pending = _refreshing[key];
+    if (pending != null) return pending;
+    final now = DateTime.now();
+    final lastAttempt = _recoveryAt[key];
+    if (lastAttempt != null &&
+        now.difference(lastAttempt) < const Duration(minutes: 1)) {
+      return Future.value(history.cover);
+    }
+    _recoveryAt[key] = now;
+    while (_recoveryAt.length > 256) {
+      _recoveryAt.remove(_recoveryAt.keys.first);
+    }
+    final result = Future<String>.microtask(_fetchCoverFromSource).whenComplete(
+      () {
+        _refreshing.remove(key);
+      },
+    );
+    _refreshing[key] = result;
+    return result;
+  }
+
+  Future<String> _fetchCoverFromSource() async {
+    if (_activeRefreshes >= 2) {
+      final waiter = Completer<void>();
+      _refreshWaiters.add(waiter);
+      await waiter.future;
+    } else {
+      _activeRefreshes++;
+    }
+    try {
+      return await _requestCoverFromSource();
+    } finally {
+      if (_refreshWaiters.isNotEmpty) {
+        _refreshWaiters.removeFirst().complete();
+      } else {
+        _activeRefreshes--;
+      }
+    }
+  }
+
+  Future<String> _requestCoverFromSource() async {
     var comicSource =
         history.type.comicSource ?? (throw "Comic source not found.");
     var comic = await comicSource.loadComicInfo!(history.id);
@@ -107,6 +158,7 @@ class HistoryImageProvider
 
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
+    checkStop();
     var url = history.cover;
     if (!url.contains('/')) {
       var localComic = LocalManager().find(history.id, history.type);
@@ -124,6 +176,7 @@ class HistoryImageProvider
         return null;
       }
       tried.add(cover);
+      checkStop();
       try {
         var data = await _loadThumbnail(cover, chunkEvents, checkStop);
         if (saveCover) {
@@ -131,6 +184,7 @@ class HistoryImageProvider
         }
         return data;
       } catch (e) {
+        checkStop();
         lastError = e;
         return null;
       }
@@ -153,11 +207,13 @@ class HistoryImageProvider
     }
 
     try {
+      checkStop();
       data = await tryLoad(await _refreshCoverFromSource());
       if (data != null) {
         return data;
       }
     } catch (e) {
+      checkStop();
       lastError = e;
     }
 

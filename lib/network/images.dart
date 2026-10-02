@@ -9,13 +9,18 @@ import 'package:venera/utils/image.dart';
 import 'package:venera/utils/file_type.dart';
 
 import 'app_dio.dart';
+import 'thumbnail_request_queue.dart';
 
 abstract class ImageDownloader {
+  static final _thumbnailRequests = ThumbnailRequestQueue();
+
   static Stream<ImageDownloadProgress> loadThumbnail(
     String url,
     String? sourceKey, [
     String? cid,
+    void Function()? checkStop,
   ]) async* {
+    checkStop?.call();
     final cacheKey = "$url@$sourceKey${cid != null ? '@$cid' : ''}";
     final cache = await CacheManager().findCache(cacheKey);
 
@@ -33,6 +38,37 @@ abstract class ImageDownloader {
       }
     }
 
+    final bytes = await _thumbnailRequests.load(
+      cacheKey,
+      () async {
+        await for (final progress in _loadThumbnail(url, sourceKey, cid)) {
+          if (progress.imageBytes != null) return progress.imageBytes!;
+        }
+        throw StateError('Empty thumbnail response');
+      },
+      isCancelled: () {
+        try {
+          checkStop?.call();
+          return false;
+        } catch (_) {
+          return true;
+        }
+      },
+    );
+    yield ImageDownloadProgress(
+      currentBytes: bytes.length,
+      totalBytes: bytes.length,
+      imageBytes: bytes,
+    );
+  }
+
+  static Stream<ImageDownloadProgress> _loadThumbnail(
+    String url,
+    String? sourceKey,
+    String? cid,
+  ) async* {
+    final cacheKey = "$url@$sourceKey${cid != null ? '@$cid' : ''}";
+
     var configs = <String, dynamic>{};
     if (sourceKey != null) {
       var comicSource = ComicSource.find(sourceKey);
@@ -49,7 +85,20 @@ abstract class ImageDownloader {
       var comicSource = ComicSource.find(sourceKey);
       if (comicSource != null) {
         var comicInfo = await comicSource.loadComicInfo!(cid!);
-        yield* loadThumbnail(comicInfo.data.cover, sourceKey);
+        if (comicInfo.error || comicInfo.data.cover == url) {
+          throw StateError('Unable to resolve thumbnail URL');
+        }
+        // Stay in the current queue slot when resolving a virtual cover URL.
+        await for (final progress in _loadThumbnail(
+          comicInfo.data.cover,
+          sourceKey,
+          null,
+        )) {
+          if (progress.imageBytes != null) {
+            await CacheManager().writeCache(cacheKey, progress.imageBytes!);
+          }
+          yield progress;
+        }
         return;
       }
     }
@@ -102,6 +151,9 @@ abstract class ImageDownloader {
       (configs['onResponse'] as JSInvokable).free();
     }
 
+    if (!detectFileType(imageBytes).mime.startsWith('image/')) {
+      throw StateError('Invalid thumbnail image data');
+    }
     await CacheManager().writeCache(cacheKey, imageBytes);
     yield ImageDownloadProgress(
       currentBytes: imageBytes.length,

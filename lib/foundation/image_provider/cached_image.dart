@@ -31,23 +31,20 @@ class CachedImageProvider
   // Use local cover if network image fails to load.
   final bool fallbackToLocalCover;
 
-  static int loadingCount = 0;
-
-  static const _kMaxLoadingCount = 8;
+  @override
+  int get maxLoadAttempts => 1;
 
   @override
   Future<Uint8List> load(chunkEvents, checkStop) async {
-    while(loadingCount > _kMaxLoadingCount) {
-      await Future.delayed(const Duration(milliseconds: 100));
-      checkStop();
-    }
-    loadingCount++;
+    checkStop();
     try {
       if(url.startsWith("file://")) {
         var file = File(url.substring(7));
         return file.readAsBytes();
       }
-      await for (var progress in ImageDownloader.loadThumbnail(url, sourceKey, cid)) {
+      await for (var progress in ImageDownloader.loadThumbnail(
+        url, sourceKey, cid, checkStop,
+      )) {
         checkStop();
         chunkEvents.add(ImageChunkEvent(
           cumulativeBytesLoaded: progress.currentBytes,
@@ -60,6 +57,7 @@ class CachedImageProvider
       throw "Error: Empty response body.";
     }
     catch(e) {
+      checkStop();
       if (fallbackToLocalCover && sourceKey != null && cid != null) {
         final localComic = LocalManager().find(
           cid!,
@@ -76,9 +74,6 @@ class CachedImageProvider
         }
       }
       rethrow;
-    }
-    finally {
-      loadingCount--;
     }
   }
 
