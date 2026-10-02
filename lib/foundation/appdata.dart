@@ -435,6 +435,7 @@ class Settings with ChangeNotifier {
     'showFavoriteStatusOnTile': true,
     'showHistoryStatusOnTile': false,
     'blockedWords': [],
+    'blockedAuthors': [],
     'blockedCommentWords': [],
     'defaultSearchTarget': null,
     'autoPageTurningInterval': 5, // in seconds

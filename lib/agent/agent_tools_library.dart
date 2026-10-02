@@ -1097,13 +1097,17 @@ extension _AgentLibraryTools on AgentTools {
 
   static String _blockedKey(AgentJson a) {
     final scope = a['scope'] ?? 'comic';
-    if (scope != 'comic' && scope != 'comment') {
+    if (scope != 'comic' && scope != 'comment' && scope != 'author') {
       throw const AgentException(
         'INVALID_ARGUMENT',
-        'scope 只能为 comic 或 comment',
+        'scope 只能为 comic、comment 或 author',
       );
     }
-    return scope == 'comic' ? 'blockedWords' : 'blockedCommentWords';
+    return switch (scope) {
+      'author' => 'blockedAuthors',
+      'comment' => 'blockedCommentWords',
+      _ => 'blockedWords',
+    };
   }
 
   List<String> _blockedList(String key) => [

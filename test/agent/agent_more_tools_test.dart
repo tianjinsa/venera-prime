@@ -1511,6 +1511,28 @@ void main() {
     expect(app.saves, 2);
   });
 
+  test(
+    'author blocks can be managed separately from general keywords',
+    () async {
+      app.settings['blockedWords'] = ['sun'];
+      await call('blocked_words_update', {
+        'scope': 'author',
+        'add': ['sun', 'sun'],
+      });
+      expect(app.settings['blockedAuthors'], ['sun']);
+      final listed = await call('blocked_words_list', {'scope': 'author'});
+      expect(listed['items'], [
+        {'word': 'sun'},
+      ]);
+      await call('blocked_words_update', {
+        'scope': 'author',
+        'remove': ['sun'],
+      });
+      expect(app.settings['blockedAuthors'], isEmpty);
+      expect(app.settings['blockedWords'], ['sun']);
+    },
+  );
+
   test('reading statistics summarise days and comics', () async {
     sources.add(RichSource('jm'));
     app.statistics.addAll([

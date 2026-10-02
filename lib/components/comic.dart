@@ -1,5 +1,20 @@
 part of 'components.dart';
 
+String? _authorFromTag(String tag) {
+  final separator = tag.indexOf(':');
+  if (separator < 0) return null;
+  final namespace = tag.substring(0, separator).trim().toLowerCase();
+  if (namespace != 'artist' && namespace != 'author') return null;
+  final author = tag.substring(separator + 1).trim();
+  return author.isEmpty ? null : author;
+}
+
+Set<String> _blockingAuthors(Comic comic) => {
+  if (comic.subtitle?.trim().isNotEmpty ?? false) comic.subtitle!.trim(),
+  for (final tag in comic.tags ?? <String>[])
+    if (_authorFromTag(tag) case final String author) author,
+};
+
 ImageProvider? _findImageProvider(Comic comic) {
   ImageProvider image;
   if (comic is LocalComic) {
@@ -462,12 +477,13 @@ class ComicTile extends StatelessWidget {
       context: App.rootContext,
       builder: (context) {
         var words = <String>[];
+        final authors = _blockingAuthors(comic);
+        final selectedAuthors = <String>{};
         var all = <String>[];
         all.addAll(_splitText(comic.title));
-        if (comic.subtitle != null && comic.subtitle != "") {
-          all.add(comic.subtitle!);
-        }
-        all.addAll(comic.tags ?? []);
+        all.addAll(
+          (comic.tags ?? []).where((tag) => _authorFromTag(tag) == null),
+        );
         return StatefulBuilder(
           builder: (context, setState) {
             return ContentDialog(
@@ -481,7 +497,17 @@ class ComicTile extends StatelessWidget {
                     runSpacing: 8,
                     spacing: 8,
                     children: [
-                      for (var word in all)
+                      for (final author in authors)
+                        OptionChip(
+                          text: 'Author: @a'.tlParams({'a': author}),
+                          isSelected: selectedAuthors.contains(author),
+                          onTap: () => setState(() {
+                            if (!selectedAuthors.add(author)) {
+                              selectedAuthors.remove(author);
+                            }
+                          }),
+                        ),
+                      for (var word in all.toSet())
                         OptionChip(
                           text: (comic.tags?.contains(word) ?? false)
                               ? word.translateTagIfNeed
@@ -506,7 +532,16 @@ class ComicTile extends StatelessWidget {
                   onPressed: () {
                     context.pop();
                     for (var word in words) {
-                      appdata.settings['blockedWords'].add(word);
+                      if (!appdata.settings['blockedWords'].contains(word)) {
+                        appdata.settings['blockedWords'].add(word);
+                      }
+                    }
+                    for (final author in selectedAuthors) {
+                      if (!appdata.settings['blockedAuthors'].contains(
+                        author,
+                      )) {
+                        appdata.settings['blockedAuthors'].add(author);
+                      }
                     }
                     appdata.saveData();
                     context.showMessage(message: 'Blocked'.tl);
@@ -933,6 +968,14 @@ class _SliverGridComics extends StatelessWidget {
 
 /// return the first blocked keyword, or null if not blocked
 String? isBlocked(Comic item) {
+  final authors = _blockingAuthors(item);
+  for (final author in appdata.settings['blockedAuthors']) {
+    if (author is String &&
+        author.trim().isNotEmpty &&
+        authors.contains(author.trim())) {
+      return author;
+    }
+  }
   for (var word in appdata.settings['blockedWords']) {
     if (item.title.contains(word)) {
       return word;

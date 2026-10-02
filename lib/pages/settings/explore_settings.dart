@@ -61,6 +61,10 @@ class _ExploreSettingsState extends State<ExploreSettings> {
           builder: () => const _ManageBlockingWordView(),
         ).toSliver(),
         _PopupWindowSetting(
+          title: "Author blocking".tl,
+          builder: () => const _ManageBlockingWordView(authors: true),
+        ).toSliver(),
+        _PopupWindowSetting(
           title: "Comment keyword blocking".tl,
           builder: () => const _ManageBlockingCommentWordView(),
         ).toSliver(),
@@ -112,7 +116,9 @@ class _ExploreSettingsState extends State<ExploreSettings> {
 }
 
 class _ManageBlockingWordView extends StatefulWidget {
-  const _ManageBlockingWordView();
+  const _ManageBlockingWordView({this.authors = false});
+
+  final bool authors;
 
   @override
   State<_ManageBlockingWordView> createState() =>
@@ -120,11 +126,13 @@ class _ManageBlockingWordView extends StatefulWidget {
 }
 
 class _ManageBlockingWordViewState extends State<_ManageBlockingWordView> {
+  String get settingKey => widget.authors ? 'blockedAuthors' : 'blockedWords';
+
   @override
   Widget build(BuildContext context) {
-    assert(appdata.settings["blockedWords"] is List);
+    assert(appdata.settings[settingKey] is List);
     return PopUpWidgetScaffold(
-      title: "Keyword blocking".tl,
+      title: (widget.authors ? "Author blocking" : "Keyword blocking").tl,
       tailing: [
         TextButton.icon(
           icon: const Icon(Icons.add),
@@ -133,14 +141,14 @@ class _ManageBlockingWordViewState extends State<_ManageBlockingWordView> {
         ),
       ],
       body: ListView.builder(
-        itemCount: appdata.settings["blockedWords"].length,
+        itemCount: appdata.settings[settingKey].length,
         itemBuilder: (context, index) {
           return ListTile(
-            title: Text(appdata.settings["blockedWords"][index]),
+            title: Text(appdata.settings[settingKey][index]),
             trailing: IconButton(
               icon: const Icon(Icons.close),
               onPressed: () {
-                appdata.settings["blockedWords"].removeAt(index);
+                appdata.settings[settingKey].removeAt(index);
                 appdata.saveData();
                 setState(() {});
               },
@@ -157,44 +165,51 @@ class _ManageBlockingWordViewState extends State<_ManageBlockingWordView> {
       builder: (context) {
         var controller = TextEditingController();
         String? error;
-        return StatefulBuilder(builder: (context, setState) {
-          return ContentDialog(
-            title: "Add keyword".tl,
-            content: TextField(
-              controller: controller,
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                label: Text("Keyword".tl),
-                errorText: error,
-              ),
-              onChanged: (s) {
-                if (error != null) {
-                  setState(() {
-                    error = null;
-                  });
-                }
-              },
-            ).paddingHorizontal(12),
-            actions: [
-              Button.filled(
-                onPressed: () {
-                  if (appdata.settings["blockedWords"]
-                      .contains(controller.text)) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return ContentDialog(
+              title: (widget.authors ? "Add author" : "Add keyword").tl,
+              content: TextField(
+                controller: controller,
+                decoration: InputDecoration(
+                  border: const OutlineInputBorder(),
+                  label: Text((widget.authors ? "Author" : "Keyword").tl),
+                  errorText: error,
+                ),
+                onChanged: (s) {
+                  if (error != null) {
                     setState(() {
-                      error = "Keyword already exists".tl;
+                      error = null;
                     });
-                    return;
                   }
-                  appdata.settings["blockedWords"].add(controller.text);
-                  appdata.saveData();
-                  this.setState(() {});
-                  context.pop();
                 },
-                child: Text("Add".tl),
-              ),
-            ],
-          );
-        });
+              ).paddingHorizontal(12),
+              actions: [
+                Button.filled(
+                  onPressed: () {
+                    final word = controller.text.trim();
+                    if (word.isEmpty) return;
+                    if (appdata.settings[settingKey].contains(word)) {
+                      setState(() {
+                        error =
+                            (widget.authors
+                                    ? "Author already exists"
+                                    : "Keyword already exists")
+                                .tl;
+                      });
+                      return;
+                    }
+                    appdata.settings[settingKey].add(word);
+                    appdata.saveData();
+                    this.setState(() {});
+                    context.pop();
+                  },
+                  child: Text("Add".tl),
+                ),
+              ],
+            );
+          },
+        );
       },
     );
   }

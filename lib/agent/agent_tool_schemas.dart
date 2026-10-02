@@ -745,22 +745,30 @@ final _agentToolSchemas = <AgentJson>[
     },
     ['page'],
   ),
-  _schema('blocked_words_list', '读取屏蔽关键词。comic 屏蔽漫画列表中的标题和标签，comment 屏蔽评论', {
-    'scope': {
-      'type': 'string',
-      'enum': ['comic', 'comment'],
-      'description': '默认 comic',
+  _schema(
+    'blocked_words_list',
+    '读取屏蔽关键词。comic 匹配标题、副标题、描述和标签，comment 屏蔽评论，author 仅完整匹配作者',
+    {
+      'scope': {
+        'type': 'string',
+        'enum': ['comic', 'comment', 'author'],
+        'description': '默认 comic',
+      },
     },
-  }),
-  _schema('blocked_words_update', '批量添加或移除屏蔽关键词，返回更新后的列表', {
-    'scope': {
-      'type': 'string',
-      'enum': ['comic', 'comment'],
-      'description': '默认 comic',
+  ),
+  _schema(
+    'blocked_words_update',
+    '批量添加或移除屏蔽关键词，返回更新后的列表。屏蔽作者请使用 author 范围，仅完整匹配作者',
+    {
+      'scope': {
+        'type': 'string',
+        'enum': ['comic', 'comment', 'author'],
+        'description': '默认 comic',
+      },
+      'add': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
+      'remove': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
     },
-    'add': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
-    'remove': {'type': 'array', 'items': _stringArg, 'maxItems': 100},
-  }),
+  ),
   _schema('reading_stats', '读取阅读时长统计：总时长、每日时长和阅读最多的漫画', {
     'days': {
       'type': 'integer',
