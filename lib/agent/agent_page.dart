@@ -865,11 +865,16 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
           onCancel: (id) =>
               _act(() async => controller.cancelQueuedMessage(id)),
         ),
-        if (model != null) _contextStatus(),
         AgentFloatingComposer(
           child: Material(
             color: Theme.of(context).colorScheme.surface,
-            child: _composer(),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (model != null) _contextStatus(),
+                _composer(),
+              ],
+            ),
           ),
         ),
       ],

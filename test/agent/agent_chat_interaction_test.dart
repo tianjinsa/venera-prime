@@ -179,6 +179,9 @@ void main() {
       final tabs = find.byKey(const ValueKey('navi-bottom-bar'));
       final tabRect = tester.getRect(tabs);
       final tabElement = tester.element(tabs);
+      final contextBar = find.byKey(const ValueKey('agent-context-status'));
+      final contextGap = tester.getTopLeft(input).dy -
+          tester.getTopLeft(contextBar).dy;
       for (final keyboardHeight in [0.0, 300.0, 370.0, 0.0]) {
         tester.view.viewInsets = FakeViewPadding(bottom: keyboardHeight);
         tester.view.padding = FakeViewPadding(
@@ -192,6 +195,10 @@ void main() {
           expect(position.pixels, scrollOffset);
           expect(tester.getRect(tabs), tabRect);
           expect(tester.element(tabs), same(tabElement));
+          expect(
+            tester.getTopLeft(input).dy - tester.getTopLeft(contextBar).dy,
+            closeTo(contextGap, .01),
+          );
         }
         final bottomBar = keyboardHeight == 0 ? 58 + 24 : 0;
         expect(
