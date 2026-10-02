@@ -754,7 +754,12 @@ class _ContinuousModeState extends State<_ContinuousMode>
     if (itemPositionsListener.itemPositions.value.isEmpty) {
       return;
     }
-    var page = itemPositionsListener.itemPositions.value.first.index;
+    final visible = itemPositionsListener.itemPositions.value.where(
+      (item) => item.itemTrailingEdge > 0.000001 && item.itemLeadingEdge < 1,
+    );
+    if (visible.isEmpty) return;
+    // The listener also reports cached off-screen items, in no guaranteed order.
+    var page = visible.map((item) => item.index).reduce(math.min);
     page = page.clamp(1, reader.maxPage);
     if (page != reader.page) {
       reader.setPage(page);
@@ -874,6 +879,13 @@ class _ContinuousModeState extends State<_ContinuousMode>
 
   @override
   Widget build(BuildContext context) {
+    final viewport = reader.size;
+    final imageWidth =
+        appdata.settings['limitImageWidth'] &&
+            viewport.width / viewport.height > 0.7 &&
+            reader.mode == ReaderMode.continuousTopToBottom
+        ? viewport.height * 0.7
+        : viewport.width;
     Widget widget = ScrollablePositionedList.builder(
       initialScrollIndex: reader.page,
       itemScrollController: itemScrollController,
@@ -916,16 +928,23 @@ class _ContinuousModeState extends State<_ContinuousMode>
             reader.cid,
             reader.type.sourceKey,
           ),
-          child: ComicImage(
-            // Bilinear filtering avoids mipmap work while large images are
-            // continuously moving. Gallery mode keeps medium quality for zoom.
-            filterQuality: FilterQuality.low,
-            image: image,
-            width: width,
-            height: height,
-            fit: BoxFit.contain,
-            onInit: (state) => imageStates.add(state),
-            onDispose: (state) => imageStates.remove(state),
+          child: Center(
+            child: SizedBox(
+              width: reader.mode == ReaderMode.continuousTopToBottom
+                  ? imageWidth
+                  : null,
+              child: ComicImage(
+                // Bilinear filtering avoids mipmap work while large images are
+                // continuously moving. Gallery mode keeps medium quality for zoom.
+                filterQuality: FilterQuality.low,
+                image: image,
+                width: width,
+                height: height,
+                fit: BoxFit.contain,
+                onInit: (state) => imageStates.add(state),
+                onDispose: (state) => imageStates.remove(state),
+              ),
+            ),
           ),
         );
       },
@@ -1072,13 +1091,8 @@ class _ContinuousModeState extends State<_ContinuousMode>
       },
       child: widget,
     );
-    var width = reader.size.width;
-    var height = reader.size.height;
-    if (appdata.settings['limitImageWidth'] &&
-        width / height > 0.7 &&
-        reader.mode == ReaderMode.continuousTopToBottom) {
-      width = height * 0.7;
-    }
+    final width = viewport.width;
+    final height = viewport.height;
 
     return PhotoView.customChild(
       backgroundDecoration: BoxDecoration(

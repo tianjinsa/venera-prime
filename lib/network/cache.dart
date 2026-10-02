@@ -42,10 +42,11 @@ class NetworkCacheManager implements Interceptor {
   static const _maxCacheSize = 10 * 1024 * 1024;
 
   void setCache(NetworkCache cache) {
-    if (_cache.containsKey(cache.uri)) {
-      size -= _cache[cache.uri]!.size;
+    removeCache(cache.uri);
+    if (cache.size > _maxCacheSize) {
+      return;
     }
-    while (size > _maxCacheSize) {
+    while (_cache.isNotEmpty && size + cache.size > _maxCacheSize) {
       size -= _cache.values.first.size;
       _cache.remove(_cache.keys.first);
     }
@@ -76,7 +77,9 @@ class NetworkCacheManager implements Interceptor {
 
   @override
   void onRequest(
-      RequestOptions options, RequestInterceptorHandler handler) async {
+    RequestOptions options,
+    RequestInterceptorHandler handler,
+  ) async {
     if (options.method != "GET") {
       return handler.next(options);
     }
@@ -98,36 +101,44 @@ class NetworkCacheManager implements Interceptor {
     var diff = time.difference(cache.time);
     if (options.headers['cache-time'] == 'long' &&
         diff < const Duration(hours: 6)) {
-      return handler.resolve(Response(
-        requestOptions: options,
-        data: cache.data,
-        headers: Headers.fromMap(cache.responseHeaders)
-          ..set('venera-cache', 'true'),
-        statusCode: 200,
-      ));
-    } else if (diff < const Duration(seconds: 5)) {
-      return handler.resolve(Response(
-        requestOptions: options,
-        data: cache.data,
-        headers: Headers.fromMap(cache.responseHeaders)
-          ..set('venera-cache', 'true'),
-        statusCode: 200,
-      ));
-    } else if (diff < const Duration(hours: 2)) {
-      var o = options.copyWith(
-        method: "HEAD",
-      );
-      var dio = AppDio();
-      var response = await dio.fetch(o);
-      if (response.statusCode == 200 &&
-          compareHeaders(cache.responseHeaders, response.headers.map)) {
-        return handler.resolve(Response(
+      return handler.resolve(
+        Response(
           requestOptions: options,
           data: cache.data,
           headers: Headers.fromMap(cache.responseHeaders)
             ..set('venera-cache', 'true'),
           statusCode: 200,
-        ));
+        ),
+      );
+    } else if (diff < const Duration(seconds: 5)) {
+      return handler.resolve(
+        Response(
+          requestOptions: options,
+          data: cache.data,
+          headers: Headers.fromMap(cache.responseHeaders)
+            ..set('venera-cache', 'true'),
+          statusCode: 200,
+        ),
+      );
+    } else if (diff < const Duration(hours: 2)) {
+      var o = options.copyWith(method: "HEAD");
+      var dio = AppDio();
+      try {
+        var response = await dio.fetch(o);
+        if (response.statusCode == 200 &&
+            compareHeaders(cache.responseHeaders, response.headers.map)) {
+          return handler.resolve(
+            Response(
+              requestOptions: options,
+              data: cache.data,
+              headers: Headers.fromMap(cache.responseHeaders)
+                ..set('venera-cache', 'true'),
+              statusCode: 200,
+            ),
+          );
+        }
+      } catch (_) {
+        // A failed freshness check should fall back to the original GET.
       }
     }
     removeCache(options.uri);
@@ -148,12 +159,10 @@ class NetworkCacheManager implements Interceptor {
       'content-encoding',
       'report-to',
       'server-timing',
-      'token',
       'set-cookie',
       'cf-cache-status',
       'cf-request-id',
       'cf-ray',
-      'authorization',
     ];
     for (var key in shouldIgnore) {
       a.remove(key);
@@ -181,7 +190,9 @@ class NetworkCacheManager implements Interceptor {
 
   @override
   void onResponse(
-      Response<dynamic> response, ResponseInterceptorHandler handler) {
+    Response<dynamic> response,
+    ResponseInterceptorHandler handler,
+  ) {
     if (response.requestOptions.method != "GET") {
       return handler.next(response);
     }

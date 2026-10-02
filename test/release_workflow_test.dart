@@ -61,10 +61,46 @@ void main() {
       File('.github/workflows/main.yml').readAsStringSync(),
     );
     final steps = workflow['jobs']['Release']['steps'] as YamlList;
-    final download = steps.first['with'];
+    final download = steps.firstWhere(
+      (step) =>
+          step['uses']?.toString().startsWith('actions/download-artifact@') ==
+          true,
+    )['with'];
     expect(download['pattern'], '*_build');
     expect(download['merge-multiple'], isTrue);
-    expect(steps.last['run'], contains('exit 1'));
-    expect(steps.last['if'], contains("needs.*.result"));
+    expect(steps.first['run'], contains('exit 1'));
+    expect(steps.first['if'], contains("needs.*.result"));
+  });
+  test('release uses validated metadata and automated identity gate', () {
+    final workflow = loadYaml(
+      File('.github/workflows/main.yml').readAsStringSync(),
+    );
+    final jobs = workflow['jobs'] as YamlMap;
+    final validation = jobs['Validate_Version'] as YamlMap;
+    final steps = validation['steps'] as YamlList;
+    final gate = steps.firstWhere(
+      (step) => step['run'] == 'python3 tool/check_release_identity.py',
+    );
+    expect(gate['env']['RELEASE_ACTOR'], contains('github.actor'));
+    expect(
+      gate['env']['RELEASE_TRIGGERING_ACTOR'],
+      contains('github.triggering_actor'),
+    );
+    expect(gate['if'], contains('inputs.publish_release'));
+    final release = (jobs['Release']['steps'] as YamlList).firstWhere(
+      (step) =>
+          step['uses']?.toString().startsWith('softprops/action-gh-release@') ==
+          true,
+    );
+    expect(
+      release['with']['body_path'],
+      contains('needs.Validate_Version.outputs.notes'),
+    );
+    expect(
+      release['with']['tag_name'],
+      contains('needs.Validate_Version.outputs.tag'),
+    );
+    expect(release['with']['target_commitish'], contains('github.sha'));
+    expect(release['env']['GITHUB_TOKEN'], contains('secrets.GITHUB_TOKEN'));
   });
 }

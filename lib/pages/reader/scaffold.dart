@@ -575,6 +575,14 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
                     : context.reader.toPage(context.reader.maxPage),
                 icon: const Icon(Icons.first_page),
               ),
+              SizedBox(
+                width: 58,
+                child: Text(
+                  "$displayPage/${context.reader.maxPage}",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
               Expanded(child: buildSlider()),
               IconButton.filledTonal(
                 onPressed: () => !isReversed
@@ -659,7 +667,8 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
       reversed: isReversed,
       divisions: (context.reader.maxPage - 1).clamp(2, 1 << 16),
       onChanged: (i) {
-        context.reader.toPage(i.toInt());
+        // Scrubbing must not queue overlapping positioned-list animations.
+        context.reader.toPage(i.round(), animate: false);
       },
     );
   }

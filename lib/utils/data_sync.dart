@@ -15,6 +15,28 @@ import 'package:venera/utils/translations.dart';
 
 import 'io.dart';
 
+@visibleForTesting
+List<String> backupFilesToPrune({
+  required Iterable<String> existingNames,
+  required String dayPrefix,
+  required String uploadedFilename,
+}) {
+  final obsoleteForDay = existingNames
+      .where((name) => name.startsWith(dayPrefix) && name != uploadedFilename)
+      .toList();
+  final remainingFiles = existingNames
+      .where(
+        (name) => name != uploadedFilename && !obsoleteForDay.contains(name),
+      )
+      .toList();
+  final excessCount = remainingFiles.length + 1 - 10;
+  if (excessCount > 0) {
+    remainingFiles.sort();
+    obsoleteForDay.addAll(remainingFiles.take(excessCount));
+  }
+  return obsoleteForDay;
+}
+
 class DataSync with ChangeNotifier {
   DataSync._() {
     if (isEnabled) {
@@ -152,16 +174,25 @@ class DataSync with ChangeNotifier {
         filename += '.venera';
         var files = await client.readDir('/');
         files = files.where((e) => e.name!.endsWith('.venera')).toList();
-        var old = files.firstWhereOrNull((e) => e.name!.startsWith("$time-"));
-        if (old != null) {
-          await client.remove(old.name!);
-        }
-        if (files.length >= 10) {
-          files.sort((a, b) => a.name!.compareTo(b.name!));
-          await client.remove(files.first.name!);
-        }
         await client.write(filename, await data.readAsBytes());
         Log.info("Upload Data", "Data uploaded successfully");
+        // Keep the previous backup until the new remote file is safely written.
+        try {
+          final namesToPrune = backupFilesToPrune(
+            existingNames: files.map((file) => file.name!).toList(),
+            dayPrefix: '$time-',
+            uploadedFilename: filename,
+          );
+          for (final name in namesToPrune) {
+            await client.remove(name);
+          }
+        } catch (e, s) {
+          Log.error(
+            "Upload Data",
+            "Uploaded backup but failed to prune old backups: $e",
+            s,
+          );
+        }
         return const Res(true);
       } catch (e, s) {
         Log.error("Upload Data", e, s);

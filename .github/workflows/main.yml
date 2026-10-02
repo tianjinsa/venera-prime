@@ -42,6 +42,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_personal_trigger:
+        description: 'Allow a personal workflow actor; release still uses github-actions[bot]'
+        required: true
+        default: false
+        type: boolean
       release_tag:
         description: 'Existing tag to publish when publish_release is enabled'
         required: false
@@ -56,9 +61,22 @@ jobs:
   Validate_Version:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      notes: ${{ steps.version.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+      - name: Verify automated release identity
+        if: ${{ github.event_name == 'release' || inputs.publish_release }}
+        env:
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOW_PERSONAL_TRIGGER: ${{ inputs.allow_personal_trigger }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: python3 tool/check_release_identity.py
       - name: Validate version consistency
+        id: version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: python3 tool/check_version.py
@@ -193,10 +211,13 @@ jobs:
           EOF
 
       - name: Verify Android signing keystore
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           keytool -list -keystore android/release.keystore \
-            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
-            -alias "${{ secrets.ANDROID_KEY_ALIAS }}" >/dev/null
+            -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
 
       - name: Check rust-toolchain.toml
         run: rustup show
@@ -369,6 +390,11 @@ jobs:
     needs: [Validate_Version, Build_MacOS, Build_IOS, Build_Android, Build_Windows, Build_Linux, Build_Linux_ARM64]
     if: ${{ always() && (github.event_name == 'release' || inputs.publish_release) && needs.Validate_Version.result == 'success' }}
     steps:
+      - name: Require successful platform builds
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo '::error::One or more platform builds failed or were canceled. No release will be published.'
+          exit 1
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
@@ -377,8 +403,10 @@ jobs:
           path: outputs
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
-          body_path: doc/release-2.4.1.md
+          tag_name: ${{ needs.Validate_Version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Venera Prime ${{ needs.Validate_Version.outputs.version }}
+          body_path: ${{ needs.Validate_Version.outputs.notes }}
           files: |
             outputs/*.ipa
             outputs/*.dmg
@@ -390,8 +418,3 @@ jobs:
             outputs/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Report incomplete platform builds
-        if: ${{ always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
-        run: |
-          echo '::error::One or more platform builds failed or were canceled. Published artifacts are incomplete.'
-          exit 1
