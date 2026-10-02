@@ -158,32 +158,51 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('keyboard consumes no extra bottom navigation height', (
-    tester,
-  ) async {
-    tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 24);
-    tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
-    addTearDown(tester.view.resetViewPadding);
-    addTearDown(tester.view.resetPadding);
-    addTearDown(tester.view.resetViewInsets);
-    await pumpAgent(tester, withNavigation: true);
-    await tester.enterText(input, '键盘布局');
-    for (final keyboardHeight in [0.0, 300.0, 370.0, 0.0]) {
-      tester.view.viewInsets = FakeViewPadding(bottom: keyboardHeight);
-      tester.view.padding = FakeViewPadding(
-        top: 24,
-        bottom: keyboardHeight == 0 ? 24 : 0,
-      );
+  testWidgets(
+    'keyboard only moves the composer and keeps messages and tabs fixed',
+    (tester) async {
+      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 24);
+      tester.view.padding = const FakeViewPadding(top: 24, bottom: 24);
+      addTearDown(tester.view.resetViewPadding);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewInsets);
+      await pumpAgent(tester, withNavigation: true);
+      await tester.enterText(input, '键盘布局');
+      await tester.pump();
+      await tester.tap(send);
+      await tester.pump();
+      await emit(tester, List.generate(60, (i) => '消息第 $i 行').join('\n\n'));
       await tester.pumpAndSettle();
-      final bottomBar = keyboardHeight == 0 ? 58 + 24 : 0;
-      expect(
-        tester.getBottomLeft(input).dy,
-        closeTo(900 - keyboardHeight - bottomBar - 12, 1),
-      );
-      expect(tester.takeException(), isNull);
-    }
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      final messageRect = tester.getRect(messages);
+      final position = tester.widget<ListView>(messages).controller!.position;
+      final scrollOffset = position.pixels;
+      final tabs = find.byKey(const ValueKey('navi-bottom-bar'));
+      final tabRect = tester.getRect(tabs);
+      final tabElement = tester.element(tabs);
+      for (final keyboardHeight in [0.0, 300.0, 370.0, 0.0]) {
+        tester.view.viewInsets = FakeViewPadding(bottom: keyboardHeight);
+        tester.view.padding = FakeViewPadding(
+          top: 24,
+          bottom: keyboardHeight == 0 ? 24 : 0,
+        );
+        await tester.pump();
+        for (var frame = 0; frame < 12; frame++) {
+          await tester.pump(const Duration(milliseconds: 16));
+          expect(tester.getRect(messages), messageRect);
+          expect(position.pixels, scrollOffset);
+          expect(tester.getRect(tabs), tabRect);
+          expect(tester.element(tabs), same(tabElement));
+        }
+        final bottomBar = keyboardHeight == 0 ? 58 + 24 : 0;
+        expect(
+          tester.getBottomLeft(input).dy,
+          closeTo(900 - keyboardHeight - bottomBar - 12, 1),
+        );
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
   testWidgets('one running action switches between insert and pause', (
     tester,

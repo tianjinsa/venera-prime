@@ -7,6 +7,7 @@ import 'package:venera/pages/comic_source_page.dart';
 import 'agent_attachment_view.dart';
 import 'agent_controller.dart';
 import 'agent_files.dart';
+import 'agent_floating_composer.dart';
 import 'agent_history_view.dart';
 import 'agent_images.dart';
 import 'agent_message_view.dart';
@@ -516,6 +517,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
       );
     }
     final page = Scaffold(
+      resizeToAvoidBottomInset: false,
       body: AnimatedBuilder(
         animation: controller,
         builder: (_, _) => LayoutBuilder(
@@ -546,7 +548,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
     // Its own route has no navigation bars to keep clear of the system bars.
     return ColoredBox(
       color: Theme.of(context).colorScheme.surface,
-      child: SafeArea(child: page),
+      child: SafeArea(maintainBottomViewPadding: true, child: page),
     );
   }
 
@@ -864,7 +866,12 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
               _act(() async => controller.cancelQueuedMessage(id)),
         ),
         if (model != null) _contextStatus(),
-        _composer(),
+        AgentFloatingComposer(
+          child: Material(
+            color: Theme.of(context).colorScheme.surface,
+            child: _composer(),
+          ),
+        ),
       ],
     );
   }

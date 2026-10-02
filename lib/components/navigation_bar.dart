@@ -10,11 +10,15 @@ class PaneItemEntry {
   /// Wraps the icon, for example with a status badge.
   Widget Function(BuildContext context, Widget icon)? iconBuilder;
 
+  /// Floating-input pages let the IME cover the bar without changing layout.
+  final bool keepBottomBarWithKeyboard;
+
   PaneItemEntry({
     required this.label,
     required this.icon,
     required this.activeIcon,
     this.iconBuilder,
+    this.keepBottomBarWithKeyboard = false,
   });
 
   Widget buildIcon(BuildContext context, bool active) {
@@ -700,6 +704,8 @@ class _NaviMainViewState extends State<_NaviMainView> {
   @override
   Widget build(BuildContext context) {
     var shouldShowAppBar = state.controller.value < 2;
+    final keepBottomBar =
+        state.widget.paneItems[state.currentPage].keepBottomBarWithKeyboard;
     final content = AnimatedSwitcher(
       duration: _fastAnimationDuration,
       child: state.buildMainViewContent(),
@@ -716,15 +722,23 @@ class _NaviMainViewState extends State<_NaviMainView> {
             ),
           ),
         ),
-        // The page's Scaffold already avoids the full keyboard inset. Keeping
-        // the bottom bar in this Column would subtract its height a second time.
+        // Resizing pages release this space; floating-input pages retain it.
         if (shouldShowAppBar)
           Builder(
             builder: (context) {
-              if (MediaQuery.viewInsetsOf(context).bottom > 0) {
+              if (!keepBottomBar &&
+                  MediaQuery.viewInsetsOf(context).bottom > 0) {
                 return const SizedBox.shrink();
               }
-              return state.buildBottom().paddingBottom(context.padding.bottom);
+              return Padding(
+                key: const ValueKey('navi-bottom-bar'),
+                padding: EdgeInsets.only(
+                  bottom: keepBottomBar
+                      ? MediaQuery.viewPaddingOf(context).bottom
+                      : context.padding.bottom,
+                ),
+                child: state.buildBottom(),
+              );
             },
           ),
       ],

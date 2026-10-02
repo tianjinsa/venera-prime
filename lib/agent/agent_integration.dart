@@ -9,6 +9,7 @@ final agentPaneItem = PaneItemEntry(
   label: 'Agent',
   icon: Icons.auto_awesome_outlined,
   activeIcon: Icons.auto_awesome,
+  keepBottomBarWithKeyboard: true,
   iconBuilder: (_, icon) => AgentTabBadge(child: icon),
 );
 
