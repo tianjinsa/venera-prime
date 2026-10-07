@@ -265,7 +265,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           continue;
         }
         try {
-          var info = jsonDecode(await infoFile.readAsString());
+          var info = jsonDecode(utf8.decode(await infoFile.readAsBytes()));
           if (info is Map<String, dynamic> && _isThisTaskInfo(info)) {
             return entity;
           }
@@ -316,13 +316,15 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     }
     try {
       var file = Directory(path!).joinFile(_downloadInfoFileName);
-      await file.writeAsString(
-        jsonEncode({
-          "id": comicId,
-          "type": comicType.value,
-          "source": source.key,
-          "title": comic!.title,
-        }),
+      await file.writeAsBytes(
+        utf8.encode(
+          jsonEncode({
+            "id": comicId,
+            "type": comicType.value,
+            "source": source.key,
+            "title": comic!.title,
+          }),
+        ),
       );
     } catch (e, s) {
       Log.error("Download", "Failed to write download info: $e", s);
@@ -430,7 +432,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     var file = saveTo.joinFile("$index.png");
     await file.writeAsBytes(base64Decode(_skippedImagePlaceholderBase64));
     var errorFile = saveTo.joinFile(".$index.error.txt");
-    await errorFile.writeAsString(error.toString());
+    await errorFile.writeAsBytes(utf8.encode(error.toString()));
     _skippedImageCount++;
   }
 
@@ -447,7 +449,9 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
         if (entity.name.startsWith('cover.') || entity.name.startsWith('.')) {
           continue;
         }
-        if (entity.lengthSync() == 0) {
+        // SAF listing handles use child-query URIs. Reopen the document by
+        // path before querying its size, or valid images can report zero.
+        if (File(entity.path).lengthSync() <= 0) {
           continue;
         }
         var index = int.tryParse(entity.basenameWithoutExt);

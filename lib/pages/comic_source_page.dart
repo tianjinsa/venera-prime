@@ -960,7 +960,14 @@ class _LibraryCatalogPageState extends State<_LibraryCatalogPage> {
               entryFileName == currentFileName;
           return ListTile(
             title: Text(entry['name']?.toString() ?? key),
-            subtitle: Text(entry['version']?.toString() ?? ''),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry['version']?.toString() ?? ''),
+                if (entry['description']?.toString().trim().isNotEmpty == true)
+                  Text(entry['description'].toString().trim()),
+              ],
+            ),
             trailing: installed.contains(key)
                 ? isCurrentVariant
                       ? const Icon(Icons.check)

@@ -132,6 +132,25 @@ class History implements Comic {
   @override
   int get hashCode => Object.hash(id, type);
 
+  bool matchesQuery(String query) {
+    final words = query.trim().toLowerCase().split(RegExp(r'\s+'));
+    final text = [
+      title,
+      subtitle,
+      id,
+      sourceKey,
+      type.comicSource?.name ?? '',
+    ].join('\n').toLowerCase();
+    return words.every(text.contains);
+  }
+
+  String get lastReadTime {
+    final local = time.toLocal();
+    String pad(int value) => value.toString().padLeft(2, '0');
+    return '${local.year}-${pad(local.month)}-${pad(local.day)} '
+        '${pad(local.hour)}:${pad(local.minute)}';
+  }
+
   @override
   String get description {
     var res = "";
@@ -147,7 +166,7 @@ class History implements Comic {
       }
       res += "Page @page".tlParams({"page": page});
     }
-    return res;
+    return res.isEmpty ? lastReadTime : '$res\n$lastReadTime';
   }
 
   @override

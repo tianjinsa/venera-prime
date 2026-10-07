@@ -15,6 +15,7 @@ import 'package:venera/foundation/log.dart';
 import 'package:venera/network/download.dart';
 import 'package:venera/pages/reader/reader.dart';
 import 'package:venera/utils/io.dart';
+import 'package:venera/utils/translations.dart';
 import 'package:venera/utils/natural_sort.dart';
 import 'package:venera/utils/atomic_file.dart';
 
@@ -238,6 +239,10 @@ class LocalManager with ChangeNotifier {
     final destinationPath = path_utils.canonicalize(newPath);
     if (sourcePath == destinationPath) {
       return null;
+    }
+    if (downloadingTasks.isNotEmpty) {
+      return 'Please finish or cancel downloads before changing the storage path'
+          .tl;
     }
     if (path_utils.isWithin(sourcePath, destinationPath)) {
       return "New storage path cannot be inside the current storage path";

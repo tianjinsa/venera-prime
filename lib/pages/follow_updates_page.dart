@@ -599,7 +599,7 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
 
   void setFolder(String folder) async {
     FollowUpdatesService._cancelChecking?.call();
-    LocalFavoritesManager().prepareTableForFollowUpdates(folder);
+    LocalFavoritesManager().prepareTableForFollowUpdates(folder, false);
 
     var count = LocalFavoritesManager().count(folder);
 
@@ -619,7 +619,12 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
 
       final failures = <UpdateProgress>[];
       try {
-        await for (var progress in updateFolder(folder, true)) {
+        await for (var progress in updateFolder(
+          folder,
+          true,
+          shouldCancel: () => isCanceled || !mounted,
+          markNewUpdates: false,
+        )) {
           if (isCanceled) continue;
           if (progress.errorMessage != null) failures.add(progress);
           if (progress.total > 0) {
@@ -633,12 +638,14 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
       _showUpdateFailures(failures);
     }
 
+    if (!mounted) return;
     setState(() {
       appdata.settings["followUpdatesFolder"] = folder;
-      updatedComics = [];
       allComics = LocalFavoritesManager().getComicsWithUpdatesInfo(folder);
       sortComics();
+      updatedComics = allComics.where((c) => c.hasNewUpdate).toList();
     });
+    updateFollowUpdatesUI();
     appdata.saveData();
   }
 
@@ -662,7 +669,11 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
     final failures = <UpdateProgress>[];
 
     try {
-      await for (var progress in updateFolder(folder!, true)) {
+      await for (var progress in updateFolder(
+        folder!,
+        true,
+        shouldCancel: () => isCanceled || !mounted,
+      )) {
         if (isCanceled) continue;
         if (progress.errorMessage != null) failures.add(progress);
         if (progress.total > 0) {
@@ -672,6 +683,7 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
       }
     } finally {
       loadingController.close();
+      updateFollowUpdatesUI();
     }
 
     if (isCanceled) return;
@@ -756,7 +768,11 @@ abstract class FollowUpdatesService {
 
     int updated = 0;
     try {
-      await for (var progress in updateFolder(folder, false)) {
+      await for (var progress in updateFolder(
+        folder,
+        false,
+        shouldCancel: () => isCanceled,
+      )) {
         if (isCanceled) {
           return;
         }
