@@ -4,6 +4,58 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:yaml/yaml.dart';
 
 void main() {
+  test('Android integration tests use a separate application ID', () {
+    final gradle = File('android/app/build.gradle').readAsStringSync();
+    expect(gradle, contains('project.findProperty("target")'));
+    expect(gradle, contains('flutterTarget.startsWith("integration_test/")'));
+    expect(gradle, contains('flutterTarget.contains("/integration_test/")'));
+    expect(gradle, contains('project.findProperty("primeIntegrationTest")'));
+    expect(gradle, contains('flutterTarget.endsWith("/listener.dart")'));
+    expect(gradle, contains('applicationId = integrationTestBuild ?'));
+    expect(gradle, contains('com.github.wgh136.venera.prime.integrationtest'));
+    final script = File(
+      'tool/test_follow_updates_android.sh',
+    ).readAsStringSync();
+    expect(script, contains('dump badging'));
+    expect(script, contains('Refusing to run'));
+    expect(script, contains('trap verify_normal_app EXIT'));
+    expect(
+      script,
+      contains('export ORG_GRADLE_PROJECT_primeIntegrationTest=true'),
+    );
+    expect(
+      script.indexOf('build apk --debug'),
+      lessThan(script.indexOf('test --no-pub -d')),
+    );
+  });
+
+  test('both Linux AppImages deploy WebKit libraries and subprocesses', () {
+    final workflow = loadYaml(
+      File('.github/workflows/main.yml').readAsStringSync(),
+    );
+    for (final platform in {
+      'Build_Linux': 'x86_64',
+      'Build_Linux_ARM64': 'aarch64',
+    }.entries) {
+      final steps = workflow['jobs'][platform.key]['steps'] as YamlList;
+      final commands = steps.map((step) => step['run'] ?? '').join('\n');
+      expect(commands, contains('libwebkit2gtk-4.1-dev'));
+      expect(
+        commands,
+        contains('bash tool/build_appimage.sh ${platform.value}'),
+      );
+    }
+    final script = File('tool/build_appimage.sh').readAsStringSync();
+    expect(script, contains('"\$linuxdeploy" "\${deploy_args[@]}"'));
+    expect(script, contains('WebKitNetworkProcess'));
+    expect(script, contains('WebKitWebProcess'));
+    expect(script, contains('WEBKIT_EXEC_PATH'));
+    expect(script, contains('WEBKIT_INJECTED_BUNDLE_PATH'));
+    expect(script, contains('libwebkit2gtk-4.1.so.0'));
+    expect(script, contains('not found'));
+    expect(script, contains(r'$HERE/lib:$HERE/usr/lib'));
+  });
+
   test('runtime version matches pubspec version', () {
     final pubspec = loadYaml(File('pubspec.yaml').readAsStringSync());
     final pubspecVersion = (pubspec['version'] as String).split('+').first;

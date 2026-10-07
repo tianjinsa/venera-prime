@@ -7,6 +7,7 @@ import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/network/download.dart';
 import 'package:venera/network/download_page.dart';
+import 'package:venera/utils/translations.dart';
 
 class _Source implements ComicSource {
   @override
@@ -16,8 +17,132 @@ class _Source implements ComicSource {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+// Model SAF listing handles whose metadata query reports an empty file,
+// although reopening the same path gives a valid document.
+class _ListedFile implements File {
+  @override
+  final String path;
+  _ListedFile(this.path);
+  @override
+  int lengthSync() => 0;
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _ListedDirectory implements Directory {
+  final Directory actual;
+  _ListedDirectory(this.actual);
+  @override
+  String get path => actual.path;
+  @override
+  bool existsSync() => actual.existsSync();
+  @override
+  List<FileSystemEntity> listSync({
+    bool recursive = false,
+    bool followLinks = true,
+  }) => actual
+      .listSync(recursive: recursive, followLinks: followLinks)
+      .map((entity) => entity is File ? _ListedFile(entity.path) : entity)
+      .toList();
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _ListingOverrides extends IOOverrides {
+  final String directory;
+  _ListingOverrides(this.directory);
+  @override
+  Directory createDirectory(String path) {
+    final actual = super.createDirectory(path);
+    return path == directory ? _ListedDirectory(actual) : actual;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(AppTranslation.init);
+
+  for (final withChapters in [false, true]) {
+    test(
+      'SAF listed images complete after a path change (chapters=$withChapters)',
+      () async {
+        final directory = await Directory.systemTemp.createTemp('prime-saf-');
+        final oldStorage = Directory('${directory.path}/old')..createSync();
+        final newStorage = Directory('${directory.path}/new')..createSync();
+        App.dataPath = directory.path;
+        File('${directory.path}/local_path').writeAsStringSync(oldStorage.path);
+        final manager = LocalManager();
+        manager.close();
+        await manager.init();
+        final source = _Source();
+        ComicSourceManager().add(source);
+        ImagesDownloadTask? task;
+        try {
+          expect(await manager.setNewPath(newStorage.path), isNull);
+          final comic = Directory('${newStorage.path}/comic')..createSync();
+          final pages = withChapters
+              ? (Directory('${comic.path}/1')..createSync())
+              : comic;
+          File('${pages.path}/0.jpg').writeAsBytesSync([1, 2, 3]);
+          task = ImagesDownloadTask.fromJson({
+            'type': 'ImagesDownloadTask',
+            'source': source.key,
+            'comicId': 'comic',
+            'comic': {
+              'title': 'SAF comic',
+              'cover': '',
+              'tags': <String, dynamic>{},
+              if (withChapters) 'chapters': {'1': 'One'},
+              'sourceKey': source.key,
+              'comicId': 'comic',
+            },
+            'path': comic.path,
+            'cover': 'file://${comic.path}/cover.jpg',
+            'images': {
+              withChapters ? '1' : '': ['existing'],
+            },
+            'downloadedCount': 0,
+            'totalCount': 1,
+            'index': 0,
+            'chapter': 0,
+          })!;
+          final completed = Completer<void>();
+          void onComplete() {
+            if (manager.find('comic', task!.comicType) != null &&
+                !completed.isCompleted) {
+              completed.complete();
+            }
+          }
+
+          manager.addListener(onComplete);
+          try {
+            await IOOverrides.runWithIOOverrides(() async {
+              task!.resume();
+              await completed.future.timeout(const Duration(seconds: 5));
+            }, _ListingOverrides(pages.path));
+            expect(task.isError, isFalse);
+            expect(task.progress, 1);
+            expect(
+              manager.find('comic', task.comicType)!.downloadedChapters,
+              withChapters ? ['1'] : isEmpty,
+            );
+          } finally {
+            manager.removeListener(onComplete);
+          }
+          manager.downloadingTasks.add(task);
+          expect(await manager.setNewPath(oldStorage.path), isNotNull);
+          expect(manager.path, newStorage.path);
+          manager.downloadingTasks.clear();
+        } finally {
+          task?.pause();
+          task?.dispose();
+          await manager.saveCurrentDownloadingTasks();
+          manager.close();
+          await directory.delete(recursive: true);
+        }
+      },
+    );
+  }
 
   test(
     'successful retry removes the marker and obsolete PNG placeholder',

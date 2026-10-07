@@ -28,7 +28,7 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void onUpdate() {
     setState(() {
-      comics = HistoryManager().getAll();
+      comics = _filteredHistory();
       if (multiSelectMode) {
         selectedComics.removeWhere((comic, _) => !comics.contains(comic));
         if (selectedComics.isEmpty) {
@@ -40,6 +40,22 @@ class _HistoryPageState extends State<HistoryPage> {
 
   var comics = HistoryManager().getAll();
   var controller = FlyoutController();
+  final searchController = SearchBarController();
+  String query = '';
+
+  List<History> _filteredHistory() => HistoryManager()
+      .getAll()
+      .where((comic) => comic.matchesQuery(query))
+      .toList();
+
+  void _search(String value) {
+    setState(() {
+      query = value;
+      comics = _filteredHistory();
+      selectedComics.clear();
+      multiSelectMode = false;
+    });
+  }
 
   bool multiSelectMode = false;
   Map<History, bool> selectedComics = {};
@@ -72,15 +88,9 @@ class _HistoryPageState extends State<HistoryPage> {
         ComicType(int.parse(comic.sourceKey.split(':')[1])),
       );
     } else if (comic.sourceKey == 'local') {
-      HistoryManager().remove(
-        comic.id,
-        ComicType.local,
-      );
+      HistoryManager().remove(comic.id, ComicType.local);
     } else {
-      HistoryManager().remove(
-        comic.id,
-        ComicType(comic.sourceKey.hashCode),
-      );
+      HistoryManager().remove(comic.id, ComicType(comic.sourceKey.hashCode));
     }
   }
 
@@ -115,8 +125,7 @@ class _HistoryPageState extends State<HistoryPage> {
     int failed = 0;
     int skipped = 0;
 
-    await for (var progress
-        in HistoryManager().refreshAllHistoriesStream()) {
+    await for (var progress in HistoryManager().refreshAllHistoriesStream()) {
       if (isCanceled) {
         return;
       }
@@ -135,10 +144,10 @@ class _HistoryPageState extends State<HistoryPage> {
         message:
             "Refresh Completed: Success @success, Failed @failed, Skipped @skipped"
                 .tlParams({
-          'success': success,
-          'failed': failed,
-          'skipped': skipped,
-        }),
+                  'success': success,
+                  'failed': failed,
+                  'skipped': skipped,
+                }),
       );
     }
   }
@@ -147,19 +156,19 @@ class _HistoryPageState extends State<HistoryPage> {
   Widget build(BuildContext context) {
     List<Widget> selectActions = [
       IconButton(
-          icon: const Icon(Icons.select_all),
-          tooltip: "Select All".tl,
-          onPressed: selectAll
+        icon: const Icon(Icons.select_all),
+        tooltip: "Select All".tl,
+        onPressed: selectAll,
       ),
       IconButton(
-          icon: const Icon(Icons.deselect),
-          tooltip: "Deselect".tl,
-          onPressed: deSelect
+        icon: const Icon(Icons.deselect),
+        tooltip: "Deselect".tl,
+        onPressed: deSelect,
       ),
       IconButton(
-          icon: const Icon(Icons.flip),
-          tooltip: "Invert Selection".tl,
-          onPressed: invertSelection
+        icon: const Icon(Icons.flip),
+        tooltip: "Invert Selection".tl,
+        onPressed: invertSelection,
       ),
       IconButton(
         icon: const Icon(Icons.delete),
@@ -270,6 +279,7 @@ class _HistoryPageState extends State<HistoryPage> {
                   : Text('History'.tl),
               actions: multiSelectMode ? selectActions : normalActions,
             ),
+            SliverSearchBar(controller: searchController, onChanged: _search),
             SliverGridComics(
               comics: comics,
               selections: selectedComics,
@@ -320,17 +330,13 @@ class _HistoryPageState extends State<HistoryPage> {
   String getDescription(History h) {
     var res = "";
     if (h.ep >= 1) {
-      res += "Chapter @ep".tlParams({
-        "ep": h.ep,
-      });
+      res += "Chapter @ep".tlParams({"ep": h.ep});
     }
     if (h.page >= 1) {
       if (h.ep >= 1) {
         res += " - ";
       }
-      res += "Page @page".tlParams({
-        "page": h.page,
-      });
+      res += "Page @page".tlParams({"page": h.page});
     }
     return res;
   }

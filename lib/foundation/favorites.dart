@@ -1534,40 +1534,70 @@ class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
         add column last_check_time int;
       """);
     }
+    if (!columns.any((element) => element['name'] == 'last_update_chapters')) {
+      _db.execute(
+        'ALTER TABLE $quotedTable ADD COLUMN last_update_chapters TEXT;',
+      );
+    }
   }
 
-  void updateUpdateTime(
+  bool updateUpdateTime(
     String folder,
     String id,
     ComicType type,
-    String updateTime, {
+    String? updateTime, {
     bool markNewUpdate = true,
+    List<String>? chapterIds,
   }) {
     final table = _favoriteTable(folder);
-    var oldTime = _db
-        .select(
-          """
-      select last_update_time from $table
+    final rows = _db.select(
+      """
+      select last_update_time, has_new_update, last_update_chapters from $table
       where id == ? and type == ?;
     """,
-          [id, type.value],
-        )
-        .first['last_update_time'];
-    var hasNewUpdate = markNewUpdate && oldTime != updateTime;
+      [id, type.value],
+    );
+    // A favorite can be removed while its source request is in flight.
+    if (rows.isEmpty) return false;
+    final old = rows.first;
+    Set<String>? oldChapters;
+    final savedChapters = old['last_update_chapters'] as String?;
+    if (savedChapters != null) {
+      try {
+        oldChapters = (jsonDecode(savedChapters) as List)
+            .whereType<String>()
+            .toSet();
+      } catch (e, s) {
+        Log.error('Check Updates', 'Invalid chapter baseline: $e', s);
+      }
+    }
+    final addedChapter =
+        oldChapters != null &&
+        chapterIds != null &&
+        chapterIds.any((id) => !oldChapters!.contains(id));
+    final changed =
+        markNewUpdate &&
+        ((updateTime != null && old['last_update_time'] != updateTime) ||
+            addedChapter);
+    // Rechecks and baseline migrations must not acknowledge an unread update.
+    final hasNewUpdate = old['has_new_update'] == 1 || changed;
     _db.execute(
       """
       update $table
-      set last_update_time = ?, has_new_update = ?, last_check_time = ?
+      set last_update_time = ?, has_new_update = ?, last_check_time = ?,
+          last_update_chapters = ?
       where id == ? and type == ?;
     """,
       [
-        updateTime,
+        updateTime ?? old['last_update_time'],
         hasNewUpdate ? 1 : 0,
         DateTime.now().millisecondsSinceEpoch,
+        chapterIds == null ? savedChapters : jsonEncode(chapterIds),
         id,
         type.value,
       ],
     );
+    return changed;
   }
 
   void updateCheckTime(String folder, String id, ComicType type) {
@@ -1641,10 +1671,14 @@ class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
       """
       update $table
       set has_new_update = 0
-      where id == ? and type == ?;
+      where id == ? and type == ? and has_new_update == 1;
     """,
       [id, type.value],
     );
+    if (_db.updatedRows > 0) {
+      notifyListeners();
+      updateFollowUpdatesUI();
+    }
   }
 
   void close() {

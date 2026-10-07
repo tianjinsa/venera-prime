@@ -276,7 +276,7 @@ jobs:
       - run: |
           flutter pub get
           sudo apt-get update -y
-          sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
           dart pub global activate -s git https://github.com/venera-app/flutter_to_debian.git
       - run: python3 debian/build.py x64
       - run: dart run flutter_to_arch
@@ -288,35 +288,11 @@ jobs:
       - name: Build AppImage
         run: |
           sudo apt-get install -y libfuse2
-          curl -L --fail -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool
-          BUNDLE_DIR=$(find build/linux -type d -path '*/release/bundle' -print -quit)
-          test -n "$BUNDLE_DIR"
-          rm -rf VeneraPrime.AppDir
-          cp -a "$BUNDLE_DIR" VeneraPrime.AppDir
-          cat > VeneraPrime.AppDir/venera.desktop <<'EOF'
-          [Desktop Entry]
-          Name=Venera Prime
-          Exec=venera
-          Icon=venera
-          Type=Application
-          Categories=Utility;
-          EOF
-          cp assets/app_icon.png VeneraPrime.AppDir/venera.png
-          cat > VeneraPrime.AppDir/AppRun <<'EOF'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          export LD_LIBRARY_PATH="$HERE:${LD_LIBRARY_PATH:-}"
-          exec "$HERE/venera" "$@"
-          EOF
-          chmod +x VeneraPrime.AppDir/AppRun
-          APP_VERSION=$(grep '^version:' pubspec.yaml | cut -d':' -f2 | tr -d ' ' | cut -d'+' -f1)
-          mkdir -p build/linux/appimage
-          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool VeneraPrime.AppDir "build/linux/appimage/Venera-Prime-${APP_VERSION}-x86_64.AppImage"
+          bash tool/build_appimage.sh x86_64
       - uses: actions/upload-artifact@v4
         with:
           name: appimage_build
-          path: build/linux/appimage/
+          path: build/linux/appimage/Venera-Prime-*.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: deb_build
@@ -342,7 +318,7 @@ jobs:
       - run: |
           flutter pub get
           sudo apt-get update -y
-          sudo apt-get install -y ninja-build libgtk-3-dev webkit2gtk-4.1
+          sudo apt-get install -y ninja-build libgtk-3-dev libwebkit2gtk-4.1-dev
           dart pub global activate -s git https://github.com/venera-app/flutter_to_debian.git
       - name: "Patch font"
         run: |
@@ -351,35 +327,11 @@ jobs:
       - name: Build AppImage
         run: |
           sudo apt-get install -y libfuse2
-          curl -L --fail -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage
-          chmod +x appimagetool
-          BUNDLE_DIR=$(find build/linux -type d -path '*/release/bundle' -print -quit)
-          test -n "$BUNDLE_DIR"
-          rm -rf VeneraPrime.AppDir
-          cp -a "$BUNDLE_DIR" VeneraPrime.AppDir
-          cat > VeneraPrime.AppDir/venera.desktop <<'EOF'
-          [Desktop Entry]
-          Name=Venera Prime
-          Exec=venera
-          Icon=venera
-          Type=Application
-          Categories=Utility;
-          EOF
-          cp assets/app_icon.png VeneraPrime.AppDir/venera.png
-          cat > VeneraPrime.AppDir/AppRun <<'EOF'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          export LD_LIBRARY_PATH="$HERE:${LD_LIBRARY_PATH:-}"
-          exec "$HERE/venera" "$@"
-          EOF
-          chmod +x VeneraPrime.AppDir/AppRun
-          APP_VERSION=$(grep '^version:' pubspec.yaml | cut -d':' -f2 | tr -d ' ' | cut -d'+' -f1)
-          mkdir -p build/linux/appimage
-          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool VeneraPrime.AppDir "build/linux/appimage/Venera-Prime-${APP_VERSION}-aarch64.AppImage"
+          bash tool/build_appimage.sh aarch64
       - uses: actions/upload-artifact@v4
         with:
           name: appimage_arm64_build
-          path: build/linux/appimage/
+          path: build/linux/appimage/Venera-Prime-*.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: deb_arm64_build
