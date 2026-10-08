@@ -227,6 +227,7 @@ Stream<UpdateProgress> updateFolder(
   bool Function()? shouldCancel,
   bool markNewUpdates = true,
 }) {
+  if (shouldCancel?.call() == true) return const Stream<UpdateProgress>.empty();
   _activeFolderChecks[folder]?.call();
   var canceled = false;
   void cancel() {

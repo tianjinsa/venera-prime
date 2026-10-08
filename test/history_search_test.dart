@@ -47,4 +47,24 @@ void main() {
     comic.time = DateTime(2026, 10, 7, 20, 30).toUtc();
     expect(comic.lastReadTime, '2026-10-07 20:30');
   });
+
+  test('history index preserves matching across saved metadata fields', () {
+    final comic = history();
+    final index = HistorySearchIndex([comic]);
+    for (final query in [
+      '',
+      '  ',
+      'LOST',
+      'lost AUTHOR',
+      'deleted-123',
+      'local',
+    ]) {
+      expect(index.search(query), [comic], reason: query);
+    }
+    expect(index.search('lost missing'), isEmpty);
+    comic.title = 'Updated title';
+    final refreshed = HistorySearchIndex([comic]);
+    expect(refreshed.search('updated AUTHOR'), [comic]);
+    expect(refreshed.search('lost'), isEmpty);
+  });
 }

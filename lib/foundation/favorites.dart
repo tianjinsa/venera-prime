@@ -1661,6 +1661,21 @@ class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
         .toList();
   }
 
+  void markAllAsRead() {
+    var folder = appdata.settings['followUpdatesFolder'];
+    if (folder is! String || folder.isEmpty || !existsFolder(folder)) {
+      return;
+    }
+    final table = _favoriteTable(folder);
+    _db.execute('''
+      UPDATE $table SET has_new_update = 0 WHERE has_new_update = 1;
+    ''');
+    if (_db.updatedRows > 0) {
+      notifyListeners();
+      updateFollowUpdatesUI();
+    }
+  }
+
   void markAsRead(String id, ComicType type) {
     var folder = appdata.settings['followUpdatesFolder'];
     if (folder is! String || folder.isEmpty || !existsFolder(folder)) {

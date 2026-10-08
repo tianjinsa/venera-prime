@@ -132,16 +132,18 @@ class History implements Comic {
   @override
   int get hashCode => Object.hash(id, type);
 
+  String get searchText => [
+    title,
+    subtitle,
+    id,
+    sourceKey,
+    type.comicSource?.name ?? '',
+  ].join('\n').toLowerCase();
+
   bool matchesQuery(String query) {
-    final words = query.trim().toLowerCase().split(RegExp(r'\s+'));
-    final text = [
-      title,
-      subtitle,
-      id,
-      sourceKey,
-      type.comicSource?.name ?? '',
-    ].join('\n').toLowerCase();
-    return words.every(text.contains);
+    final normalized = query.trim().toLowerCase();
+    if (normalized.isEmpty) return true;
+    return normalized.split(_historyQuerySeparator).every(searchText.contains);
   }
 
   String get lastReadTime {
@@ -189,6 +191,28 @@ class History implements Comic {
   @override
   Map<String, dynamic> toJson() {
     throw UnimplementedError();
+  }
+}
+
+final _historyQuerySeparator = RegExp(r'\s+');
+
+/// A searchable snapshot; rebuild it when saved history changes.
+class HistorySearchIndex {
+  HistorySearchIndex(List<History> histories)
+    : histories = List.unmodifiable(histories),
+      _texts = [for (final history in histories) history.searchText];
+
+  final List<History> histories;
+  final List<String> _texts;
+
+  List<History> search(String query) {
+    final normalized = query.trim().toLowerCase();
+    if (normalized.isEmpty) return histories;
+    final words = normalized.split(_historyQuerySeparator);
+    return [
+      for (var i = 0; i < histories.length; i++)
+        if (words.every(_texts[i].contains)) histories[i],
+    ];
   }
 }
 

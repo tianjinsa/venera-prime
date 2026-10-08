@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
@@ -16,44 +18,84 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   @override
   void initState() {
-    HistoryManager().addListener(onUpdate);
     super.initState();
+    _reloadHistory();
+    HistoryManager().addListener(onUpdate);
+    ComicSourceManager().addListener(onUpdate);
   }
 
   @override
   void dispose() {
     HistoryManager().removeListener(onUpdate);
+    ComicSourceManager().removeListener(onUpdate);
+    _searchTimer?.cancel();
+    _reloadTimer?.cancel();
+    searchController.dispose();
     super.dispose();
   }
 
   void onUpdate() {
-    setState(() {
-      comics = _filteredHistory();
-      if (multiSelectMode) {
-        selectedComics.removeWhere((comic, _) => !comics.contains(comic));
-        if (selectedComics.isEmpty) {
-          multiSelectMode = false;
-        }
-      }
+    // Cover refreshes can notify once per visible comic. Read one snapshot
+    // for the burst instead of reloading the database for every notification.
+    _reloadTimer ??= Timer(const Duration(milliseconds: 100), () {
+      _reloadTimer = null;
+      setState(_reloadHistory);
     });
   }
 
-  var comics = HistoryManager().getAll();
+  void _reloadHistory() {
+    _searchIndex = HistorySearchIndex(HistoryManager().getAll());
+    comics = _searchIndex.search(query);
+    if (multiSelectMode) {
+      final remaining = comics.toSet();
+      selectedComics.removeWhere((comic, _) => !remaining.contains(comic));
+      if (selectedComics.isEmpty) {
+        multiSelectMode = false;
+      }
+    }
+  }
+
+  late HistorySearchIndex _searchIndex;
+  List<History> comics = [];
   var controller = FlyoutController();
-  final searchController = SearchBarController();
+  final searchController = TextEditingController();
+  Timer? _searchTimer;
+  Timer? _reloadTimer;
+  bool searchMode = false;
   String query = '';
 
-  List<History> _filteredHistory() => HistoryManager()
-      .getAll()
-      .where((comic) => comic.matchesQuery(query))
-      .toList();
-
   void _search(String value) {
+    _searchTimer?.cancel();
     setState(() {
       query = value;
-      comics = _filteredHistory();
       selectedComics.clear();
       multiSelectMode = false;
+      if (query.trim().isEmpty) comics = _searchIndex.histories;
+    });
+    if (query.trim().isEmpty) return;
+    _searchTimer = Timer(const Duration(milliseconds: 200), () {
+      _searchTimer = null;
+      setState(() => comics = _searchIndex.search(query));
+    });
+  }
+
+  void _closeSearch() {
+    _searchTimer?.cancel();
+    searchController.clear();
+    FocusScope.of(context).unfocus();
+    setState(() {
+      searchMode = false;
+      query = '';
+      comics = _searchIndex.histories;
+    });
+  }
+
+  void _enterMultiSelect() {
+    _searchTimer?.cancel();
+    FocusScope.of(context).unfocus();
+    setState(() {
+      comics = _searchIndex.search(query);
+      multiSelectMode = true;
     });
   }
 
@@ -191,6 +233,11 @@ class _HistoryPageState extends State<HistoryPage> {
 
     List<Widget> normalActions = [
       IconButton(
+        icon: const Icon(Icons.search),
+        tooltip: 'Search'.tl,
+        onPressed: () => setState(() => searchMode = true),
+      ),
+      IconButton(
         icon: const Icon(Icons.refresh),
         tooltip: 'Refresh All Histories'.tl,
         onPressed: _refreshAllHistories,
@@ -198,11 +245,7 @@ class _HistoryPageState extends State<HistoryPage> {
       IconButton(
         icon: const Icon(Icons.checklist),
         tooltip: multiSelectMode ? "Exit Multi-Select".tl : "Multi-Select".tl,
-        onPressed: () {
-          setState(() {
-            multiSelectMode = !multiSelectMode;
-          });
-        },
+        onPressed: _enterMultiSelect,
       ),
       Tooltip(
         message: 'Clear History'.tl,
@@ -242,14 +285,34 @@ class _HistoryPageState extends State<HistoryPage> {
       ),
     ];
 
+    final searchActions = [
+      if (query.isNotEmpty)
+        IconButton(
+          icon: const Icon(Icons.clear),
+          tooltip: 'Clear'.tl,
+          onPressed: () {
+            searchController.clear();
+            _search('');
+          },
+        ),
+      IconButton(
+        icon: const Icon(Icons.checklist),
+        tooltip: 'Multi-Select'.tl,
+        onPressed: _enterMultiSelect,
+      ),
+    ];
+
     return PopScope(
-      canPop: !multiSelectMode,
+      canPop: !multiSelectMode && !searchMode,
       onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
         if (multiSelectMode) {
           setState(() {
             multiSelectMode = false;
             selectedComics.clear();
           });
+        } else if (searchMode) {
+          _closeSearch();
         }
       },
       child: Scaffold(
@@ -257,7 +320,9 @@ class _HistoryPageState extends State<HistoryPage> {
           slivers: [
             SliverAppbar(
               leading: Tooltip(
-                message: multiSelectMode ? "Cancel".tl : "Back".tl,
+                message: multiSelectMode || searchMode
+                    ? "Cancel".tl
+                    : "Back".tl,
                 child: IconButton(
                   onPressed: () {
                     if (multiSelectMode) {
@@ -265,21 +330,36 @@ class _HistoryPageState extends State<HistoryPage> {
                         multiSelectMode = false;
                         selectedComics.clear();
                       });
+                    } else if (searchMode) {
+                      _closeSearch();
                     } else {
                       context.pop();
                     }
                   },
-                  icon: multiSelectMode
+                  icon: multiSelectMode || searchMode
                       ? const Icon(Icons.close)
                       : const Icon(Icons.arrow_back),
                 ),
               ),
               title: multiSelectMode
                   ? Text(selectedComics.length.toString())
+                  : searchMode
+                  ? TextField(
+                      controller: searchController,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        hintText: 'Search'.tl,
+                        border: InputBorder.none,
+                      ),
+                      onChanged: _search,
+                    )
                   : Text('History'.tl),
-              actions: multiSelectMode ? selectActions : normalActions,
+              actions: multiSelectMode
+                  ? selectActions
+                  : searchMode
+                  ? searchActions
+                  : normalActions,
             ),
-            SliverSearchBar(controller: searchController, onChanged: _search),
             SliverGridComics(
               comics: comics,
               selections: selectedComics,

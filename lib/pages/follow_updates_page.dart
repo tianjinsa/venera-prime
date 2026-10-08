@@ -437,13 +437,7 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
                         title: "Mark all as read".tl,
                         content: "Do you want to mark all as read?".tl,
                         onConfirm: () {
-                          for (var comic in updatedComics) {
-                            LocalFavoritesManager().markAsRead(
-                              comic.id,
-                              comic.type,
-                            );
-                          }
-                          updateFollowUpdatesUI();
+                          LocalFavoritesManager().markAllAsRead();
                           appdata.saveData();
                         },
                       );
@@ -762,12 +756,13 @@ abstract class FollowUpdatesService {
 
     _isChecking = true;
 
-    while (DataSync().isDownloading) {
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-
     int updated = 0;
     try {
+      while (DataSync().isDownloading) {
+        if (isCanceled) return;
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+      if (isCanceled) return;
       await for (var progress in updateFolder(
         folder,
         false,
