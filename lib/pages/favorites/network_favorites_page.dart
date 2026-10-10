@@ -96,6 +96,7 @@ class _NormalFavoritePageState extends State<_NormalFavoritePage> {
         .findAncestorStateOfType<_FavoritesPageState>()!;
     return ComicList(
       key: comicListKey,
+      filterBlockedComics: false,
       leadingSliver: SliverAppbar(
         style:
             context.width < changePoint ? AppbarStyle.shadow : AppbarStyle.blur,
@@ -559,6 +560,7 @@ class _FavoriteFolder extends StatelessWidget {
     return ComicList(
       key: comicListKey,
       enablePageStorage: true,
+      filterBlockedComics: false,
       leadingSliver: SliverAppbar(
         title: Text(title),
         actions: [

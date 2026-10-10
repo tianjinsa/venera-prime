@@ -238,6 +238,8 @@ class AgentShowcasePanel extends StatelessWidget {
   );
 
   Widget _grid(BuildContext context, AgentShowcase group) {
+    // These are explicitly requested results. Preserve the complete group,
+    // including items that match the discovery pages' block rules.
     final detailed = appdata.settings['comicDisplayMode'] == 'detailed';
     return SliverPadding(
       padding: const EdgeInsets.all(4),

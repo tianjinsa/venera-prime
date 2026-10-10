@@ -164,6 +164,7 @@ class _ReadLaterPageState extends State<ReadLaterPage> {
             ),
             SliverGridComics(
               comics: comics,
+              filterBlockedComics: false,
               selections: selected,
               onLongPressed: (comic, _) => setState(() {
                 selecting = true;

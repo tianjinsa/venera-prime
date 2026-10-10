@@ -840,6 +840,7 @@ class SliverGridComics extends StatefulWidget {
     this.onLongPressed,
     this.selections,
     this.listenToHistoryChanges = true,
+    this.filterBlockedComics = true,
     this.filterBlockedWords = true,
   });
 
@@ -847,6 +848,9 @@ class SliverGridComics extends StatefulWidget {
 
   /// Disable when the parent already reloads history and passes a new list.
   final bool listenToHistoryChanges;
+
+  /// User-managed collections can bypass both keyword and author block rules.
+  final bool filterBlockedComics;
 
   /// History can show previously read comics without reapplying keyword rules.
   final bool filterBlockedWords;
@@ -872,7 +876,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> _sourceComics = [];
   List<int> heroIDs = [];
   Map<int, int> _heroIndexes = {};
-  late ComicBlockFilter _blockFilter;
+  ComicBlockFilter? _blockFilter;
 
   static int _nextHeroID = 0;
 
@@ -881,13 +885,14 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       for (var i = 0; i < comics.length; i++) comics[i]: heroIDs[i],
     };
     _sourceComics = List.of(widget.comics);
-    _blockFilter = _currentBlockFilter();
+    _blockFilter = widget.filterBlockedComics ? _currentBlockFilter() : null;
     comics = [
       for (final comic in _sourceComics)
-        if (!_blockFilter.blocks(
-          comic,
-          filterBlockedWords: widget.filterBlockedWords,
-        ))
+        if (_blockFilter == null ||
+            !_blockFilter!.blocks(
+              comic,
+              filterBlockedWords: widget.filterBlockedWords,
+            ))
           comic,
     ];
     heroIDs = [for (final comic in comics) previousIDs[comic] ?? _nextHeroID++];
@@ -899,8 +904,10 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     // History equality intentionally ignores mutable metadata such as cover
     // and title. A new list from HistoryPage must still replace the tile
     // objects so their image-provider keys use the refreshed cover URL.
-    if (oldWidget.filterBlockedWords != widget.filterBlockedWords ||
-        !identical(_blockFilter, _currentBlockFilter()) ||
+    if (oldWidget.filterBlockedComics != widget.filterBlockedComics ||
+        oldWidget.filterBlockedWords != widget.filterBlockedWords ||
+        (widget.filterBlockedComics &&
+            !identical(_blockFilter, _currentBlockFilter())) ||
         !identical(oldWidget.comics, widget.comics) ||
         !_sourceComics.isEqualTo(widget.comics)) {
       _refreshComics();
@@ -1049,6 +1056,7 @@ class ComicList extends StatefulWidget {
     this.controller,
     this.refreshHandlerCallback,
     this.enablePageStorage = false,
+    this.filterBlockedComics = true,
   });
 
   final Future<Res<List<Comic>>> Function(int page)? loadPage;
@@ -1068,6 +1076,9 @@ class ComicList extends StatefulWidget {
   final void Function(VoidCallback c)? refreshHandlerCallback;
 
   final bool enablePageStorage;
+
+  /// Applies to both paged and continuous layouts.
+  final bool filterBlockedComics;
 
   @override
   State<ComicList> createState() => ComicListState();
@@ -1351,6 +1362,7 @@ class ComicListState extends State<ComicList> {
         if (_maxPage != 1) _buildSliverPageSelector(),
         SliverGridComics(
           comics: _data[_page] ?? const [],
+          filterBlockedComics: widget.filterBlockedComics,
           menuBuilder: widget.menuBuilder,
         ),
         if (_data[_page]!.length > 6 && _maxPage != 1)
@@ -1396,6 +1408,7 @@ class ComicListState extends State<ComicList> {
         if (widget.leadingSliver != null) widget.leadingSliver!,
         SliverGridComics(
           comics: _data.values.expand((element) => element).toList(),
+          filterBlockedComics: widget.filterBlockedComics,
           menuBuilder: widget.menuBuilder,
           onLastItemBuild: () {
             if (_error == null &&

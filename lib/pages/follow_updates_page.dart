@@ -455,7 +455,7 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
             ).paddingHorizontal(16).paddingVertical(4),
           ),
         if (updatedComics.isNotEmpty)
-          SliverGridComics(comics: updatedComics)
+          SliverGridComics(comics: updatedComics, filterBlockedComics: false)
         else
           SliverToBoxAdapter(
             child: Row(
@@ -509,7 +509,7 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
             ),
           ),
         ),
-        SliverGridComics(comics: allComics),
+        SliverGridComics(comics: allComics, filterBlockedComics: false),
       ],
     );
   }

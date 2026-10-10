@@ -684,6 +684,7 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
         else
           SliverGridComics(
             comics: searchMode ? searchResults : filterComics(comics),
+            filterBlockedComics: false,
             selections: selectedComics,
             menuBuilder: (c) {
               return [

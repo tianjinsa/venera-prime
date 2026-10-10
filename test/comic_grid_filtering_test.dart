@@ -7,6 +7,7 @@ import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/res.dart';
 import 'package:venera/utils/translations.dart';
 
 import 'support/comic_image_fixture.dart';
@@ -73,12 +74,22 @@ void main() {
     appdata.restoreMemorySnapshot(settings);
   });
 
-  Future<void> mount(WidgetTester tester) async {
+  Future<void> mount(
+    WidgetTester tester, {
+    bool filterBlockedComics = true,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         navigatorKey: App.rootNavigatorKey,
         home: Scaffold(
-          body: CustomScrollView(slivers: [SliverGridComics(comics: comics)]),
+          body: CustomScrollView(
+            slivers: [
+              SliverGridComics(
+                comics: comics,
+                filterBlockedComics: filterBlockedComics,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -110,4 +121,38 @@ void main() {
     expect(visibleIds(tester), ['word', 'author']);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('a saved list can bypass both rules and restore filtering', (
+    tester,
+  ) async {
+    addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+    await mount(tester, filterBlockedComics: false);
+    expect(visibleIds(tester), ['word', 'author', 'visible']);
+    await mount(tester);
+    expect(visibleIds(tester), ['visible']);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final mode in ['paging', 'continuous']) {
+    testWidgets('saved ComicList bypasses both rules in $mode mode', (
+      tester,
+    ) async {
+      addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+      appdata.settings['comicListDisplayMode'] = mode;
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: App.rootNavigatorKey,
+          home: Scaffold(
+            body: ComicList(
+              filterBlockedComics: false,
+              loadPage: (_) async => Res(comics, subData: 1),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(visibleIds(tester), ['word', 'author', 'visible']);
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

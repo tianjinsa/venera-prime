@@ -67,6 +67,10 @@ void main() {
         final previousFolder = appdata.implicitData['favoriteFolder'];
         final previousFilter =
             appdata.implicitData['local_favorites_read_filter'];
+        final previousWords = appdata.settings['blockedWords'];
+        final previousAuthors = appdata.settings['blockedAuthors'];
+        appdata.settings['blockedWords'] = ['Comic'];
+        appdata.settings['blockedAuthors'] = ['Author'];
         appdata.settings['showFavoriteStatusOnTile'] = false;
         appdata.settings['showHistoryStatusOnTile'] = false;
         appdata.implicitData['favoriteFolder'] = {
@@ -122,6 +126,8 @@ void main() {
           final grid = tester.widget<SliverGridComics>(
             find.byType(SliverGridComics),
           );
+          expect(grid.filterBlockedComics, isFalse);
+          expect(find.byType(ComicTile), findsWidgets);
           final firstHero = tester
               .widget<ComicTile>(find.byType(ComicTile).first)
               .heroID;
@@ -152,6 +158,8 @@ void main() {
           appdata.settings['showHistoryStatusOnTile'] = previousStatus;
           appdata.implicitData['favoriteFolder'] = previousFolder;
           appdata.implicitData['local_favorites_read_filter'] = previousFilter;
+          appdata.settings['blockedWords'] = previousWords;
+          appdata.settings['blockedAuthors'] = previousAuthors;
           PaintingBinding.instance.imageCache.clear();
           image.dispose();
         }
