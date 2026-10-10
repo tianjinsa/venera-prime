@@ -588,7 +588,7 @@ class ComicTile extends StatelessWidget {
                     appdata.saveData();
                     context.showMessage(message: 'Blocked'.tl);
                     comicTileContext
-                        .findAncestorStateOfType<_SliverGridComicsState>()!
+                        .findAncestorStateOfType<SliverGridComicsState>()!
                         .update();
                   },
                   child: Text('Block'.tl),
@@ -868,10 +868,10 @@ class SliverGridComics extends StatefulWidget {
   final void Function(Comic, int heroID)? onLongPressed;
 
   @override
-  State<SliverGridComics> createState() => _SliverGridComicsState();
+  State<SliverGridComics> createState() => SliverGridComicsState();
 }
 
-class _SliverGridComicsState extends State<SliverGridComics> {
+class SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> comics = [];
   List<Comic> _sourceComics = [];
   List<int> heroIDs = [];
@@ -879,6 +879,20 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   ComicBlockFilter? _blockFilter;
 
   static int _nextHeroID = 0;
+
+  /// Read the rendered list's first visible item without repeating filtering.
+  Comic? get firstVisibleComic {
+    final grid = context.findRenderObject();
+    if (grid is! RenderSliverGrid || grid.geometry == null || comics.isEmpty) {
+      return null;
+    }
+    final layout = grid.gridDelegate.getLayout(grid.constraints);
+    final offset = grid.constraints.scrollOffset + grid.constraints.overlap;
+    final index = layout.getMinChildIndexForScrollOffset(
+      offset.clamp(0.0, double.infinity),
+    );
+    return comics[index.clamp(0, comics.length - 1)];
+  }
 
   void _refreshComics() {
     final previousIDs = {

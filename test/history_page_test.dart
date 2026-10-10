@@ -255,6 +255,8 @@ void main() {
       await mount(tester, pushRoute: true);
       expect(find.byType(TextField), findsNothing);
       await openSearch(tester);
+      expect(find.byType(BackButton), findsNothing);
+      expect(find.byType(SliverSearchBar), findsNothing);
       await tester.enterText(find.byType(TextField), 'lost');
       await tester.pump(const Duration(milliseconds: 250));
       expect(visibleIds(tester), ['lost']);
@@ -433,6 +435,88 @@ void main() {
       expect(records.last.tagReads, 0);
       expect(records.last.descriptionReads, 0);
       expect(records.fold(0, (sum, comic) => sum + comic.searchReads), 0);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final mode in ['detailed', 'brief']) {
+    testWidgets('dated scrollbar follows paged and filtered history ($mode)', (
+      tester,
+    ) async {
+      appdata.settings['comicDisplayMode'] = mode;
+      appdata.settings['blockedWords'] = ['Comic'];
+      appdata.settings['blockedAuthors'] = ['Hidden'];
+      final records = List.generate(
+        240,
+        (i) => _CountedHistory('dated-$i')
+          ..subtitle = i % 3 == 0 ? 'Hidden' : 'Author'
+          ..time = DateTime(2026, 10, 10).subtract(Duration(days: i)),
+      );
+      history.records = records;
+      images.cache(
+        records,
+        thumbnailSize: mode == 'detailed'
+            ? detailedThumbnailSize
+            : const Size(384, 512),
+      );
+      await mount(tester);
+      expect(visibleIds(tester), hasLength(60));
+      final scrollbar = tester.widget<AppScrollBar>(find.byType(AppScrollBar));
+      expect(
+        scrollbar.dragLabelBuilder!(),
+        records[1].lastReadTime.split(' ').first,
+      );
+      final tagReads = records.fold(0, (sum, comic) => sum + comic.tagReads);
+      final descriptionReads = records.fold(
+        0,
+        (sum, comic) => sum + comic.descriptionReads,
+      );
+      for (var i = 0; i < 100; i++) {
+        scrollbar.dragLabelBuilder!();
+      }
+      expect(records.fold(0, (sum, comic) => sum + comic.tagReads), tagReads);
+      expect(
+        records.fold(0, (sum, comic) => sum + comic.descriptionReads),
+        descriptionReads,
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byIcon(Icons.arrow_drop_down)),
+      );
+      await gesture.moveBy(const Offset(0, 30));
+      await tester.pump();
+      await gesture.moveBy(const Offset(0, 2000));
+      await tester.pumpAndSettle();
+      expect(scrollbar.controller.offset, greaterThan(0));
+      expect(visibleIds(tester), hasLength(120));
+      expect(history.limits, everyElement(60));
+      final label = scrollbar.dragLabelBuilder!()!;
+      expect(find.text(label), findsOneWidget);
+      final viewport = tester.getRect(find.byType(AppScrollBar));
+      final visibleDates = tester
+          .widgetList<ComicTile>(find.byType(ComicTile))
+          .where((tile) {
+            final rect = tester.getRect(find.byWidget(tile));
+            return rect.bottom > viewport.top + scrollbar.topPadding &&
+                rect.top < viewport.bottom;
+          })
+          .map((tile) => (tile.comic as History).lastReadTime.split(' ').first);
+      expect(visibleDates, contains(label));
+      expect(records.last.tagReads, 0);
+      expect(records.last.descriptionReads, 0);
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.text(label), findsNothing);
+
+      await openSearch(tester);
+      await tester.enterText(find.byType(TextField), 'dated-239');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pumpAndSettle();
+      expect(visibleIds(tester), ['dated-239']);
+      expect(
+        scrollbar.dragLabelBuilder!(),
+        records.last.lastReadTime.split(' ').first,
+      );
       expect(tester.takeException(), isNull);
     });
   }

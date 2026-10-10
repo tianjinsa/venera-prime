@@ -18,6 +18,12 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   late final _pager = HistoryPager(manager: HistoryManager());
   final _scrollController = ScrollController();
+  final _gridKey = GlobalKey<SliverGridComicsState>();
+
+  String? _dragDate() {
+    final comic = _gridKey.currentState?.firstVisibleComic;
+    return comic is History ? comic.lastReadTime.split(' ').first : null;
+  }
 
   @override
   void initState() {
@@ -383,117 +389,124 @@ class _HistoryPageState extends State<HistoryPage> {
         }
       },
       child: Scaffold(
-        body: NotificationListener<ScrollMetricsNotification>(
-          onNotification: (_) {
-            WidgetsBinding.instance.addPostFrameCallback(
-              (_) => _maybeLoadMore(),
-            );
-            return false;
-          },
-          child: SmoothCustomScrollView(
-            controller: _scrollController,
-            slivers: [
-              SliverAppbar(
-                leading: Tooltip(
-                  message: multiSelectMode || searchMode
-                      ? "Cancel".tl
-                      : "Back".tl,
-                  child: IconButton(
-                    onPressed: () {
-                      if (multiSelectMode) {
-                        _exitMultiSelect();
-                      } else if (searchMode) {
-                        _closeSearch();
-                      } else {
-                        context.pop();
-                      }
-                    },
-                    icon: multiSelectMode || searchMode
-                        ? const Icon(Icons.close)
-                        : const Icon(Icons.arrow_back),
+        body: AppScrollBar(
+          controller: _scrollController,
+          topPadding: MediaQuery.paddingOf(context).top + 52,
+          dragLabelBuilder: _dragDate,
+          child: NotificationListener<ScrollMetricsNotification>(
+            onNotification: (_) {
+              WidgetsBinding.instance.addPostFrameCallback(
+                (_) => _maybeLoadMore(),
+              );
+              return false;
+            },
+            child: SmoothCustomScrollView(
+              controller: _scrollController,
+              slivers: [
+                SliverAppbar(
+                  leading: Tooltip(
+                    message: multiSelectMode || searchMode
+                        ? "Cancel".tl
+                        : "Back".tl,
+                    child: IconButton(
+                      onPressed: () {
+                        if (multiSelectMode) {
+                          _exitMultiSelect();
+                        } else if (searchMode) {
+                          _closeSearch();
+                        } else {
+                          context.pop();
+                        }
+                      },
+                      icon: multiSelectMode || searchMode
+                          ? const Icon(Icons.close)
+                          : const Icon(Icons.arrow_back),
+                    ),
                   ),
+                  title: multiSelectMode
+                      ? Text(selectedComics.length.toString())
+                      : searchMode
+                      ? TextField(
+                          controller: searchController,
+                          autofocus: true,
+                          decoration: InputDecoration(
+                            hintText: 'Search'.tl,
+                            border: InputBorder.none,
+                          ),
+                          onChanged: _search,
+                        )
+                      : Text('History'.tl),
+                  actions: multiSelectMode
+                      ? selectActions
+                      : searchMode
+                      ? searchActions
+                      : normalActions,
                 ),
-                title: multiSelectMode
-                    ? Text(selectedComics.length.toString())
-                    : searchMode
-                    ? TextField(
-                        controller: searchController,
-                        autofocus: true,
-                        decoration: InputDecoration(
-                          hintText: 'Search'.tl,
-                          border: InputBorder.none,
-                        ),
-                        onChanged: _search,
-                      )
-                    : Text('History'.tl),
-                actions: multiSelectMode
-                    ? selectActions
-                    : searchMode
-                    ? searchActions
-                    : normalActions,
-              ),
-              SliverGridComics(
-                comics: comics,
-                listenToHistoryChanges: false,
-                filterBlockedWords: false,
-                selections: {
-                  for (final comic in comics)
-                    if (selectedComics.contains(_identity(comic))) comic: true,
-                },
-                onLongPressed: null,
-                onTap: multiSelectMode
-                    ? (c, heroID) {
-                        setState(() {
-                          _selectionRequest++;
-                          _selectingAll = false;
-                          final identity = _identity(c as History);
-                          if (selectedComics.contains(identity)) {
-                            selectedComics.remove(identity);
-                          } else {
-                            selectedComics.add(identity);
-                          }
-                          if (selectedComics.isEmpty) {
-                            multiSelectMode = false;
-                          }
-                        });
-                      }
-                    : null,
-                badgeBuilder: (c) {
-                  return ComicSource.find(c.sourceKey)?.name;
-                },
-                menuBuilder: (c) {
-                  return [
-                    MenuEntry(
-                      icon: Icons.refresh,
-                      text: 'Refresh Info'.tl,
-                      onClick: () {
-                        _refreshHistory(c as History);
-                      },
+                SliverGridComics(
+                  key: _gridKey,
+                  comics: comics,
+                  listenToHistoryChanges: false,
+                  filterBlockedWords: false,
+                  selections: {
+                    for (final comic in comics)
+                      if (selectedComics.contains(_identity(comic)))
+                        comic: true,
+                  },
+                  onLongPressed: null,
+                  onTap: multiSelectMode
+                      ? (c, heroID) {
+                          setState(() {
+                            _selectionRequest++;
+                            _selectingAll = false;
+                            final identity = _identity(c as History);
+                            if (selectedComics.contains(identity)) {
+                              selectedComics.remove(identity);
+                            } else {
+                              selectedComics.add(identity);
+                            }
+                            if (selectedComics.isEmpty) {
+                              multiSelectMode = false;
+                            }
+                          });
+                        }
+                      : null,
+                  badgeBuilder: (c) {
+                    return ComicSource.find(c.sourceKey)?.name;
+                  },
+                  menuBuilder: (c) {
+                    return [
+                      MenuEntry(
+                        icon: Icons.refresh,
+                        text: 'Refresh Info'.tl,
+                        onClick: () {
+                          _refreshHistory(c as History);
+                        },
+                      ),
+                      MenuEntry(
+                        icon: Icons.remove,
+                        text: 'Remove'.tl,
+                        color: context.colorScheme.error,
+                        onClick: () {
+                          _removeHistory(c as History);
+                        },
+                      ),
+                    ];
+                  },
+                ),
+                if (_pager.error != null)
+                  SliverToBoxAdapter(
+                    child: Center(
+                      child: TextButton.icon(
+                        onPressed: () => unawaited(_pager.retry()),
+                        icon: const Icon(Icons.refresh),
+                        label: Text('Retry'.tl),
+                      ),
                     ),
-                    MenuEntry(
-                      icon: Icons.remove,
-                      text: 'Remove'.tl,
-                      color: context.colorScheme.error,
-                      onClick: () {
-                        _removeHistory(c as History);
-                      },
-                    ),
-                  ];
-                },
-              ),
-              if (_pager.error != null)
-                SliverToBoxAdapter(
-                  child: Center(
-                    child: TextButton.icon(
-                      onPressed: () => unawaited(_pager.retry()),
-                      icon: const Icon(Icons.refresh),
-                      label: Text('Retry'.tl),
-                    ),
-                  ),
-                )
-              else if (_pager.loading)
-                const SliverListLoadingIndicator(),
-            ],
+                  )
+                else if (_pager.loading)
+                  const SliverListLoadingIndicator(),
+              ],
+            ),
           ),
         ),
       ),
