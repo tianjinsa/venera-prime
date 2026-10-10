@@ -49,6 +49,14 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
   }
 
   @override
+  void dispose() {
+    _previousEvent = null;
+    _lastTapPointer = null;
+    _tapGestureRecognizer.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -72,7 +80,7 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
           _dragInProgress = false;
         }
         Future.delayed(_kLongPressMinTime, () {
-          if (_lastTapPointer == event.pointer && fingers == 1) {
+          if (mounted && _lastTapPointer == event.pointer && fingers == 1) {
             if (_lastTapMoveDistance!.distanceSquared < 20.0 * 20.0) {
               onLongPressedDown(event.position);
               _longPressInProgress = true;
@@ -191,7 +199,7 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
     }
     _previousEvent = event;
     Future.delayed(_kDoubleTapMaxTime, () {
-      if (_previousEvent == event) {
+      if (mounted && _previousEvent == event) {
         onTap(location);
         _previousEvent = null;
       }
@@ -199,7 +207,9 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
   }
 
   void onTap(Offset location) {
-    if (reader._imageViewController!.handleOnTap(location)) {
+    final controller = reader._imageViewController;
+    if (!mounted || controller == null) return;
+    if (controller.handleOnTap(location)) {
       return;
     } else if (context.readerScaffold.isOpen) {
       context.readerScaffold.openOrClose();

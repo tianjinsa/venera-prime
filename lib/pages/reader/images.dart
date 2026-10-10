@@ -843,6 +843,7 @@ class _ContinuousModeState extends State<_ContinuousMode>
     scrollController
         .animateTo(_futurePosition!, duration: duration, curve: Curves.linear)
         .then((_) {
+          if (!mounted || !scrollController.hasClients) return;
           var current = scrollController.position.pixels;
           if (current == target && current == _futurePosition) {
             _futurePosition = null;

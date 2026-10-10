@@ -1039,13 +1039,14 @@ class _BatteryWidgetState extends State<_BatteryWidget> {
     try {
       _batteryLevel = await _battery.batteryLevel;
       state = await _battery.batteryState;
+      if (!mounted) return;
       if (_batteryLevel > 0 && state != BatteryState.unknown) {
         setState(() {
           _hasBattery = true;
         });
         _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
           _battery.batteryLevel.then((level) {
-            if (_batteryLevel != level) {
+            if (mounted && _batteryLevel != level) {
               setState(() {
                 _batteryLevel = level;
               });

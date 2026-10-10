@@ -45,6 +45,7 @@ void main() {
       );
       appdata.settings['readerMode'] = 'continuousTopToBottom';
       appdata.settings['enablePageAnimation'] = true;
+      appdata.settings['enableDoubleTapToZoom'] = true;
       appdata.settings['limitImageWidth'] = true;
       appdata.settings['enableClockAndBatteryInfoInReader'] = false;
       appdata.settings['enableTurnPageByVolumeKey'] = false;
@@ -176,6 +177,8 @@ void main() {
       // the in-memory History object shared with the reader.
       tester.widget<CustomSlider>(find.byType(CustomSlider)).onChanged(23);
       await tester.pump(const Duration(milliseconds: 300));
+      // A pending single-tap decision must not act on the disposed reader.
+      await tester.tapAt(const Offset(500, 300));
       await tester.pumpWidget(
         MaterialApp(
           navigatorKey: App.rootNavigatorKey,
@@ -190,6 +193,7 @@ void main() {
       HistoryManager().addListener(onLateHistoryChange);
       await tester.pump(const Duration(seconds: 2));
       expect(lateNotifications, 0);
+      expect(tester.takeException(), isNull);
       HistoryManager().removeListener(onLateHistoryChange);
       PaintingBinding.instance.imageCache.clear();
       PaintingBinding.instance.imageCache.clearLiveImages();
