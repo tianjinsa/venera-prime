@@ -67,6 +67,22 @@ void main() {
     expect(isBlocked(comic(title: 'other')), isNull);
   });
 
+  test('keyword filtering can be skipped without disabling author rules', () {
+    appdata.settings['blockedWords'] = <String>['blocked'];
+    expect(
+      isBlocked(comic(title: 'blocked'), filterBlockedWords: false),
+      isNull,
+    );
+    expect(
+      isBlocked(
+        comic(title: 'blocked', author: 'sun'),
+        filterBlockedWords: false,
+      ),
+      'sun',
+    );
+    expect(isBlocked(comic(title: 'blocked')), 'blocked');
+  });
+
   test(
     'removing an author rule restores comics without deleting keyword rules',
     () {

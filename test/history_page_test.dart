@@ -68,6 +68,13 @@ class _CountedHistory extends History {
 
   int searchReads = 0;
   int tagReads = 0;
+  int descriptionReads = 0;
+
+  @override
+  String get description {
+    descriptionReads++;
+    return super.description;
+  }
 
   @override
   String get searchText {
@@ -164,6 +171,30 @@ void main() {
     await tester.tap(find.byTooltip('Search'));
     await tester.pumpAndSettle();
   }
+
+  testWidgets('history displays keyword matches and still supports search', (
+    tester,
+  ) async {
+    appdata.settings['blockedWords'] = ['Lost', 'Beta', 'Chapter'];
+    await mount(tester);
+    expect(
+      tester
+          .widgetList<ComicTile>(find.byType(ComicTile))
+          .map((tile) => tile.comic.id),
+      containsAll(['lost', 'other', 'third']),
+    );
+
+    await openSearch(tester);
+    await tester.enterText(find.byType(TextField), 'lost');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(
+      tester
+          .widgetList<ComicTile>(find.byType(ComicTile))
+          .map((tile) => tile.comic.id),
+      ['lost'],
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'history search opens explicitly and back cancels a pending query',
@@ -307,6 +338,10 @@ void main() {
       addTearDown(tester.view.resetPhysicalSize);
       appdata.settings['comicDisplayMode'] = mode;
       appdata.settings['showHistoryStatusOnTile'] = true;
+      appdata.settings['blockedWords'] = List.generate(
+        300,
+        (i) => 'unrelated blocked keyword $i',
+      );
       final records = List.generate(1200, (i) => _CountedHistory('large-$i'));
       history.records = records;
       images.cache(
@@ -322,6 +357,7 @@ void main() {
       expect(records.fold(0, (sum, comic) => sum + comic.searchReads), 0);
       expect(find.byType(ComicTile).evaluate().length, lessThan(30));
       expect(records.last.tagReads, 1);
+      expect(records.last.descriptionReads, 0);
 
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -700));
       await tester.pumpAndSettle();
@@ -341,6 +377,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 150));
       expect(history.fullReads, 2);
       expect(records.last.tagReads, 2);
+      expect(records.last.descriptionReads, 0);
       expect(records.fold(0, (sum, comic) => sum + comic.searchReads), 0);
       expect(tester.takeException(), isNull);
     });

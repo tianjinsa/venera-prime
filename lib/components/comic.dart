@@ -832,12 +832,16 @@ class SliverGridComics extends StatefulWidget {
     this.onLongPressed,
     this.selections,
     this.listenToHistoryChanges = true,
+    this.filterBlockedWords = true,
   });
 
   final List<Comic> comics;
 
   /// Disable when the parent already reloads history and passes a new list.
   final bool listenToHistoryChanges;
+
+  /// History can show previously read comics without reapplying keyword rules.
+  final bool filterBlockedWords;
 
   final Map<Comic, bool>? selections;
 
@@ -870,7 +874,9 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     _sourceComics = List.of(widget.comics);
     comics = [
       for (final comic in _sourceComics)
-        if (isBlocked(comic) == null) comic,
+        if (isBlocked(comic, filterBlockedWords: widget.filterBlockedWords) ==
+            null)
+          comic,
     ];
     heroIDs = [for (final comic in comics) previousIDs[comic] ?? _nextHeroID++];
     _heroIndexes = {for (var i = 0; i < heroIDs.length; i++) heroIDs[i]: i};
@@ -881,7 +887,8 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     // History equality intentionally ignores mutable metadata such as cover
     // and title. A new list from HistoryPage must still replace the tile
     // objects so their image-provider keys use the refreshed cover URL.
-    if (!identical(oldWidget.comics, widget.comics) ||
+    if (oldWidget.filterBlockedWords != widget.filterBlockedWords ||
+        !identical(oldWidget.comics, widget.comics) ||
         !_sourceComics.isEqualTo(widget.comics)) {
       _refreshComics();
     }
@@ -1011,7 +1018,7 @@ class _SliverGridComics extends StatelessWidget {
 }
 
 /// return the first blocked keyword, or null if not blocked
-String? isBlocked(Comic item) {
+String? isBlocked(Comic item, {bool filterBlockedWords = true}) {
   final authors = _blockingAuthors(item);
   for (final author in appdata.settings['blockedAuthors']) {
     if (author is String &&
@@ -1020,6 +1027,7 @@ String? isBlocked(Comic item) {
       return author;
     }
   }
+  if (!filterBlockedWords) return null;
   for (var word in appdata.settings['blockedWords']) {
     if (item.title.contains(word)) {
       return word;
