@@ -178,7 +178,12 @@ class ComicTile extends StatelessWidget {
           )
         : false;
     var history = appdata.settings['showHistoryStatusOnTile']
-        ? HistoryManager().find(comic.id, ComicType(comic.sourceKey.hashCode))
+        ? (comic is History
+              ? comic as History
+              : HistoryManager().find(
+                  comic.id,
+                  ComicType(comic.sourceKey.hashCode),
+                ))
         : null;
     if (history?.page == 0) {
       history!.page = 1;
@@ -233,9 +238,38 @@ class ComicTile extends StatelessWidget {
   }
 
   Widget buildImage(BuildContext context) {
-    var image = _findImageProvider(comic);
+    final image = _findImageProvider(comic);
     if (image == null) {
       return const SizedBox();
+    }
+    if (comic is History) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+          // Bucket decode sizes so small layout changes reuse the same cache
+          // entry. Preserve the cover's aspect ratio and avoid upscaling.
+          int? decodeSize(double size) => size.isFinite && size > 0
+              ? (size * pixelRatio / 64).ceil() * 64
+              : null;
+          final width = decodeSize(constraints.maxWidth);
+          final height = decodeSize(constraints.maxHeight);
+          return AnimatedImage(
+            key: ValueKey((comic.sourceKey, comic.id)),
+            image: width == null && height == null
+                ? image
+                : ResizeImage(
+                    image,
+                    width: width,
+                    height: height,
+                    policy: ResizeImagePolicy.fit,
+                  ),
+            gaplessPlayback: true,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: double.infinity,
+          );
+        },
+      );
     }
     return AnimatedImage(
       image: image,
@@ -797,9 +831,13 @@ class SliverGridComics extends StatefulWidget {
     this.onTap,
     this.onLongPressed,
     this.selections,
+    this.listenToHistoryChanges = true,
   });
 
   final List<Comic> comics;
+
+  /// Disable when the parent already reloads history and passes a new list.
+  final bool listenToHistoryChanges;
 
   final Map<Comic, bool>? selections;
 
@@ -821,6 +859,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> comics = [];
   List<Comic> _sourceComics = [];
   List<int> heroIDs = [];
+  Map<int, int> _heroIndexes = {};
 
   static int _nextHeroID = 0;
 
@@ -834,6 +873,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
         if (isBlocked(comic) == null) comic,
     ];
     heroIDs = [for (final comic in comics) previousIDs[comic] ?? _nextHeroID++];
+    _heroIndexes = {for (var i = 0; i < heroIDs.length; i++) heroIDs[i]: i};
   }
 
   @override
@@ -851,13 +891,13 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   @override
   void initState() {
     _refreshComics();
-    HistoryManager().addListener(update);
+    HistoryManager().addListener(_onHistoryChanged);
     super.initState();
   }
 
   @override
   void dispose() {
-    HistoryManager().removeListener(update);
+    HistoryManager().removeListener(_onHistoryChanged);
     super.dispose();
   }
 
@@ -865,11 +905,19 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     setState(_refreshComics);
   }
 
+  void _onHistoryChanged() {
+    if (widget.listenToHistoryChanges) update();
+  }
+
+  int? _findChildIndex(Key key) =>
+      key is ValueKey<int> ? _heroIndexes[key.value] : null;
+
   @override
   Widget build(BuildContext context) {
     return _SliverGridComics(
       comics: comics,
       heroIDs: heroIDs,
+      findChildIndexCallback: _findChildIndex,
       selection: widget.selections,
       onLastItemBuild: widget.onLastItemBuild,
       badgeBuilder: widget.badgeBuilder,
@@ -884,6 +932,7 @@ class _SliverGridComics extends StatelessWidget {
   const _SliverGridComics({
     required this.comics,
     required this.heroIDs,
+    required this.findChildIndexCallback,
     this.onLastItemBuild,
     this.badgeBuilder,
     this.menuBuilder,
@@ -895,6 +944,8 @@ class _SliverGridComics extends StatelessWidget {
   final List<Comic> comics;
 
   final List<int> heroIDs;
+
+  final int? Function(Key) findChildIndexCallback;
 
   final Map<Comic, bool>? selection;
 
@@ -911,44 +962,49 @@ class _SliverGridComics extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SliverGrid(
-      delegate: SliverChildBuilderDelegate((context, index) {
-        if (index == comics.length - 1) {
-          onLastItemBuild?.call();
-        }
-        var badge = badgeBuilder?.call(comics[index]);
-        var isSelected = selection == null
-            ? false
-            : selection![comics[index]] ?? false;
-        var comic = ComicTile(
-          comic: comics[index],
-          badge: badge,
-          menuOptions: menuBuilder?.call(comics[index]),
-          onTap: onTap != null
-              ? () => onTap!(comics[index], heroIDs[index])
-              : null,
-          onLongPressed: onLongPressed != null
-              ? () => onLongPressed!(comics[index], heroIDs[index])
-              : null,
-          heroID: heroIDs[index],
-        );
-        if (selection == null) {
-          return comic;
-        }
-        return AnimatedContainer(
-          key: ValueKey(comics[index].id),
-          duration: const Duration(milliseconds: 150),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? Theme.of(
-                    context,
-                  ).colorScheme.secondaryContainer.toOpacity(0.72)
+      delegate: SliverChildBuilderDelegate(
+        (context, index) {
+          if (index == comics.length - 1) {
+            onLastItemBuild?.call();
+          }
+          var badge = badgeBuilder?.call(comics[index]);
+          var isSelected = selection == null
+              ? false
+              : selection![comics[index]] ?? false;
+          var comic = ComicTile(
+            key: ValueKey(heroIDs[index]),
+            comic: comics[index],
+            badge: badge,
+            menuOptions: menuBuilder?.call(comics[index]),
+            onTap: onTap != null
+                ? () => onTap!(comics[index], heroIDs[index])
                 : null,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          margin: const EdgeInsets.all(4),
-          child: comic,
-        );
-      }, childCount: comics.length),
+            onLongPressed: onLongPressed != null
+                ? () => onLongPressed!(comics[index], heroIDs[index])
+                : null,
+            heroID: heroIDs[index],
+          );
+          if (selection == null) {
+            return comic;
+          }
+          return AnimatedContainer(
+            key: ValueKey(heroIDs[index]),
+            duration: const Duration(milliseconds: 150),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Theme.of(
+                      context,
+                    ).colorScheme.secondaryContainer.toOpacity(0.72)
+                  : null,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            margin: const EdgeInsets.all(4),
+            child: comic,
+          );
+        },
+        childCount: comics.length,
+        findChildIndexCallback: findChildIndexCallback,
+      ),
       gridDelegate: SliverGridDelegateWithComics(),
     );
   }

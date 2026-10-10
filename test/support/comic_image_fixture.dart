@@ -18,7 +18,7 @@ class ComicImageFixture {
 
   late final ui.Image _image;
 
-  void cache(Iterable<Comic> comics) {
+  void cache(Iterable<Comic> comics, {Size? thumbnailSize}) {
     for (final comic in comics) {
       final ImageProvider provider = comic is History
           ? HistoryImageProvider(comic)
@@ -27,13 +27,31 @@ class ComicImageFixture {
               sourceKey: comic.sourceKey,
               cid: comic.id,
             );
+      cacheProvider(provider);
+      if (thumbnailSize != null) {
+        cacheProvider(
+          ResizeImage(
+            provider,
+            width: thumbnailSize.width.toInt(),
+            height: thumbnailSize.height.toInt(),
+            policy: ResizeImagePolicy.fit,
+          ),
+        );
+      }
+    }
+  }
+
+  void cacheProvider(ImageProvider provider, {Future<void>? ready}) {
+    provider.obtainKey(ImageConfiguration.empty).then((key) {
       PaintingBinding.instance.imageCache.putIfAbsent(
-        provider,
+        key,
         () => OneFrameImageStreamCompleter(
-          Future.value(ImageInfo(image: _image.clone())),
+          ready == null
+              ? Future.value(ImageInfo(image: _image.clone()))
+              : ready.then((_) => ImageInfo(image: _image.clone())),
         ),
       );
-    }
+    });
   }
 
   void dispose() {

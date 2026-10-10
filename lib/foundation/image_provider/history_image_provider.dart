@@ -1,4 +1,4 @@
-import 'dart:async' show Completer, Future, unawaited;
+import 'dart:async' show Completer, Future;
 import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -21,10 +21,6 @@ class HistoryImageProvider
 
   final String _key;
 
-  // Refreshing every visible history item on every rebuild would create a
-  // burst of source requests. Keep a process-local refresh timestamp instead.
-  static final _sourceRefreshAt = <String, DateTime>{};
-  static const _sourceRefreshInterval = Duration(hours: 6);
   static final _refreshing = <String, Future<String>>{};
   static final _recoveryAt = <String, DateTime>{};
   static final _refreshWaiters = Queue<Completer<void>>();
@@ -131,23 +127,6 @@ class HistoryImageProvider
     return cover;
   }
 
-  void _scheduleSourceRefresh() {
-    if (history.sourceKey == 'local' || history.type.comicSource == null) {
-      return;
-    }
-    final refreshKey = '${history.type.value}:${history.id}';
-    final now = DateTime.now();
-    final lastRefresh = _sourceRefreshAt[refreshKey];
-    if (lastRefresh != null &&
-        now.difference(lastRefresh) < _sourceRefreshInterval) {
-      return;
-    }
-    _sourceRefreshAt[refreshKey] = now;
-    unawaited(
-      _refreshCoverFromSource().then<void>((_) {}, onError: (_, __) {}),
-    );
-  }
-
   void _saveCover(String cover) {
     if (cover.isEmpty || cover == history.cover) {
       return;
@@ -193,10 +172,9 @@ class HistoryImageProvider
     if (url.contains('/')) {
       var data = await tryLoad(url);
       if (data != null) {
-        // The stored URL is still usable, but it may be an old cover. Return
-        // it immediately and refresh metadata in the background so a changed
-        // source cover is persisted and the history page rebuilds.
-        _scheduleSourceRefresh();
+        // Browsing history must not turn every usable cover (including disk
+        // cache hits) into a detail request and a history database update.
+        // Recover invalid covers below; metadata can be refreshed explicitly.
         return data;
       }
     }

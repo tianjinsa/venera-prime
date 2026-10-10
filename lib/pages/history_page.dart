@@ -362,6 +362,7 @@ class _HistoryPageState extends State<HistoryPage> {
             ),
             SliverGridComics(
               comics: comics,
+              listenToHistoryChanges: false,
               selections: selectedComics,
               onLongPressed: null,
               onTap: multiSelectMode

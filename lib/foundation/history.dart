@@ -199,11 +199,13 @@ final _historyQuerySeparator = RegExp(r'\s+');
 /// A searchable snapshot; rebuild it when saved history changes.
 class HistorySearchIndex {
   HistorySearchIndex(List<History> histories)
-    : histories = List.unmodifiable(histories),
-      _texts = [for (final history in histories) history.searchText];
+    : histories = List.unmodifiable(histories);
 
   final List<History> histories;
-  final List<String> _texts;
+  // Opening or refreshing the page without a query needs no search metadata.
+  late final List<String> _texts = [
+    for (final history in histories) history.searchText,
+  ];
 
   List<History> search(String query) {
     final normalized = query.trim().toLowerCase();
