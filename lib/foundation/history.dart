@@ -478,13 +478,22 @@ class HistoryManager with ChangeNotifier {
 
   /// Native sqlite handles must stay in their owning isolate.
   Future<void> addHistoryAsync(History newItem) async {
-    addHistory(newItem);
+    _writeHistory(newItem);
+    // A reader can flush its final progress while the route is being disposed.
+    // Notify after that frame's widget lifecycle work has completed.
+    await Future<void>.value();
+    if (isInitialized) notifyListeners();
   }
 
   /// add history. if exists, update time.
   ///
   /// This function would be called when user start reading.
   void addHistory(History newItem) {
+    _writeHistory(newItem);
+    notifyListeners();
+  }
+
+  void _writeHistory(History newItem) {
     _db.execute(_insertHistorySql, [
       newItem.id,
       newItem.title,
@@ -507,7 +516,6 @@ class HistoryManager with ChangeNotifier {
     if (cachedHistories.length > 10) {
       cachedHistories.remove(cachedHistories.keys.first);
     }
-    notifyListeners();
   }
 
   void clearHistory() {

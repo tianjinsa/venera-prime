@@ -9,7 +9,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_memory_info/flutter_memory_info.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
@@ -31,6 +30,7 @@ import 'package:venera/foundation/image_provider/reader_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/reading_statistics.dart';
+import 'package:venera/foundation/reader_image_cache.dart';
 import 'package:venera/foundation/reader_orientation.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/res.dart';
@@ -200,6 +200,8 @@ class _ReaderState extends State<Reader>
   bool _whiteRefreshOverlayReady = false;
   DateTime? _readingSessionStarted;
   bool _markedComplete = false;
+  late final ReaderImageCache _imageCache;
+  Timer? _favoriteReadTimer;
 
   var focusNode = FocusNode();
 
@@ -247,8 +249,10 @@ class _ReaderState extends State<Reader>
     )) {
       handleVolumeEvent();
     }
-    setImageCacheSize();
-    Future.delayed(const Duration(milliseconds: 200), () {
+    _imageCache = ReaderImageCache();
+    unawaited(_imageCache.configure());
+    _favoriteReadTimer = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
       LocalFavoritesManager().onRead(cid, type);
     });
   }
@@ -273,29 +277,12 @@ class _ReaderState extends State<Reader>
     }
   }
 
-  void setImageCacheSize() async {
-    var availableRAM = await MemoryInfo.getFreePhysicalMemorySize();
-    if (availableRAM == null) return;
-    int maxImageCacheSize;
-    if (availableRAM < 1 << 30) {
-      maxImageCacheSize = 100 << 20;
-    } else if (availableRAM < 2 << 30) {
-      maxImageCacheSize = 200 << 20;
-    } else if (availableRAM < 4 << 30) {
-      maxImageCacheSize = 300 << 20;
-    } else {
-      maxImageCacheSize = 500 << 20;
-    }
-    Log.info(
-      "Reader",
-      "Detect available RAM: $availableRAM, set image cache size to $maxImageCacheSize",
-    );
-    PaintingBinding.instance.imageCache.maximumSizeBytes = maxImageCacheSize;
-  }
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _favoriteReadTimer?.cancel();
+    _flushHistory();
+    _imageCache.dispose();
     _commitReadingSession();
     if (isFullscreen) {
       fullscreen();
@@ -308,9 +295,14 @@ class _ReaderState extends State<Reader>
     Future.microtask(() {
       DataSync().onDataChanged();
     });
-    PaintingBinding.instance.imageCache.maximumSizeBytes = 100 << 20;
+    _imageViewController = null;
     disposeReaderWindow();
     super.dispose();
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    _imageCache.handleMemoryPressure();
   }
 
   @override
@@ -318,6 +310,7 @@ class _ReaderState extends State<Reader>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {
+      _flushHistory();
       _commitReadingSession();
     } else if (state == AppLifecycleState.resumed &&
         _readingSessionStarted == null &&
@@ -442,8 +435,17 @@ class _ReaderState extends State<Reader>
   }
 
   /// Prevent multiple history updates in a short time.
-  /// `HistoryManager().addHistoryAsync` is a high-cost operation because it creates a new isolate.
+  /// Flush immediately on exit/background so no timer retains a closed reader.
   Timer? _updateHistoryTimer;
+
+  void _flushHistory() {
+    if (_updateHistoryTimer == null) return;
+    _updateHistoryTimer!.cancel();
+    _updateHistoryTimer = null;
+    if (history != null) {
+      unawaited(HistoryManager().addHistoryAsync(history!));
+    }
+  }
 
   void updateHistory() {
     if (history != null) {
@@ -480,10 +482,7 @@ class _ReaderState extends State<Reader>
       }
       history!.time = DateTime.now();
       _updateHistoryTimer?.cancel();
-      _updateHistoryTimer = Timer(const Duration(seconds: 1), () {
-        HistoryManager().addHistoryAsync(history!);
-        _updateHistoryTimer = null;
-      });
+      _updateHistoryTimer = Timer(const Duration(seconds: 1), _flushHistory);
     }
   }
 

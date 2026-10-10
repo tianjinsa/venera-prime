@@ -136,7 +136,7 @@ class _ComicPageState extends LoadingState<ComicPage, ComicDetails>
 
   @override
   void dispose() {
-    scrollController.removeListener(onScroll);
+    scrollController.dispose();
     super.dispose();
   }
 

@@ -220,9 +220,34 @@ class _GalleryModeState extends State<_GalleryMode>
     controller = PageController(initialPage: reader.page);
     reader._imageViewController = this;
     Future.microtask(() {
-      context.readerScaffold.setFloatingButton(0);
+      if (mounted) context.readerScaffold.setFloatingButton(0);
     });
+    _schedulePrecache();
     super.initState();
+  }
+
+  @override
+  void dispose() {
+    keyRepeatTimer?.cancel();
+    controller.dispose();
+    for (final controller in photoViewControllers.values) {
+      controller.dispose();
+    }
+    if (identical(reader._imageViewController, this)) {
+      reader._imageViewController = null;
+    }
+    super.dispose();
+  }
+
+  bool _precacheScheduled = false;
+
+  void _schedulePrecache() {
+    if (_precacheScheduled) return;
+    _precacheScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _precacheScheduled = false;
+      if (mounted) cache(reader.page);
+    });
   }
 
   /// Get the range of images for the given page. [page] is 1-based.
@@ -345,8 +370,6 @@ class _GalleryModeState extends State<_GalleryMode>
               endIndex,
             );
 
-            cache(index);
-
             photoViewControllers[index] ??= PhotoViewController();
 
             if (reader.imagesPerPage == 1 || pageImages.length == 1) {
@@ -419,6 +442,7 @@ class _GalleryModeState extends State<_GalleryMode>
             }
           } else {
             reader.setPage(i);
+            _schedulePrecache();
             context.readerScaffold.update();
             // Auto close toolbar when entering chapter comments page
             if (isChapterCommentsPage(i) && context.readerScaffold.isOpen) {
@@ -737,16 +761,19 @@ class _ContinuousModeState extends State<_ContinuousMode>
     reader._imageViewController = this;
     itemPositionsListener.itemPositions.addListener(onPositionChanged);
     cached = List.filled(reader.maxPage + 2, false);
-    Future.delayed(
-      const Duration(milliseconds: 100),
-      () => cacheImages(reader.page),
-    );
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) cacheImages(reader.page);
+    });
     super.initState();
   }
 
   @override
   void dispose() {
     itemPositionsListener.itemPositions.removeListener(onPositionChanged);
+    photoViewController.dispose();
+    if (identical(reader._imageViewController, this)) {
+      reader._imageViewController = null;
+    }
     super.dispose();
   }
 
@@ -1294,7 +1321,7 @@ ImageProvider _createImageProviderFromKey(
     reader.type.comicSource?.key,
     reader.cid,
     reader.eid,
-    reader.page,
+    page,
     enableResize: reader
         .mode
         .isContinuous, // For continuous mode, we need to resize the image to improve performance
@@ -1311,7 +1338,9 @@ ImageProvider _createImageProvider(int page, BuildContext context) {
 /// The image is cached using the flutter's [precacheImage] method.
 /// The image will be downloaded and decoded into memory.
 void _precacheImage(int page, BuildContext context) {
-  if (page <= 0 || page > context.reader.images!.length) {
+  if (!context.reader._imageCache.allowPrecache ||
+      page <= 0 ||
+      page > context.reader.images!.length) {
     return;
   }
   precacheImage(_createImageProvider(page, context), context);

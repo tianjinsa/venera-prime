@@ -10,13 +10,14 @@ import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/image_provider/reader_image.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/pages/reader/reader.dart';
 import 'package:venera/utils/translations.dart';
 
 void main() {
   testWidgets(
-    'continuous reader remains scrollable after repeated scrubbing and margin drags',
+    'continuous reader survives scrubbing and saves pending progress on pause and exit',
     (tester) async {
       tester.view.physicalSize = const Size(1000, 600);
       tester.view.devicePixelRatio = 1;
@@ -57,7 +58,7 @@ void main() {
           ..createSync(recursive: true);
         File('${root.path}/local_path').writeAsStringSync('${root.path}/local');
         final bytes = base64Decode(
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==',
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
         );
         for (var i = 1; i <= 30; i++) {
           File('${dir.path}/$i.png').writeAsBytesSync(bytes);
@@ -78,6 +79,28 @@ void main() {
           createdAt: DateTime.now(),
         );
         await local.add(comic);
+      });
+      // Finish real image I/O outside the fake test clock. Otherwise rapid
+      // scrubbing can leave a file read pending when Windows deletes fixtures.
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      final imageContext = tester.element(find.byType(SizedBox).first);
+      await tester.runAsync(() async {
+        final images = await local.getImages(comic.id, ComicType.local, 1);
+        for (var page = 1; page <= images.length; page++) {
+          await precacheImage(
+            ReaderImageProvider(
+              images[page - 1],
+              null,
+              comic.id,
+              '0',
+              page,
+              enableResize: true,
+            ),
+            imageContext,
+            onError: (error, stack) =>
+                Error.throwWithStackTrace(error, stack ?? StackTrace.current),
+          );
+        }
       });
       await tester.pumpWidget(
         MaterialApp(
@@ -130,7 +153,7 @@ void main() {
       );
       expect(blockers.where((w) => w.absorbing), isEmpty);
       // x=40 is well outside the centered, width-limited image (x=290..710).
-      await tester.dragFrom(const Offset(40, 450), const Offset(0, -350));
+      await tester.dragFrom(const Offset(40, 450), const Offset(0, -500));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
@@ -141,10 +164,18 @@ void main() {
         greaterThan(16),
       );
       expect(tester.takeException(), isNull);
-      await tester.pump(const Duration(seconds: 2));
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 100)),
-      );
+
+      tester.widget<CustomSlider>(find.byType(CustomSlider)).onChanged(20);
+      await tester.pump(const Duration(milliseconds: 300));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(HistoryManager().getAll().single.page, 20);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+
+      // Exit inside the one-second debounce window and read from SQLite, not
+      // the in-memory History object shared with the reader.
+      tester.widget<CustomSlider>(find.byType(CustomSlider)).onChanged(23);
+      await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpWidget(
         MaterialApp(
           navigatorKey: App.rootNavigatorKey,
@@ -152,7 +183,17 @@ void main() {
           home: const SizedBox(),
         ),
       );
+      expect(find.byType(Reader), findsNothing);
+      expect(HistoryManager().getAll().single.page, 23);
+      var lateNotifications = 0;
+      void onLateHistoryChange() => lateNotifications++;
+      HistoryManager().addListener(onLateHistoryChange);
       await tester.pump(const Duration(seconds: 2));
+      expect(lateNotifications, 0);
+      HistoryManager().removeListener(onLateHistoryChange);
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+      await tester.pump();
       local.close();
       LocalFavoritesManager().close();
       HistoryManager().close();
