@@ -44,13 +44,20 @@ class AgentTurnView extends StatelessWidget {
       messages.last.role == 'assistant' &&
       messages.last.state == 'done' &&
       messages.last.tools.isEmpty &&
+      !messages.last.needsNativeContinuation &&
       messages.last.text.trim().isNotEmpty;
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final complete = _complete;
     final last = messages.last;
-    final tools = messages.expand((m) => m.tools).toList();
+    final tools = messages
+        .expand(
+          (m) => m.parts.where(
+            (p) => p['type'] == 'tool_call' || p['type'] == 'native_search',
+          ),
+        )
+        .toList();
     final failures = tools.where(agentToolHasFailure).length;
     final status = running
         ? '正在处理'
@@ -78,15 +85,25 @@ class AgentTurnView extends StatelessWidget {
           storageId: id,
           resetToken: complete ? last.id : 'active',
           reasoningCount: parts.where((p) => p['type'] == 'reasoning').length,
-          toolCount: parts.where((p) => p['type'] == 'tool_call').length,
+          toolCount: parts
+              .where(
+                (p) => p['type'] == 'tool_call' || p['type'] == 'native_search',
+              )
+              .length,
           failures: parts
-              .where((p) => p['type'] == 'tool_call' && agentToolHasFailure(p))
+              .where(
+                (p) =>
+                    (p['type'] == 'tool_call' ||
+                        p['type'] == 'native_search') &&
+                    agentToolHasFailure(p),
+              )
               .length,
           running:
               running &&
               items.any((item) {
                 final part = item.message.parts[item.index];
-                return part['type'] == 'tool_call'
+                return part['type'] == 'tool_call' ||
+                        part['type'] == 'native_search'
                     ? part['state'] == 'running' || part['state'] == 'pending'
                     : item.message.state == 'running' &&
                           item.index == item.message.parts.length - 1;
@@ -114,7 +131,9 @@ class AgentTurnView extends StatelessWidget {
       }
       for (var i = 0; i < message.parts.length; i++) {
         final part = message.parts[i];
-        if (part['type'] == 'reasoning' || part['type'] == 'tool_call') {
+        if (part['type'] == 'reasoning' ||
+            part['type'] == 'tool_call' ||
+            part['type'] == 'native_search') {
           activity.add((message: message, index: i));
         } else if (part['type'] == 'text' &&
             (part['text'] as String? ?? '').trim().isNotEmpty) {
@@ -216,7 +235,7 @@ class AgentTurnView extends StatelessWidget {
                   Align(
                     alignment: Alignment.centerLeft,
                     child: AgentMessageActions(
-                      text: last.role == 'assistant' ? last.text : '',
+                      text: last.role == 'assistant' ? last.displayText : '',
                       busy: busy,
                       onRegenerate: onRegenerate,
                     ),

@@ -193,7 +193,8 @@ class AgentMessageParts extends StatelessWidget {
   Widget _part(BuildContext context, AgentJson part, int index) {
     switch (part['type']) {
       case 'text':
-        final text = part['text'] as String? ?? '';
+        final text =
+            part['display_text'] as String? ?? part['text'] as String? ?? '';
         if (text.isEmpty) return const SizedBox.shrink();
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 10),
@@ -226,6 +227,26 @@ class AgentMessageParts extends StatelessWidget {
         );
       case 'tool_call':
         return _tool(context, part, index);
+      case 'native_search':
+        final state = part['state'];
+        final failed = ['failed', 'interrupted'].contains(state);
+        return AgentDisclosure(
+          key: ValueKey('native-search-${message.id}-$index'),
+          storageId: 'native-search-${message.id}-$index',
+          resetToken: resetToken,
+          label: state == 'running' ? '模型正在联网搜索' : '模型联网搜索',
+          detail: failed
+              ? '未完成'
+              : state == 'pending'
+              ? '等待继续'
+              : null,
+          leading: const Icon(Icons.travel_explore),
+          color: failed ? Theme.of(context).colorScheme.error : null,
+          builder: (context) => _detail(
+            context,
+            AgentSelectableText(part['text'] as String? ?? ''),
+          ),
+        );
       default:
         return const SizedBox.shrink();
     }

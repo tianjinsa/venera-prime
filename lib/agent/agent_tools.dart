@@ -15,6 +15,7 @@ import 'package:venera/foundation/res.dart';
 import 'agent_app_bridge.dart';
 import 'agent_models.dart';
 import 'agent_store.dart';
+import 'agent_web_search.dart';
 
 part 'agent_tool_schemas.dart';
 part 'agent_tools_catalog.dart';
@@ -35,6 +36,7 @@ class AgentTools {
   final List<ComicSource> Function() sources;
   final Duration sourceTimeout;
   final AgentAppBridge app;
+  final AgentWebSearchClient webSearch;
 
   /// Details already read in this session. Chapter pages, downloads and the
   /// reader reuse them instead of requesting the whole comic again.
@@ -55,6 +57,7 @@ class AgentTools {
     List<ComicSource> Function()? sources,
     this.sourceTimeout = const Duration(seconds: 30),
     AgentAppBridge? app,
+    this.webSearch = const AgentWebSearchClient(),
   }) : app = app ?? const AgentAppBridge(),
        favorites = favorites ?? LocalFavoritesManager(),
        later = later ?? ReadLaterManager(),
@@ -63,6 +66,15 @@ class AgentTools {
        sources = sources ?? ComicSource.all;
 
   static List<AgentJson> get schemas => _agentToolSchemas;
+
+  /// Regenerated for each model request so settings changes take effect on
+  /// the next turn. The static catalog remains available for argument checks.
+  List<AgentJson> get availableSchemas => [
+    for (final schema in _agentToolSchemas)
+      if (schema['function']['name'] != 'search_web') schema,
+    if (store.settings.webSearch.engines.isNotEmpty)
+      _webSearchSchema(store.settings.webSearch.engines),
+  ];
 
   static const writeTools = {
     'fav_add',
@@ -266,6 +278,33 @@ class AgentTools {
     AgentToolContext c,
   ) async {
     switch (name) {
+      case 'search_web':
+        final engineName = _text(a, 'engine');
+        final engine = AgentSearchEngine.values
+            .where((e) => e.name == engineName)
+            .firstOrNull;
+        if (engine == null) {
+          throw const AgentException('INVALID_ARGUMENT', '未知的网页搜索引擎');
+        }
+        if (!store.settings.webSearch.enabled(engine)) {
+          throw AgentException(
+            'WEB_SEARCH_DISABLED',
+            '${engine.label} 搜索未启用，请在 Agent 设置中开启',
+          );
+        }
+        return webSearch.search(
+          engine: engine,
+          query: _text(a, 'query'),
+          maxResults: _number(a, 'max_results', 5, 10),
+          tavilyKey: engine == AgentSearchEngine.tavily
+              ? store.secrets[AgentWebSearchSettings.tavilySecretId] ?? ''
+              : '',
+          deepseekKey: engine == AgentSearchEngine.deepseek
+              ? store.secrets[AgentWebSearchSettings.deepseekSecretId] ?? ''
+              : '',
+          deepseekModel: store.settings.webSearch.deepseekSearchModel,
+          run: c.run,
+        );
       case 'list_sources':
         await c.run.wait(initializeSources());
         return sources().map(_capability).toList();

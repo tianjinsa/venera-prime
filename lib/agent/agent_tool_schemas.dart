@@ -17,6 +17,22 @@ AgentJson _pageSizeArg(int fallback, int maximum) => {
   'description': '每页条数，默认$fallback，最多$maximum',
 };
 
+AgentJson _webSearchSchema(Iterable<AgentSearchEngine> engines) => _schema(
+  'search_web',
+  '搜索公开网页，返回标题、URL 和摘要。仅使用已启用的 engine；回答须引用返回的来源链接。验证码、限流或网页变化时可换用其他已启用引擎，不重复同一失败请求',
+  {
+    'engine': {'type': 'string', 'enum': engines.map((e) => e.name).toList()},
+    'query': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+    'max_results': {
+      'type': 'integer',
+      'minimum': 1,
+      'maximum': 10,
+      'description': '最多返回多少条结果，默认5，最多10',
+    },
+  },
+  ['engine', 'query'],
+);
+
 AgentJson _comicsArg(int maximum) => {
   'type': 'array',
   'minItems': 1,
@@ -57,6 +73,7 @@ AgentJson _schema(
 /// Grouped by domain. Every list that can grow without bound is paged, and
 /// each result reports total or has_more so the model can decide to continue.
 final _agentToolSchemas = <AgentJson>[
+  _webSearchSchema(AgentSearchEngine.values),
   // Sources.
   _schema('list_sources', '列出已安装漫画源及能力概览；源不明确时使用', {}),
   _schema(

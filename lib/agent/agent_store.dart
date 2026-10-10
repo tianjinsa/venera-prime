@@ -138,6 +138,11 @@ class AgentStore {
           .toList();
       var changed = false;
       for (final part in parts) {
+        if (part['type'] == 'native_search' &&
+            ['running', 'pending'].contains(part['state'])) {
+          part['state'] = 'interrupted';
+          changed = true;
+        }
         if (part['type'] == 'tool_call' &&
             ['running', 'pending'].contains(part['state'])) {
           part['state'] = 'interrupted';
@@ -227,6 +232,7 @@ class AgentStore {
   }
 
   Future<void> saveSettings(AgentSettings value, Map<String, String> keys) {
+    value.webSearch.deepseekSearchModel.validate();
     for (final model in value.models) {
       model.validate();
     }

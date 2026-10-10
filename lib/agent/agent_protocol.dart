@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'agent_context.dart';
 import 'agent_models.dart';
+import 'agent_search_results.dart';
 
 typedef AgentDelta = void Function(String type, String text);
 
@@ -20,12 +21,18 @@ class AgentResponse {
   /// Provider-specific output that must be replayed verbatim in later
   /// requests, such as signed thinking blocks or encrypted reasoning items.
   final AgentJson? providerState;
+  final String? displayText;
+  final List<AgentJson> nativeSearches;
+  final bool continueTurn;
   const AgentResponse(
     this.text,
     this.reasoning,
     this.tools, {
     this.usage,
     this.providerState,
+    this.displayText,
+    this.nativeSearches = const [],
+    this.continueTurn = false,
   });
 }
 
@@ -222,7 +229,8 @@ abstract final class AgentProtocolCodec {
     } else {
       body['instructions'] = instructions.join('\n\n');
     }
-    if (model.includeReasoning && body['store'] == false) {
+    if ((model.includeReasoning || model.nativeWebSearch) &&
+        body['store'] == false) {
       // Encrypted reasoning lets a stateless conversation continue a
       // reasoning model's chain of thought across tool calls.
       body['include'] = {
@@ -234,6 +242,7 @@ abstract final class AgentProtocolCodec {
       _removeTools(body);
     } else {
       body['tools'] = [
+        if (model.nativeWebSearch) {'type': 'web_search'},
         for (final tool in tools)
           {
             'type': 'function',
@@ -352,6 +361,8 @@ abstract final class AgentProtocolCodec {
       _removeTools(body);
     } else {
       body['tools'] = [
+        if (model.nativeWebSearch)
+          {'type': 'web_search_20250305', 'name': 'web_search', 'max_uses': 5},
         for (final tool in tools)
           {
             'name': _function(tool, 'name'),
@@ -420,13 +431,19 @@ abstract class AgentStreamState {
   String? get finish;
   List<AgentToolCall> calls();
   AgentJson? get providerState => null;
+  String? get displayText => null;
+  List<AgentJson> get nativeSearches => const [];
+  String get responseText => _text.toString();
 
   AgentResponse result() => AgentResponse(
-    _text.toString(),
+    responseText,
     _reasoning.toString(),
     calls(),
     usage: usage,
     providerState: providerState,
+    displayText: displayText,
+    nativeSearches: nativeSearches,
+    continueTurn: finish == 'pause_turn',
   );
 
   static Never providerError(Object? error) {
@@ -566,6 +583,16 @@ class _ResponsesStream extends AgentStreamState {
         if (_summaryParts++ > 0) emit('reasoning', '\n\n');
       case 'response.output_item.added':
         final item = agentObject(event['item']);
+        if (item['type'] == 'web_search_call') {
+          onDelta(
+            'native_search',
+            jsonEncode({
+              'id': item['id'],
+              'state': 'running',
+              'text': '模型正在搜索网页',
+            }),
+          );
+        }
         if (item['type'] == 'function_call' && index is int) {
           _fragments[index] = _ToolFragments()
             ..id = item['call_id'] as String? ?? ''
@@ -608,7 +635,9 @@ class _ResponsesStream extends AgentStreamState {
     }
     usage = AgentUsage.fromResponse(response['usage']) ?? usage;
     final output = response['output'];
-    if (output is List && _items.isEmpty) {
+    if (output is List && output.isNotEmpty) {
+      _items.clear();
+      _fragments.clear();
       for (var i = 0; i < output.length; i++) {
         _item(i, agentObject(output[i]));
       }
@@ -644,15 +673,41 @@ class _ResponsesStream extends AgentStreamState {
   @override
   List<AgentToolCall> calls() => _collectCalls(_fragments);
 
+  List<AgentJson> get _orderedItems {
+    final indexes = _items.keys.toList()..sort();
+    return [for (final i in indexes) _items[i]!];
+  }
+
+  @override
+  String get responseText => _text.isNotEmpty
+      ? _text.toString()
+      : [
+          for (final item in _orderedItems)
+            if (item['type'] == 'message')
+              for (final part in item['content'] as List? ?? const [])
+                if (part is Map && (part['text'] ?? part['refusal']) is String)
+                  part['text'] ?? part['refusal'],
+        ].join();
+
+  @override
+  String? get displayText => agentResponsesCitedText(_orderedItems);
+
+  @override
+  List<AgentJson> get nativeSearches => agentResponsesSearches(_orderedItems);
+
   @override
   AgentJson? get providerState {
-    final indexes = _items.keys.toList()..sort();
-    final items = [for (final i in indexes) _items[i]!];
-    // Replay only matters when encrypted reasoning must accompany the calls.
-    if (!items.any(
-      (item) =>
-          item['type'] == 'reasoning' && item['encrypted_content'] is String,
-    )) {
+    final items = _orderedItems;
+    final hasNativeSearch = items.any(
+      (item) => item['type'] == 'web_search_call',
+    );
+    // Native search state is needed even with reasoning display disabled.
+    if (!hasNativeSearch &&
+        !items.any(
+          (item) =>
+              item['type'] == 'reasoning' &&
+              item['encrypted_content'] is String,
+        )) {
       return null;
     }
     return {
@@ -660,7 +715,8 @@ class _ResponsesStream extends AgentStreamState {
       'items': [
         for (final item in items)
           switch (item['type']) {
-            'reasoning' => {
+            'web_search_call' => Map<String, dynamic>.of(item),
+            'reasoning' when item['encrypted_content'] is String => {
               'type': 'reasoning',
               'id': item['id'],
               'summary': item['summary'] ?? const [],
@@ -672,6 +728,7 @@ class _ResponsesStream extends AgentStreamState {
               'name': item['name'],
               'arguments': item['arguments'],
             },
+            'message' when hasNativeSearch => Map<String, dynamic>.of(item),
             'message' => {
               'role': 'assistant',
               'content': [
@@ -705,6 +762,7 @@ class _MessagesStream extends AgentStreamState {
           ? 'tool_calls'
           : 'stop',
     'tool_use' => 'tool_calls',
+    'pause_turn' => 'pause_turn',
     'max_tokens' => 'length',
     _ => null,
   };
@@ -725,8 +783,18 @@ class _MessagesStream extends AgentStreamState {
         emit('text', copy['text']);
       case 'thinking':
         emit('reasoning', copy['thinking']);
-      case 'tool_use':
+      case 'tool_use' || 'server_tool_use':
         _json[index] = StringBuffer();
+        if (copy['type'] == 'server_tool_use' && copy['name'] == 'web_search') {
+          onDelta(
+            'native_search',
+            jsonEncode({
+              'id': copy['id'],
+              'state': 'running',
+              'text': '模型正在搜索网页',
+            }),
+          );
+        }
     }
   }
 
@@ -756,13 +824,23 @@ class _MessagesStream extends AgentStreamState {
                 '${block['signature'] ?? ''}${delta['signature']}';
           case 'input_json_delta':
             _json[index]?.write(delta['partial_json'] as String? ?? '');
+          case 'citations_delta':
+            if (delta['citation'] is Map) {
+              (block['citations'] ??= <dynamic>[]).add(
+                agentObject(delta['citation']),
+              );
+            }
         }
       case 'content_block_stop':
         final block = index is int ? _blocks[index] : null;
         final json = index is int ? _json[index] : null;
         if (block != null && json != null) {
           final raw = json.toString().trim();
-          block['input'] = raw.isEmpty ? <String, dynamic>{} : jsonDecode(raw);
+          if (raw.isNotEmpty) {
+            block['input'] = jsonDecode(raw);
+          } else {
+            block.putIfAbsent('input', () => <String, dynamic>{});
+          }
         }
       case 'message_delta':
         _stop = agentObject(event['delta'])['stop_reason'] as String? ?? _stop;
@@ -808,16 +886,28 @@ class _MessagesStream extends AgentStreamState {
   }
 
   @override
+  String? get displayText => agentMessagesCitedText(_ordered);
+
+  @override
+  List<AgentJson> get nativeSearches => agentMessagesSearches(_ordered);
+
+  @override
   AgentJson? get providerState {
     final blocks = _ordered;
     // Signed thinking must be returned unchanged while tools are in use.
     if (!blocks.any(
-      (b) => b['type'] == 'thinking' || b['type'] == 'redacted_thinking',
+      (b) =>
+          b['type'] == 'thinking' ||
+          b['type'] == 'redacted_thinking' ||
+          b['type'] == 'server_tool_use' ||
+          b['type'] == 'web_search_tool_result' ||
+          b['citations'] is List,
     )) {
       return null;
     }
     return {
       'protocol': AgentProtocol.messages.id,
+      if (_stop == 'pause_turn') 'continue_turn': true,
       'content': [
         for (final block in blocks)
           switch (block['type']) {
@@ -833,6 +923,7 @@ class _MessagesStream extends AgentStreamState {
             'text' when (block['text'] as String? ?? '').isNotEmpty => {
               'type': 'text',
               'text': block['text'],
+              if (block['citations'] != null) 'citations': block['citations'],
             },
             'tool_use' => {
               'type': 'tool_use',
@@ -840,6 +931,8 @@ class _MessagesStream extends AgentStreamState {
               'name': block['name'],
               'input': block['input'] ?? const {},
             },
+            'server_tool_use' ||
+            'web_search_tool_result' => Map<String, dynamic>.of(block),
             _ => null,
           },
       ].whereType<AgentJson>().toList(),

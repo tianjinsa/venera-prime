@@ -86,6 +86,8 @@
 | agent_store.dart | 本机配置/密钥、agent.db、会话与展示持久化 |
 | agent_client.dart | 独立 Dio、首响应超时保护、SSE 聚合、非流式兼容 |
 | agent_http_adapter.dart | 复用现有代理/DNS/TLS 设置，将取消信号传给 rhttp |
+| agent_web_search.dart / agent_search_browser.dart | 四个独立网页搜索提供商、结果解析、官网临时 WebView、取消和请求边界 |
+| agent_search_results.dart / agent_web_links.dart | 原生搜索过程、来源链接及显示用引用，保留服务端原始数据 |
 | agent_wire.dart | parts 的完整成对投影、摘要边界与当前用户要求保留 |
 | agent_controller.dart | 会话生命周期、停止/重试、工具循环、插入/排队消息与上下文压缩 |
 | agent_session.dart | 应用进程内唯一的控制器，首次打开 Agent 页时创建，离开前台时保存检查点；汇总页面可见性，得出导航状态并决定何时提示确认 |
@@ -103,7 +105,7 @@
 | agent_showcase_view.dart | 普通展示、收藏/收藏夹与稍后再看折叠分组 |
 | agent_integration.dart | 主页面入口和旧索引映射 |
 
-工具在主 isolate 的 async 任务中复用 JS 和管理器实例，不增加 isolate、子进程、服务端或系统级后台服务。控制器只在应用进程内常驻，应用被关闭或被系统回收后任务随之结束。Agent 测试放在 test/agent/，通用通知测试独立放在 test/batched_notifications_test.dart。
+漫画源和集合工具在主 isolate 的 async 任务中复用 JS 和管理器实例。网页 HTML/XML 解析使用临时 compute isolate；官网需要 JavaScript 时串行创建临时 WebView，结束后释放。不增加常驻服务端或系统级后台服务。控制器只在应用进程内常驻，应用被关闭或被系统回收后任务随之结束。Agent 测试放在 test/agent/，通用通知测试独立放在 test/batched_notifications_test.dart。
 
 ## 5. 工具与适配契约
 
@@ -111,6 +113,7 @@
 
 | 组 | 工具 | 主要契约 |
 | --- | --- | --- |
+| 网页 | search_web | engine、query、max_results（默认5，范围1–10）；只提供已启用的 Bing/Google/Tavily/DeepSeek，返回标题、URL 和摘要 |
 | 源 | list_sources | key、name、搜索样式、各功能是否可用 |
 | 源 | source_info | 搜索选项、发现页标题、分类分组与数量、分类筛选、排行选项、网络收藏与评论支持 |
 | 源 | source_categories | 按分组分页读取分类条目 → category/param 或搜索关键词 |
@@ -186,7 +189,7 @@
 
 统一 {ok:true,data:...} 或 {ok:false,error:{code,message}}；批量部分失败通过逐项结果表达。常见码：SOURCE_NOT_FOUND、NO_SEARCH_SUPPORT、NO_DETAIL_SUPPORT、NO_LINK_SUPPORT、INVALID_ARGUMENT、INVALID_CURSOR、NOT_FOUND、SOURCE_REQUEST_FAILED、FOLDER_NOT_FOUND、FOLDER_EXISTS、BATCH_TOO_LARGE、TIMEOUT、CANCELLED。源仅返回错误文本时以 NOT_FOUND 表示未取得详情并保留原错误，不据此断言漫画不存在；抛出的请求异常与超时分别返回 SOURCE_REQUEST_FAILED 和 TIMEOUT。
 
-模型正文、思考、工具参数和返回字段不再因软件设定的字符数或响应总长度而停止接收、截短或替换。完整返回合法 JSON，描述、标签、章节目录与推荐条目原样保留；搜索和列表仍提供明确分页，不静默丢弃条目。上下文大小由第7.1节的摘要机制处理。服务商自身的输出上限仍可能结束响应，界面明确提示该情况并保留已收到的内容，不执行不完整工具。
+模型正文、思考、漫画工具参数和返回字段不再因软件设定的字符数或响应总长度而停止接收、截短或替换。完整返回合法 JSON，描述、标签、章节目录与推荐条目原样保留；漫画搜索和列表仍提供明确分页，不静默丢弃条目。网页搜索另按明确的结果条数和摘要长度返回片段，不承诺目标网页全文（见第6.6节）。上下文大小由第7.1节的摘要机制处理。服务商自身的输出上限仍可能结束响应，界面明确提示该情况并保留已收到的内容，不执行不完整工具。
 
 ## 6. 配置、存储和网络
 
@@ -209,7 +212,7 @@
 
 ### 6.2 本机隔离
 
-App.dataPath/agent 下保存 config.json、secrets.json（modelId→密钥）和 agent.db。全部仅本机，不进入既有 appdata、手动备份或 WebDAV；自定义 headers 同样视为敏感数据。后续同步通过明确排除密钥的导入导出实现。
+App.dataPath/agent 下保存 config.json、secrets.json（modelId→密钥，以及独立搜索的 web_search:tavily/web_search:deepseek）和 agent.db。搜索配置位于 config.json 的 web_search，密钥不进入该对象。全部仅本机，不进入既有 appdata、手动备份或 WebDAV；自定义 headers 同样视为敏感数据。后续同步通过明确排除密钥的导入导出实现。
 
 配置和密钥串行原子写入，不记录密钥、headers 或聊天请求体。Windows 不声称支持 POSIX 0600；使用应用目录/当前用户权限。系统凭据库以后单列，不改平台工程。
 
@@ -252,6 +255,16 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 - 单个文件上限20 MB，完整保留原始字节。严格解码 UTF-8（可带 BOM）和带 BOM 的 UTF-16 LE/BE；不支持的编码明确报错，不替换乱码、不截断。预览按需排版长文本，完整原文随用户消息发送，纯文本模型也可读取。
 - 文件元数据存消息 parts，字节存 message_text_files，和消息、图片同事务提交。补充、排队、编辑、重试和重启均保留附件；压缩保留当前任务原文，历史附件始终可预览；删除会话或取消待运行消息时级联清理。
 - 文件名经过 JSON 转义，内容用不与原文冲突的分隔符包裹，并明确标为待分析数据。文件中出现的角色、工具调用或指令不成为额外用户授权。
+
+### 6.6 网络搜索
+
+Bing、Google、Tavily、DeepSeek 各有独立开关，默认全部关闭；模型的 native_web_search 同样默认关闭。Bing/Google 读取官网，不要求 Key；Tavily/DeepSeek 使用各自的独立密钥。DeepSeek 通过独立 Messages 模型执行搜索，可供任意聊天模型调用，默认地址和模型来自官方 harness。详细配置、限制与协议链接见 [网络搜索使用说明](agent_web_search.md)。
+
+`AgentTools.availableSchemas` 每次请求按最新设置生成 search_web 的引擎枚举；执行时再次检查开关和密钥，不初始化漫画源或本地收藏等无关数据。独立搜索仅传搜索词，使用新的 Dio 和 AgentHttpAdapter，单次结束后关闭；禁止 API 鉴权重定向，错误不回显原始响应或 Key。查询限制1–500字；最多10条结果，每条标题最多300字、摘要最多2000字；HTTP 响应上限2 MiB。网页请求默认25秒，独立 DeepSeek 搜索总计60秒。
+
+原生搜索使用 Responses 的 web_search 或 Messages 的 web_search_20250305，与本地 search_web 区分。服务端工具不会作为本地函数执行；暂停响应带 continue_turn 本机标记，保留原始内容续接。停止、重启和恢复时沿用原搜索过程卡片，暂停期间不自动压缩掉未完成的服务端状态。Messages 的 encrypted_content/encrypted_index 和 Responses 的原生条目仅回传同一模型。显示用 display_text 单独保存可点击引用，不改写原始正文或签名数据；跨模型及摘要保留可读来源。
+
+Google 需要脚本时使用既有 WebView 插件，导航仅限所选搜索引擎的 HTTPS 域名；拒绝权限、弹窗和文件访问，串行创建并释放视图，不操作验证码或清理共享 Cookie。没有可读取结果时明确报错，不能把服务端普通回答或验证页面当作联网成功。Tavily/DeepSeek 未配置 Key 时开启会先进入配置，取消不启用，清空后关闭对应服务。
 
 ## 7. 会话执行与重试
 

@@ -178,7 +178,7 @@ class AgentClient {
       run.check();
       final finish = state.finish;
       // A finish reason is the semantic boundary, not just a closed socket.
-      if (!['stop', 'tool_calls'].contains(finish)) {
+      if (!['stop', 'tool_calls', 'pause_turn'].contains(finish)) {
         throw AgentException(
           'INCOMPLETE_RESPONSE',
           finish == 'length'

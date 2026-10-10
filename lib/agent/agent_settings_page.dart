@@ -16,10 +16,13 @@ class AgentSettingsPage extends StatefulWidget {
 class _AgentSettingsPageState extends State<AgentSettingsPage> {
   bool _saving = false;
 
-  Future<void> _save(AgentSettings settings) async {
+  Future<void> _save(
+    AgentSettings settings, {
+    Map<String, String>? keys,
+  }) async {
     setState(() => _saving = true);
     try {
-      await widget.store.saveSettings(settings, widget.store.secrets);
+      await widget.store.saveSettings(settings, keys ?? widget.store.secrets);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -62,17 +65,137 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
     final settings = widget.store.settings;
     final models = settings.models.where((m) => m.id != model.id).toList();
     await _save(
-      AgentSettings(
+      settings.copyWith(
         models: models,
         defaultModelId: settings.defaultModelId == model.id
             ? (models.isEmpty ? null : models.first.id)
             : settings.defaultModelId,
-        confirmPolicy: settings.confirmPolicy,
-        autoBackupLimit: settings.autoBackupLimit,
-        manualBackupLimit: settings.manualBackupLimit,
       ),
     );
   }
+
+  Future<void> _toggleSearch(AgentSearchEngine engine, bool value) async {
+    if (engine == AgentSearchEngine.deepseek &&
+        value &&
+        (widget.store.secrets[AgentWebSearchSettings.deepseekSecretId] ?? '')
+            .isEmpty) {
+      await _editDeepseek(enable: true);
+      return;
+    }
+    if (engine == AgentSearchEngine.tavily &&
+        value &&
+        (widget.store.secrets[AgentWebSearchSettings.tavilySecretId] ?? '')
+            .isEmpty) {
+      await _editTavilyKey(enable: true);
+      return;
+    }
+    final settings = widget.store.settings;
+    await _save(
+      settings.copyWith(
+        webSearch: settings.webSearch.withEngine(engine, value),
+      ),
+    );
+  }
+
+  Future<void> _editDeepseek({bool enable = false}) async {
+    final result = await showDialog<AgentJson>(
+      context: context,
+      builder: (_) => _DeepseekSearchDialog(
+        settings: widget.store.settings.webSearch,
+        apiKey:
+            widget.store.secrets[AgentWebSearchSettings.deepseekSecretId] ?? '',
+      ),
+    );
+    if (result == null || !mounted) return;
+    final settings = widget.store.settings;
+    final key = result['key'] as String;
+    await _save(
+      settings.copyWith(
+        webSearch: settings.webSearch.withDeepseek(
+          baseUrl: result['base_url'] as String,
+          model: result['model'] as String,
+          enabled: key.isNotEmpty && (enable || settings.webSearch.deepseek),
+        ),
+      ),
+      keys: {AgentWebSearchSettings.deepseekSecretId: key},
+    );
+  }
+
+  Future<void> _editTavilyKey({bool enable = false}) async {
+    final key = await showDialog<String>(
+      context: context,
+      builder: (_) => _TavilyKeyDialog(
+        initialValue:
+            widget.store.secrets[AgentWebSearchSettings.tavilySecretId] ?? '',
+      ),
+    );
+    if (key == null || !mounted) return;
+    final settings = widget.store.settings;
+    await _save(
+      settings.copyWith(
+        webSearch: settings.webSearch.withEngine(
+          AgentSearchEngine.tavily,
+          key.isNotEmpty && (enable || settings.webSearch.tavily),
+        ),
+      ),
+      keys: {AgentWebSearchSettings.tavilySecretId: key},
+    );
+  }
+
+  Widget _webSearch(AgentSettings settings) => Card(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const ListTile(
+          title: Text('网络搜索'),
+          subtitle: Text('仅在 Agent 调用时搜索。搜索词会发送给所选服务，返回结果附有来源链接。'),
+        ),
+        for (final engine in AgentSearchEngine.values)
+          SwitchListTile(
+            key: ValueKey('agent-search-${engine.name}'),
+            title: Text(engine.label),
+            subtitle: Text(switch (engine) {
+              AgentSearchEngine.bing => '直接搜索 bing.com，无需 Key',
+              AgentSearchEngine.google => '直接搜索 google.com，无需 Key',
+              AgentSearchEngine.tavily => '使用 Tavily API，需配置 Key，按账户额度计费',
+              AgentSearchEngine.deepseek =>
+                '任意聊天模型均可使用，单独调用 DeepSeek 搜索模型并按 API 计费',
+            }),
+            value: settings.webSearch.enabled(engine),
+            onChanged: _saving ? null : (value) => _toggleSearch(engine, value),
+          ),
+        ListTile(
+          key: const ValueKey('agent-search-deepseek-config'),
+          title: const Text('DeepSeek 搜索设置'),
+          subtitle: Text(
+            (widget.store.secrets[AgentWebSearchSettings.deepseekSecretId] ??
+                        '')
+                    .isEmpty
+                ? '未配置 Key'
+                : '已配置 · ${settings.webSearch.deepseekModel}',
+          ),
+          trailing: const Icon(Icons.edit_outlined),
+          onTap: _saving ? null : _editDeepseek,
+        ),
+        ListTile(
+          key: const ValueKey('agent-search-tavily-key'),
+          title: const Text('Tavily API Key'),
+          subtitle: Text(
+            (widget.store.secrets[AgentWebSearchSettings.tavilySecretId] ?? '')
+                    .isEmpty
+                ? '未配置'
+                : '已配置，仅保存在本机',
+          ),
+          trailing: const Icon(Icons.edit_outlined),
+          onTap: _saving ? null : _editTavilyKey,
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Text('官网可能要求验证或限制请求，失败时可换用其他已启用的引擎。模型原生搜索在各模型的编辑页单独启用。'),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -116,15 +239,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                         if (action == 'delete') {
                           _delete(model);
                         } else {
-                          _save(
-                            AgentSettings(
-                              models: settings.models,
-                              defaultModelId: model.id,
-                              confirmPolicy: settings.confirmPolicy,
-                              autoBackupLimit: settings.autoBackupLimit,
-                              manualBackupLimit: settings.manualBackupLimit,
-                            ),
-                          );
+                          _save(settings.copyWith(defaultModelId: model.id));
                         }
                       },
                       itemBuilder: (_) => const [
@@ -141,6 +256,8 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                 icon: const Icon(Icons.add),
                 label: const Text('添加模型'),
               ),
+              const SizedBox(height: 28),
+              _webSearch(settings),
               const SizedBox(height: 28),
               DropdownButtonFormField<String>(
                 key: ValueKey(settings.confirmPolicy),
@@ -161,15 +278,7 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
                     ? null
                     : (value) {
                         if (value == null) return;
-                        _save(
-                          AgentSettings(
-                            models: settings.models,
-                            defaultModelId: settings.defaultModelId,
-                            confirmPolicy: value,
-                            autoBackupLimit: settings.autoBackupLimit,
-                            manualBackupLimit: settings.manualBackupLimit,
-                          ),
-                        );
+                        _save(settings.copyWith(confirmPolicy: value));
                       },
               ),
               const SizedBox(height: 12),
@@ -192,6 +301,245 @@ class _AgentSettingsPageState extends State<AgentSettingsPage> {
   }
 }
 
+class _DeepseekSearchDialog extends StatefulWidget {
+  final AgentWebSearchSettings settings;
+  final String apiKey;
+  const _DeepseekSearchDialog({required this.settings, required this.apiKey});
+  @override
+  State<_DeepseekSearchDialog> createState() => _DeepseekSearchDialogState();
+}
+
+class _DeepseekSearchDialogState extends State<_DeepseekSearchDialog> {
+  late final _key = TextEditingController(text: widget.apiKey);
+  late final _url = TextEditingController(
+    text: widget.settings.deepseekBaseUrl,
+  );
+  late final _model = TextEditingController(
+    text: widget.settings.deepseekModel,
+  );
+  bool _pasting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _key.dispose();
+    _url.dispose();
+    _model.dispose();
+    super.dispose();
+  }
+
+  Future<void> _paste() async {
+    final previous = _key.text;
+    setState(() => _pasting = true);
+    try {
+      final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      if (_key.text != previous) return;
+      if (text == null || text.trim().isEmpty) {
+        setState(() => _error = '剪贴板中没有可粘贴的文本');
+        return;
+      }
+      if (mounted) {
+        _key.value = TextEditingValue(
+          text: text.trim(),
+          selection: TextSelection.collapsed(offset: text.trim().length),
+        );
+      }
+    } catch (_) {
+      if (mounted) setState(() => _error = '无法读取剪贴板，请长按输入框粘贴');
+    } finally {
+      if (mounted) setState(() => _pasting = false);
+    }
+  }
+
+  void _save() {
+    final key = _key.text.trim();
+    try {
+      if (key.length > 4096 || RegExp(r'\s').hasMatch(key)) {
+        throw const FormatException('Key 不能含空格或换行，且长度不能超过4096字');
+      }
+      widget.settings
+          .withDeepseek(
+            baseUrl: _url.text.trim(),
+            model: _model.text.trim(),
+            enabled: true,
+          )
+          .deepseekSearchModel
+          .validate();
+      Navigator.pop(context, <String, dynamic>{
+        'key': key,
+        'base_url': _url.text.trim(),
+        'model': _model.text.trim(),
+      });
+    } on FormatException catch (e) {
+      setState(() => _error = e.message);
+    }
+  }
+
+  Widget _field(String name, String label, TextEditingController controller) =>
+      Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: TextField(
+          key: ValueKey('agent-deepseek-$name'),
+          controller: controller,
+          keyboardType: TextInputType.text,
+          autocorrect: false,
+          enableSuggestions: true,
+          enableIMEPersonalizedLearning: false,
+          decoration: InputDecoration(
+            labelText: label,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('DeepSeek 搜索设置'),
+    content: SizedBox(
+      width: 520,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '搜索独立调用下方模型，不要求当前对话使用 DeepSeek。Key 仅保存在本机；留空保存会关闭 DeepSeek 搜索。',
+            ),
+            _field('key', 'DeepSeek API Key', _key),
+            TextButton.icon(
+              key: const ValueKey('agent-deepseek-paste-key'),
+              onPressed: _pasting ? null : _paste,
+              icon: const Icon(Icons.content_paste),
+              label: const Text('粘贴 API Key'),
+            ),
+            _field('url', '搜索 API 地址（Messages）', _url),
+            _field('model', '搜索模型 ID', _model),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        key: const ValueKey('agent-deepseek-save'),
+        onPressed: _pasting ? null : _save,
+        child: const Text('保存'),
+      ),
+    ],
+  );
+}
+
+class _TavilyKeyDialog extends StatefulWidget {
+  final String initialValue;
+  const _TavilyKeyDialog({required this.initialValue});
+  @override
+  State<_TavilyKeyDialog> createState() => _TavilyKeyDialogState();
+}
+
+class _TavilyKeyDialogState extends State<_TavilyKeyDialog> {
+  late final _controller = TextEditingController(text: widget.initialValue);
+  bool _pasting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _paste() async {
+    final previous = _controller.text;
+    setState(() => _pasting = true);
+    try {
+      final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      if (_controller.text != previous) return;
+      if (text == null || text.trim().isEmpty) {
+        setState(() => _error = '剪贴板中没有可粘贴的文本');
+        return;
+      }
+      if (mounted) {
+        _controller.value = TextEditingValue(
+          text: text.trim(),
+          selection: TextSelection.collapsed(offset: text.trim().length),
+        );
+      }
+    } catch (_) {
+      if (mounted) setState(() => _error = '无法读取剪贴板，请长按输入框粘贴');
+    } finally {
+      if (mounted) setState(() => _pasting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Tavily API Key'),
+    scrollable: true,
+    content: SizedBox(
+      width: 460,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const ValueKey('agent-tavily-key-input'),
+            controller: _controller,
+            keyboardType: TextInputType.text,
+            autocorrect: false,
+            enableSuggestions: true,
+            enableIMEPersonalizedLearning: false,
+            decoration: InputDecoration(
+              labelText: 'API Key',
+              helperText: '从 Tavily 账户获取。留空保存会移除密钥并关闭 Tavily。',
+              helperMaxLines: 3,
+              errorText: _error,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          TextButton.icon(
+            key: const ValueKey('agent-tavily-paste-key'),
+            onPressed: _pasting ? null : _paste,
+            icon: const Icon(Icons.content_paste),
+            label: const Text('粘贴 API Key'),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        key: const ValueKey('agent-tavily-save-key'),
+        onPressed: _pasting
+            ? null
+            : () {
+                final value = _controller.text.trim();
+                if (value.length > 4096 || RegExp(r'\s').hasMatch(value)) {
+                  setState(() => _error = 'Key 不能含空格或换行，且长度不能超过4096字');
+                  return;
+                }
+                Navigator.pop(context, value);
+              },
+        child: const Text('保存'),
+      ),
+    ],
+  );
+}
+
 class _AgentModelEditor extends StatefulWidget {
   final AgentStore store;
   final AgentModel? original;
@@ -206,6 +554,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   late bool _vision;
   late bool _reasoning;
   late bool _stream;
+  late bool _nativeWebSearch;
   late AgentProtocol _protocol;
   bool _pastingKey = false;
   bool _saving = false;
@@ -245,6 +594,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     _vision = model?.supportsVision ?? false;
     _reasoning = model?.includeReasoning ?? false;
     _stream = model?.stream ?? true;
+    _nativeWebSearch = model?.nativeWebSearch ?? false;
     _protocol = model?.protocol ?? AgentProtocol.chat;
     _defaultThinking = model?.defaultThinking ?? 'default';
     _native = {
@@ -415,6 +765,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         temperature: temperature.isEmpty ? null : double.parse(temperature),
         protocol: _protocol,
         maxOutputTokens: maxOutputTokens,
+        nativeWebSearch: _protocol != AgentProtocol.chat && _nativeWebSearch,
       );
       model.validate();
       final old = widget.store.settings;
@@ -426,12 +777,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         models[index] = model;
       }
       await widget.store.saveSettings(
-        AgentSettings(
+        old.copyWith(
           models: models,
           defaultModelId: old.defaultModelId ?? model.id,
-          confirmPolicy: old.confirmPolicy,
-          autoBackupLimit: old.autoBackupLimit,
-          manualBackupLimit: old.manualBackupLimit,
         ),
         {...widget.store.secrets, model.id: _value('key')},
       );
@@ -587,6 +935,23 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 ),
               ),
               const SizedBox(height: 12),
+              SwitchListTile(
+                key: const ValueKey('agent-model-native-search'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('模型原生联网搜索'),
+                subtitle: Text(switch (_protocol) {
+                  AgentProtocol.chat =>
+                    '需要 Responses 或 Messages 接口；也可使用 Agent 设置中的网页搜索工具',
+                  AgentProtocol.responses =>
+                    '由模型服务执行，使用当前 API Key，服务商可能单独计费。DeepSeek 官方搜索请使用 Messages 接口',
+                  AgentProtocol.messages =>
+                    '支持 Anthropic 及兼容服务。DeepSeek 使用 https://api.deepseek.com/anthropic/v1 和当前 API Key；搜索可能单独计费',
+                }),
+                value: _protocol != AgentProtocol.chat && _nativeWebSearch,
+                onChanged: _saving || _protocol == AgentProtocol.chat
+                    ? null
+                    : (value) => setState(() => _nativeWebSearch = value),
+              ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('流式输出'),
@@ -776,10 +1141,7 @@ class _SourceBackupsSectionState extends State<_SourceBackupsSection> {
   void _setLimits({int? automatic, int? manual}) {
     final s = widget.settings;
     widget.onChanged?.call(
-      AgentSettings(
-        models: s.models,
-        defaultModelId: s.defaultModelId,
-        confirmPolicy: s.confirmPolicy,
+      s.copyWith(
         autoBackupLimit: automatic ?? s.autoBackupLimit,
         manualBackupLimit: manual ?? s.manualBackupLimit,
       ),

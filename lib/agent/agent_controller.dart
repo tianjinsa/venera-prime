@@ -70,7 +70,8 @@ class AgentController extends ChangeNotifier {
       messages.isNotEmpty &&
       (messages.last.role == 'user' ||
           messages.last.state != 'done' ||
-          messages.last.tools.isNotEmpty);
+          messages.last.tools.isNotEmpty ||
+          messages.last.needsNativeContinuation);
   bool get _hasQueuedInput =>
       messages.any((m) => m.role == 'user' && m.state == 'queued');
   int get _rootIndex =>
@@ -526,6 +527,7 @@ class AgentController extends ChangeNotifier {
       final message = messages[i];
       if (message.role == 'assistant' &&
           message.state != 'running' &&
+          !message.needsNativeContinuation &&
           !message.tools.any(
             (call) => ['pending', 'running'].contains(call['state']),
           )) {
@@ -715,9 +717,49 @@ class AgentController extends ChangeNotifier {
         store.saveMessage(retryMessage);
         _activeMessage = null;
       }
+      var continuingNative = false;
+      final nativeParts = <String, (AgentMessage, AgentJson)>{};
+      // Reuse the original search card after stopping, restarting the app or
+      // resuming a server pause. Only inspect this task and this model.
+      var foundProvider = false;
+      for (final message in messages.reversed) {
+        if (message.role == 'user' && !message.isFollowUp) break;
+        if (message.modelId != selected.id) continue;
+        for (final part in message.parts) {
+          if (part['type'] == 'native_search' && part['id'] is String) {
+            nativeParts.putIfAbsent(
+              part['id'] as String,
+              () => (message, part),
+            );
+          }
+        }
+        if (!foundProvider &&
+            message.parts.any((p) => p['type'] == 'provider_state')) {
+          continuingNative = message.needsNativeContinuation;
+          foundProvider = true;
+        }
+      }
+      void recordNative(AgentMessage message, AgentJson search) {
+        final id = search['id'] as String? ?? agentId();
+        final existing = nativeParts[id];
+        if (existing != null) {
+          existing.$2.addAll(search);
+          store.saveMessage(existing.$1);
+        } else {
+          final part = <String, dynamic>{
+            ...search,
+            'type': 'native_search',
+            'id': id,
+          };
+          message.parts.add(part);
+          nativeParts[id] = (message, part);
+        }
+      }
+
       while (true) {
         run.check();
-        if (compactionQueued || _shouldCompact(selected)) {
+        if (!continuingNative &&
+            (compactionQueued || _shouldCompact(selected))) {
           await _compact(selected, thinking, run);
         }
         run.check();
@@ -753,11 +795,15 @@ class AgentController extends ChangeNotifier {
           apiKey: store.secrets[selected.id] ?? '',
           thinkingId: thinking,
           messages: wire,
-          tools: AgentTools.schemas,
+          tools: tools.availableSchemas,
           run: run,
           onDelta: (type, text) {
             if (_disposed || run.isCancelled) return;
-            assistant.appendText(type, text);
+            if (type == 'native_search') {
+              recordNative(assistant, agentObject(jsonDecode(text)));
+            } else {
+              assistant.appendText(type, text);
+            }
             _throttle();
             _scheduleCheckpoint();
           },
@@ -770,6 +816,32 @@ class AgentController extends ChangeNotifier {
         if (!assistant.parts.any((p) => p['type'] == 'reasoning') &&
             response.reasoning.isNotEmpty) {
           assistant.appendText('reasoning', response.reasoning);
+        }
+        if (response.displayText != null) {
+          var first = true;
+          for (final part in assistant.parts.where(
+            (p) => p['type'] == 'text',
+          )) {
+            part['display_text'] = first ? response.displayText : '';
+            first = false;
+          }
+        }
+        for (final search in response.nativeSearches) {
+          recordNative(assistant, search);
+        }
+        continuingNative = response.continueTurn;
+        if (!continuingNative && response.tools.isEmpty) {
+          for (final entry in nativeParts.values) {
+            if ([
+              'running',
+              'pending',
+              'interrupted',
+            ].contains(entry.$2['state'])) {
+              entry.$2['state'] = 'failed';
+              entry.$2['text'] = '模型服务未返回本次搜索的完成结果';
+              store.saveMessage(entry.$1);
+            }
+          }
         }
         if (response.providerState != null) {
           // Not displayed; replayed only to the same model and protocol.
@@ -797,7 +869,7 @@ class AgentController extends ChangeNotifier {
         store.saveMessage(assistant);
         _activeMessage = null;
         _notify();
-        if (response.tools.isEmpty && !_hasQueuedInput) {
+        if (!continuingNative && response.tools.isEmpty && !_hasQueuedInput) {
           if (compactionQueued || _shouldCompact(selected)) {
             await _compact(selected, thinking, run);
           }
@@ -834,6 +906,19 @@ class AgentController extends ChangeNotifier {
           '工具未完成，未取得成功结果',
         ).toJson();
       }
+    }
+    for (final previous in messages.reversed) {
+      if (previous.role == 'user' && !previous.isFollowUp) break;
+      var changed = false;
+      for (final part in previous.parts.where(
+        (p) => p['type'] == 'native_search',
+      )) {
+        if (['pending', 'running'].contains(part['state'])) {
+          part['state'] = state;
+          changed = true;
+        }
+      }
+      if (changed && previous != message) store.saveMessage(previous);
     }
     store.saveMessage(message);
   }

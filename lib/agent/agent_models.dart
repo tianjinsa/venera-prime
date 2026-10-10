@@ -17,6 +17,7 @@ const agentToolLabels = {
   'list_search_options': '读取搜索选项',
   'search_source': '搜索漫画',
   'search_all': '多源搜索',
+  'search_web': '搜索网页',
   'comic_open_by_id': '按 ID 查看漫画',
   'comic_resolve': '识别漫画',
   'comic_get': '查看漫画详情',
@@ -265,6 +266,7 @@ class AgentModel {
   /// Output token limit. Anthropic Messages requires one; the others only
   /// send it when configured.
   final int? maxOutputTokens;
+  final bool nativeWebSearch;
   const AgentModel({
     required this.id,
     required this.name,
@@ -283,6 +285,7 @@ class AgentModel {
     this.temperature,
     this.protocol = AgentProtocol.chat,
     this.maxOutputTokens,
+    this.nativeWebSearch = false,
   });
   factory AgentModel.fromJson(AgentJson json) => AgentModel(
     id: json['id'] as String,
@@ -306,6 +309,7 @@ class AgentModel {
     temperature: (json['temperature'] as num?)?.toDouble(),
     protocol: AgentProtocol.parse(json['protocol']),
     maxOutputTokens: json['max_output_tokens'] as int?,
+    nativeWebSearch: json['native_web_search'] as bool? ?? false,
   );
   Uri get endpoint {
     final uri = Uri.tryParse(baseUrl.trim());
@@ -318,21 +322,31 @@ class AgentModel {
       throw const FormatException('API 地址需要是有效的 HTTP(S) 地址，不含账号或查询参数');
     }
     var path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+    var explicitEndpoint = false;
     // A complete endpoint of any protocol is accepted as its base address.
     for (final other in AgentProtocol.values) {
       if (path.endsWith(other.path)) {
+        explicitEndpoint = true;
         path = path.substring(0, path.length - other.path.length);
         break;
       }
     }
     // Official Responses and Messages services are versioned under /v1.
-    if (path.isEmpty && protocol != AgentProtocol.chat) path = '/v1';
+    if (path.isEmpty && protocol != AgentProtocol.chat && !explicitEndpoint) {
+      path = '/v1';
+    }
     return uri.replace(path: '$path${protocol.path}');
   }
 
   void validate() {
     endpoint;
-    if (id.isEmpty || name.trim().isEmpty || model.trim().isEmpty) {
+    if (id.isEmpty ||
+        [
+          AgentWebSearchSettings.tavilySecretId,
+          AgentWebSearchSettings.deepseekSecretId,
+        ].contains(id) ||
+        name.trim().isEmpty ||
+        model.trim().isEmpty) {
       throw const FormatException('请填写显示名称和模型 ID');
     }
     if (contextWindowTokens < 1) {
@@ -360,6 +374,9 @@ class AgentModel {
     if (maxOutputTokens != null && maxOutputTokens! < 1) {
       throw const FormatException('最大输出 tokens 需要是正整数');
     }
+    if (nativeWebSearch && protocol == AgentProtocol.chat) {
+      throw const FormatException('原生搜索需要 Responses 或 Messages 接口');
+    }
   }
 
   AgentThinkingLevel thinking(String? id) => thinkingLevels.firstWhere(
@@ -385,6 +402,104 @@ class AgentModel {
     'temperature': temperature,
     'protocol': protocol.id,
     'max_output_tokens': maxOutputTokens,
+    'native_web_search': nativeWebSearch,
+  };
+}
+
+enum AgentSearchEngine {
+  bing('Bing'),
+  google('Google'),
+  tavily('Tavily'),
+  deepseek('DeepSeek');
+
+  final String label;
+  const AgentSearchEngine(this.label);
+}
+
+class AgentWebSearchSettings {
+  /// Stored beside model keys in secrets.json, never in ordinary config.
+  static const tavilySecretId = 'web_search:tavily';
+  static const deepseekSecretId = 'web_search:deepseek';
+  static const defaultDeepseekBaseUrl = 'https://api.deepseek.com/anthropic/v1';
+  static const defaultDeepseekModel = 'deepseek-v4-flash';
+  final bool bing;
+  final bool google;
+  final bool tavily;
+  final bool deepseek;
+  final String deepseekBaseUrl;
+  final String deepseekModel;
+  const AgentWebSearchSettings({
+    this.bing = false,
+    this.google = false,
+    this.tavily = false,
+    this.deepseek = false,
+    this.deepseekBaseUrl = defaultDeepseekBaseUrl,
+    this.deepseekModel = defaultDeepseekModel,
+  });
+
+  factory AgentWebSearchSettings.fromJson(AgentJson json) =>
+      AgentWebSearchSettings(
+        bing: json['bing'] == true,
+        google: json['google'] == true,
+        tavily: json['tavily'] == true,
+        deepseek: json['deepseek'] == true,
+        deepseekBaseUrl:
+            json['deepseek_base_url'] as String? ?? defaultDeepseekBaseUrl,
+        deepseekModel:
+            json['deepseek_model'] as String? ?? defaultDeepseekModel,
+      );
+
+  bool enabled(AgentSearchEngine engine) => switch (engine) {
+    AgentSearchEngine.bing => bing,
+    AgentSearchEngine.google => google,
+    AgentSearchEngine.tavily => tavily,
+    AgentSearchEngine.deepseek => deepseek,
+  };
+
+  List<AgentSearchEngine> get engines =>
+      AgentSearchEngine.values.where(enabled).toList();
+
+  AgentWebSearchSettings withEngine(AgentSearchEngine engine, bool value) =>
+      AgentWebSearchSettings(
+        bing: engine == AgentSearchEngine.bing ? value : bing,
+        google: engine == AgentSearchEngine.google ? value : google,
+        tavily: engine == AgentSearchEngine.tavily ? value : tavily,
+        deepseek: engine == AgentSearchEngine.deepseek ? value : deepseek,
+        deepseekBaseUrl: deepseekBaseUrl,
+        deepseekModel: deepseekModel,
+      );
+
+  AgentWebSearchSettings withDeepseek({
+    required String baseUrl,
+    required String model,
+    required bool enabled,
+  }) => AgentWebSearchSettings(
+    bing: bing,
+    google: google,
+    tavily: tavily,
+    deepseek: enabled,
+    deepseekBaseUrl: baseUrl,
+    deepseekModel: model,
+  );
+
+  AgentModel get deepseekSearchModel => AgentModel(
+    id: 'deepseek-search',
+    name: 'DeepSeek 搜索',
+    baseUrl: deepseekBaseUrl,
+    model: deepseekModel,
+    protocol: AgentProtocol.messages,
+    stream: false,
+    nativeWebSearch: true,
+    maxOutputTokens: 4096,
+  );
+
+  AgentJson toJson() => {
+    'bing': bing,
+    'google': google,
+    'tavily': tavily,
+    'deepseek': deepseek,
+    'deepseek_base_url': deepseekBaseUrl,
+    'deepseek_model': deepseekModel,
   };
 }
 
@@ -400,12 +515,14 @@ class AgentSettings {
   /// automatically; creating more fails until old ones are deleted. 0 means
   /// no limit.
   final int manualBackupLimit;
+  final AgentWebSearchSettings webSearch;
   const AgentSettings({
     this.models = const [],
     this.defaultModelId,
     this.confirmPolicy = 'never',
     this.autoBackupLimit = 10,
     this.manualBackupLimit = 20,
+    this.webSearch = const AgentWebSearchSettings(),
   });
   factory AgentSettings.fromJson(AgentJson json) => AgentSettings(
     models: (json['models'] as List? ?? [])
@@ -415,6 +532,29 @@ class AgentSettings {
     confirmPolicy: json['confirm_policy'] as String? ?? 'never',
     autoBackupLimit: json['auto_backup_limit'] as int? ?? 10,
     manualBackupLimit: json['manual_backup_limit'] as int? ?? 20,
+    webSearch: AgentWebSearchSettings.fromJson(
+      agentObject(json['web_search'] ?? const {}),
+    ),
+  );
+
+  static const _unchanged = Object();
+
+  AgentSettings copyWith({
+    List<AgentModel>? models,
+    Object? defaultModelId = _unchanged,
+    String? confirmPolicy,
+    int? autoBackupLimit,
+    int? manualBackupLimit,
+    AgentWebSearchSettings? webSearch,
+  }) => AgentSettings(
+    models: models ?? this.models,
+    defaultModelId: identical(defaultModelId, _unchanged)
+        ? this.defaultModelId
+        : defaultModelId as String?,
+    confirmPolicy: confirmPolicy ?? this.confirmPolicy,
+    autoBackupLimit: autoBackupLimit ?? this.autoBackupLimit,
+    manualBackupLimit: manualBackupLimit ?? this.manualBackupLimit,
+    webSearch: webSearch ?? this.webSearch,
   );
   AgentModel? findModel(String? id) {
     for (final model in models) {
@@ -432,6 +572,7 @@ class AgentSettings {
     'confirm_policy': confirmPolicy,
     'auto_backup_limit': autoBackupLimit,
     'manual_backup_limit': manualBackupLimit,
+    'web_search': webSearch.toJson(),
   };
 }
 
@@ -596,6 +737,13 @@ class AgentMessage {
       .where((p) => p['type'] == 'text')
       .map((p) => p['text'] as String? ?? '')
       .join();
+  String get displayText => parts
+      .where((p) => p['type'] == 'text')
+      .map((p) => p['display_text'] as String? ?? p['text'] as String? ?? '')
+      .join();
+  bool get needsNativeContinuation => parts.any(
+    (p) => p['type'] == 'provider_state' && p['continue_turn'] == true,
+  );
   Iterable<AgentJson> get tools => parts.where((p) => p['type'] == 'tool_call');
   List<AgentImageAttachment> get images => parts
       .where((p) => p['type'] == 'image')
