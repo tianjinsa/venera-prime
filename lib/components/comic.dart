@@ -1,19 +1,25 @@
 part of 'components.dart';
 
-String? _authorFromTag(String tag) {
-  final separator = tag.indexOf(':');
-  if (separator < 0) return null;
-  final namespace = tag.substring(0, separator).trim().toLowerCase();
-  if (namespace != 'artist' && namespace != 'author') return null;
-  final author = tag.substring(separator + 1).trim();
-  return author.isEmpty ? null : author;
-}
+Set<String> _blockingAuthors(Comic comic) => ComicBlockFilter.authorsOf(comic);
 
-Set<String> _blockingAuthors(Comic comic) => {
-  if (comic.subtitle?.trim().isNotEmpty ?? false) comic.subtitle!.trim(),
-  for (final tag in comic.tags ?? <String>[])
-    if (_authorFromTag(tag) case final String author) author,
-};
+ComicBlockFilter? _cachedBlockFilter;
+
+ComicBlockFilter _currentBlockFilter() {
+  final words = (appdata.settings['blockedWords'] as List)
+      .whereType<String>()
+      .toList();
+  final authors = (appdata.settings['blockedAuthors'] as List)
+      .whereType<String>()
+      .toList();
+  final cached = _cachedBlockFilter;
+  // Settings may be edited in place, so compare against copied rule contents.
+  if (cached != null &&
+      cached.words.isEqualTo(words) &&
+      cached.authors.isEqualTo(authors)) {
+    return cached;
+  }
+  return _cachedBlockFilter = ComicBlockFilter(words: words, authors: authors);
+}
 
 ImageProvider? _findImageProvider(Comic comic) {
   ImageProvider image;
@@ -516,7 +522,9 @@ class ComicTile extends StatelessWidget {
         var all = <String>[];
         all.addAll(_splitText(comic.title));
         all.addAll(
-          (comic.tags ?? []).where((tag) => _authorFromTag(tag) == null),
+          (comic.tags ?? []).where(
+            (tag) => ComicBlockFilter.authorFromTag(tag) == null,
+          ),
         );
         return StatefulBuilder(
           builder: (context, setState) {
@@ -864,6 +872,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
   List<Comic> _sourceComics = [];
   List<int> heroIDs = [];
   Map<int, int> _heroIndexes = {};
+  late ComicBlockFilter _blockFilter;
 
   static int _nextHeroID = 0;
 
@@ -872,10 +881,13 @@ class _SliverGridComicsState extends State<SliverGridComics> {
       for (var i = 0; i < comics.length; i++) comics[i]: heroIDs[i],
     };
     _sourceComics = List.of(widget.comics);
+    _blockFilter = _currentBlockFilter();
     comics = [
       for (final comic in _sourceComics)
-        if (isBlocked(comic, filterBlockedWords: widget.filterBlockedWords) ==
-            null)
+        if (!_blockFilter.blocks(
+          comic,
+          filterBlockedWords: widget.filterBlockedWords,
+        ))
           comic,
     ];
     heroIDs = [for (final comic in comics) previousIDs[comic] ?? _nextHeroID++];
@@ -888,6 +900,7 @@ class _SliverGridComicsState extends State<SliverGridComics> {
     // and title. A new list from HistoryPage must still replace the tile
     // objects so their image-provider keys use the refreshed cover URL.
     if (oldWidget.filterBlockedWords != widget.filterBlockedWords ||
+        !identical(_blockFilter, _currentBlockFilter()) ||
         !identical(oldWidget.comics, widget.comics) ||
         !_sourceComics.isEqualTo(widget.comics)) {
       _refreshComics();
@@ -1018,40 +1031,11 @@ class _SliverGridComics extends StatelessWidget {
 }
 
 /// return the first blocked keyword, or null if not blocked
-String? isBlocked(Comic item, {bool filterBlockedWords = true}) {
-  final authors = _blockingAuthors(item);
-  for (final author in appdata.settings['blockedAuthors']) {
-    if (author is String &&
-        author.trim().isNotEmpty &&
-        authors.contains(author.trim())) {
-      return author;
-    }
-  }
-  if (!filterBlockedWords) return null;
-  for (var word in appdata.settings['blockedWords']) {
-    if (item.title.contains(word)) {
-      return word;
-    }
-    if (item.subtitle?.contains(word) ?? false) {
-      return word;
-    }
-    if (item.description.contains(word)) {
-      return word;
-    }
-    for (var tag in item.tags ?? <String>[]) {
-      if (tag == word) {
-        return word;
-      }
-      if (tag.contains(':')) {
-        tag = tag.split(':')[1];
-        if (tag == word) {
-          return word;
-        }
-      }
-    }
-  }
-  return null;
-}
+String? isBlocked(Comic item, {bool filterBlockedWords = true}) =>
+    _currentBlockFilter().firstReason(
+      item,
+      filterBlockedWords: filterBlockedWords,
+    );
 
 class ComicList extends StatefulWidget {
   const ComicList({
