@@ -79,6 +79,22 @@ Future<File> exportAppData([bool sync = true]) async {
           manifestFiles.add(name);
         }
 
+        void addDatabase(String name, String path, {bool optional = false}) {
+          if (optional && !File(path).existsSync()) return;
+          final snapshotPath = '$cacheFilePath.$name.snapshot';
+          final db = sqlite3.open(path, mode: OpenMode.readOnly);
+          try {
+            db.execute('PRAGMA busy_timeout = 1000;');
+            // Include committed WAL pages in a self-contained backup file.
+            db.execute('VACUUM main INTO ?;', [snapshotPath]);
+            addStableFile(name, snapshotPath);
+          } finally {
+            db.dispose();
+            final snapshot = File(snapshotPath);
+            if (snapshot.existsSync()) snapshot.deleteSync();
+          }
+        }
+
         var historyFile = FilePath.join(dataPath, "history.db");
         var localFavoriteFile = FilePath.join(dataPath, "local_favorite.db");
         var readLaterFile = FilePath.join(dataPath, "read_later.db");
@@ -88,20 +104,8 @@ Future<File> exportAppData([bool sync = true]) async {
           sync ? "syncdata.json" : "appdata.json",
         );
         final cookiePath = FilePath.join(dataPath, 'cookie.db');
-        if (File(cookiePath).existsSync()) {
-          final snapshotPath = '$cacheFilePath.cookies';
-          final db = sqlite3.open(cookiePath, mode: OpenMode.readOnly);
-          try {
-            // SQLite produces a consistent snapshot, including any WAL contents.
-            db.execute('VACUUM main INTO ?;', [snapshotPath]);
-            addStableFile('cookie.db', snapshotPath);
-          } finally {
-            db.dispose();
-            final snapshot = File(snapshotPath);
-            if (snapshot.existsSync()) snapshot.deleteSync();
-          }
-        }
-        addStableFile("history.db", historyFile);
+        addDatabase('cookie.db', cookiePath, optional: true);
+        addDatabase('history.db', historyFile);
         addStableFile("local_favorite.db", localFavoriteFile);
         addStableFile("read_later.db", readLaterFile, optional: true);
         addStableFile("reading_statistics.db", statisticsFile, optional: true);
@@ -320,9 +324,9 @@ Future<void> _commitBackup(
     backup: rollback,
     names: names,
   );
-  void closeDatabases() {
+  Future<void> closeDatabases() async {
+    await HistoryManager().closeAfterReads();
     if (replaceCookies) SingleInstanceCookieJar.instance?.dispose();
-    HistoryManager().close();
     LocalFavoritesManager().close();
     ReadLaterManager().close();
     ReadingStatisticsManager().close();
@@ -345,7 +349,7 @@ Future<void> _commitBackup(
 
   var cleanupRollback = false;
   try {
-    closeDatabases();
+    await closeDatabases();
     await transaction.apply();
     appdata.syncData(
       jsonDecode(
@@ -360,7 +364,7 @@ Future<void> _commitBackup(
     cleanupRollback = true;
   } catch (error, stack) {
     try {
-      closeDatabases();
+      await closeDatabases();
       await transaction.rollback();
       appdata.restoreMemorySnapshot(snapshot);
       await openDatabases();

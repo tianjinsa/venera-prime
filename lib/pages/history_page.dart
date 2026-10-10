@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
-import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/history_pager.dart';
 import 'package:venera/utils/translations.dart';
 
 class HistoryPage extends StatefulWidget {
@@ -16,10 +16,15 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
+  late final _pager = HistoryPager(manager: HistoryManager());
+  final _scrollController = ScrollController();
+
   @override
   void initState() {
     super.initState();
-    _reloadHistory();
+    _pager.addListener(_onPageChanged);
+    _scrollController.addListener(_maybeLoadMore);
+    unawaited(_reloadHistory());
     HistoryManager().addListener(onUpdate);
     ComicSourceManager().addListener(onUpdate);
   }
@@ -30,6 +35,8 @@ class _HistoryPageState extends State<HistoryPage> {
     ComicSourceManager().removeListener(onUpdate);
     _searchTimer?.cancel();
     _reloadTimer?.cancel();
+    _pager.dispose();
+    _scrollController.dispose();
     searchController.dispose();
     super.dispose();
   }
@@ -39,24 +46,56 @@ class _HistoryPageState extends State<HistoryPage> {
     // for the burst instead of reloading the database for every notification.
     _reloadTimer ??= Timer(const Duration(milliseconds: 100), () {
       _reloadTimer = null;
-      setState(_reloadHistory);
+      _searchTimer?.cancel();
+      unawaited(_reloadHistory());
     });
   }
 
-  void _reloadHistory() {
-    _searchIndex = HistorySearchIndex(HistoryManager().getAll());
-    comics = _searchIndex.search(query);
-    if (multiSelectMode) {
-      final remaining = comics.toSet();
-      selectedComics.removeWhere((comic, _) => !remaining.contains(comic));
-      if (selectedComics.isEmpty) {
-        multiSelectMode = false;
-      }
+  void _onPageChanged() {
+    if (!mounted) return;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeLoadMore());
+  }
+
+  void _maybeLoadMore() {
+    if (!mounted ||
+        !_scrollController.hasClients ||
+        (_searchTimer?.isActive ?? false) ||
+        _pager.query != query) {
+      return;
+    }
+    final position = _scrollController.position;
+    if (position.extentAfter < position.viewportDimension * 2) {
+      unawaited(_pager.loadMore());
     }
   }
 
-  late HistorySearchIndex _searchIndex;
-  List<History> comics = [];
+  Future<bool> _reloadHistory({bool keepLoaded = true}) async {
+    final loaded = await _pager.reload(query: query, keepLoaded: keepLoaded);
+    if (!mounted || !loaded) return false;
+    if (multiSelectMode && selectedComics.isNotEmpty) {
+      final revision = _pager.revision;
+      final selectionRequest = _selectionRequest;
+      try {
+        final remaining = await HistoryManager().getMatchingIds(query: query);
+        if (!mounted ||
+            revision != _pager.revision ||
+            selectionRequest != _selectionRequest ||
+            !multiSelectMode) {
+          return false;
+        }
+        setState(() {
+          selectedComics.retainAll(remaining);
+          if (selectedComics.isEmpty) multiSelectMode = false;
+        });
+      } catch (_) {
+        // A later refresh can reconcile selection; the loaded page is usable.
+      }
+    }
+    return true;
+  }
+
+  List<History> get comics => _pager.items;
   var controller = FlyoutController();
   final searchController = TextEditingController();
   Timer? _searchTimer;
@@ -64,18 +103,27 @@ class _HistoryPageState extends State<HistoryPage> {
   bool searchMode = false;
   String query = '';
 
+  Future<bool> _applyQuery() {
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
+    return _reloadHistory(keepLoaded: false);
+  }
+
   void _search(String value) {
     _searchTimer?.cancel();
     setState(() {
       query = value;
       selectedComics.clear();
+      _selectionRequest++;
+      _selectingAll = false;
       multiSelectMode = false;
-      if (query.trim().isEmpty) comics = _searchIndex.histories;
     });
-    if (query.trim().isEmpty) return;
+    if (query.trim().isEmpty) {
+      unawaited(_applyQuery());
+      return;
+    }
     _searchTimer = Timer(const Duration(milliseconds: 200), () {
       _searchTimer = null;
-      setState(() => comics = _searchIndex.search(query));
+      unawaited(_applyQuery());
     });
   }
 
@@ -85,55 +133,82 @@ class _HistoryPageState extends State<HistoryPage> {
     FocusScope.of(context).unfocus();
     setState(() {
       searchMode = false;
-      query = '';
-      comics = _searchIndex.histories;
     });
+    _search('');
   }
 
-  void _enterMultiSelect() {
+  Future<void> _enterMultiSelect() async {
+    final request = ++_selectionRequest;
     _searchTimer?.cancel();
     FocusScope.of(context).unfocus();
+    final requestedQuery = query;
+    if (_pager.query != query || _pager.isReloading || _pager.error != null) {
+      if (!await _applyQuery()) return;
+    }
+    if (mounted && request == _selectionRequest && query == requestedQuery) {
+      setState(() => multiSelectMode = true);
+    }
+  }
+
+  void _exitMultiSelect() {
     setState(() {
-      comics = _searchIndex.search(query);
-      multiSelectMode = true;
+      multiSelectMode = false;
+      selectedComics.clear();
+      _selectionRequest++;
+      _selectingAll = false;
     });
   }
 
   bool multiSelectMode = false;
-  Map<History, bool> selectedComics = {};
+  Set<ComicID> selectedComics = {};
+  bool _selectingAll = false;
+  int _selectionRequest = 0;
 
-  void selectAll() {
-    setState(() {
-      selectedComics = comics.asMap().map((k, v) => MapEntry(v, true));
-    });
+  ComicID _identity(History comic) => ComicID(comic.type, comic.id);
+
+  Future<void> _selectAcrossQuery({bool invert = false}) async {
+    if (_selectingAll) return;
+    final request = ++_selectionRequest;
+    final revision = _pager.revision;
+    setState(() => _selectingAll = true);
+    try {
+      final identities = await HistoryManager().getMatchingIds(query: query);
+      if (!mounted ||
+          request != _selectionRequest ||
+          revision != _pager.revision ||
+          !multiSelectMode) {
+        return;
+      }
+      setState(() {
+        selectedComics = invert
+            ? identities.difference(selectedComics)
+            : identities;
+      });
+    } catch (_) {
+      if (mounted && request == _selectionRequest) {
+        context.showMessage(message: 'Failed to load history'.tl);
+      }
+    } finally {
+      if (mounted && request == _selectionRequest) {
+        setState(() => _selectingAll = false);
+      }
+    }
   }
+
+  Future<void> selectAll() => _selectAcrossQuery();
 
   void deSelect() {
     setState(() {
       selectedComics.clear();
+      _selectionRequest++;
+      _selectingAll = false;
     });
   }
 
-  void invertSelection() {
-    setState(() {
-      comics.asMap().forEach((k, v) {
-        selectedComics[v] = !selectedComics.putIfAbsent(v, () => false);
-      });
-      selectedComics.removeWhere((k, v) => !v);
-    });
-  }
+  Future<void> invertSelection() => _selectAcrossQuery(invert: true);
 
   void _removeHistory(History comic) {
-    if (comic.sourceKey.startsWith("Unknown")) {
-      HistoryManager().remove(
-        comic.id,
-        ComicType(int.parse(comic.sourceKey.split(':')[1])),
-      );
-    } else if (comic.sourceKey == 'local') {
-      HistoryManager().remove(comic.id, ComicType.local);
-    } else {
-      HistoryManager().remove(comic.id, ComicType(comic.sourceKey.hashCode));
-    }
+    HistoryManager().remove(comic.id, comic.type);
   }
 
   void _refreshHistory(History comic) async {
@@ -200,7 +275,7 @@ class _HistoryPageState extends State<HistoryPage> {
       IconButton(
         icon: const Icon(Icons.select_all),
         tooltip: "Select All".tl,
-        onPressed: selectAll,
+        onPressed: _selectingAll ? null : selectAll,
       ),
       IconButton(
         icon: const Icon(Icons.deselect),
@@ -210,23 +285,18 @@ class _HistoryPageState extends State<HistoryPage> {
       IconButton(
         icon: const Icon(Icons.flip),
         tooltip: "Invert Selection".tl,
-        onPressed: invertSelection,
+        onPressed: _selectingAll ? null : invertSelection,
       ),
       IconButton(
         icon: const Icon(Icons.delete),
         tooltip: "Delete".tl,
-        onPressed: selectedComics.isEmpty
+        onPressed: selectedComics.isEmpty || _selectingAll
             ? null
             : () {
-                final comicsToDelete = List<History>.from(selectedComics.keys);
-                setState(() {
-                  multiSelectMode = false;
-                  selectedComics.clear();
-                });
+                final comicsToDelete = selectedComics.toList();
+                _exitMultiSelect();
 
-                for (final comic in comicsToDelete) {
-                  _removeHistory(comic);
-                }
+                HistoryManager().batchDeleteHistories(comicsToDelete);
               },
       ),
     ];
@@ -307,103 +377,124 @@ class _HistoryPageState extends State<HistoryPage> {
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         if (multiSelectMode) {
-          setState(() {
-            multiSelectMode = false;
-            selectedComics.clear();
-          });
+          _exitMultiSelect();
         } else if (searchMode) {
           _closeSearch();
         }
       },
       child: Scaffold(
-        body: SmoothCustomScrollView(
-          slivers: [
-            SliverAppbar(
-              leading: Tooltip(
-                message: multiSelectMode || searchMode
-                    ? "Cancel".tl
-                    : "Back".tl,
-                child: IconButton(
-                  onPressed: () {
-                    if (multiSelectMode) {
-                      setState(() {
-                        multiSelectMode = false;
-                        selectedComics.clear();
-                      });
-                    } else if (searchMode) {
-                      _closeSearch();
-                    } else {
-                      context.pop();
-                    }
-                  },
-                  icon: multiSelectMode || searchMode
-                      ? const Icon(Icons.close)
-                      : const Icon(Icons.arrow_back),
+        body: NotificationListener<ScrollMetricsNotification>(
+          onNotification: (_) {
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _maybeLoadMore(),
+            );
+            return false;
+          },
+          child: SmoothCustomScrollView(
+            controller: _scrollController,
+            slivers: [
+              SliverAppbar(
+                leading: Tooltip(
+                  message: multiSelectMode || searchMode
+                      ? "Cancel".tl
+                      : "Back".tl,
+                  child: IconButton(
+                    onPressed: () {
+                      if (multiSelectMode) {
+                        _exitMultiSelect();
+                      } else if (searchMode) {
+                        _closeSearch();
+                      } else {
+                        context.pop();
+                      }
+                    },
+                    icon: multiSelectMode || searchMode
+                        ? const Icon(Icons.close)
+                        : const Icon(Icons.arrow_back),
+                  ),
                 ),
+                title: multiSelectMode
+                    ? Text(selectedComics.length.toString())
+                    : searchMode
+                    ? TextField(
+                        controller: searchController,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          hintText: 'Search'.tl,
+                          border: InputBorder.none,
+                        ),
+                        onChanged: _search,
+                      )
+                    : Text('History'.tl),
+                actions: multiSelectMode
+                    ? selectActions
+                    : searchMode
+                    ? searchActions
+                    : normalActions,
               ),
-              title: multiSelectMode
-                  ? Text(selectedComics.length.toString())
-                  : searchMode
-                  ? TextField(
-                      controller: searchController,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        hintText: 'Search'.tl,
-                        border: InputBorder.none,
-                      ),
-                      onChanged: _search,
-                    )
-                  : Text('History'.tl),
-              actions: multiSelectMode
-                  ? selectActions
-                  : searchMode
-                  ? searchActions
-                  : normalActions,
-            ),
-            SliverGridComics(
-              comics: comics,
-              listenToHistoryChanges: false,
-              filterBlockedWords: false,
-              selections: selectedComics,
-              onLongPressed: null,
-              onTap: multiSelectMode
-                  ? (c, heroID) {
-                      setState(() {
-                        if (selectedComics.containsKey(c as History)) {
-                          selectedComics.remove(c);
-                        } else {
-                          selectedComics[c] = true;
-                        }
-                        if (selectedComics.isEmpty) {
-                          multiSelectMode = false;
-                        }
-                      });
-                    }
-                  : null,
-              badgeBuilder: (c) {
-                return ComicSource.find(c.sourceKey)?.name;
-              },
-              menuBuilder: (c) {
-                return [
-                  MenuEntry(
-                    icon: Icons.refresh,
-                    text: 'Refresh Info'.tl,
-                    onClick: () {
-                      _refreshHistory(c as History);
-                    },
+              SliverGridComics(
+                comics: comics,
+                listenToHistoryChanges: false,
+                filterBlockedWords: false,
+                selections: {
+                  for (final comic in comics)
+                    if (selectedComics.contains(_identity(comic))) comic: true,
+                },
+                onLongPressed: null,
+                onTap: multiSelectMode
+                    ? (c, heroID) {
+                        setState(() {
+                          _selectionRequest++;
+                          _selectingAll = false;
+                          final identity = _identity(c as History);
+                          if (selectedComics.contains(identity)) {
+                            selectedComics.remove(identity);
+                          } else {
+                            selectedComics.add(identity);
+                          }
+                          if (selectedComics.isEmpty) {
+                            multiSelectMode = false;
+                          }
+                        });
+                      }
+                    : null,
+                badgeBuilder: (c) {
+                  return ComicSource.find(c.sourceKey)?.name;
+                },
+                menuBuilder: (c) {
+                  return [
+                    MenuEntry(
+                      icon: Icons.refresh,
+                      text: 'Refresh Info'.tl,
+                      onClick: () {
+                        _refreshHistory(c as History);
+                      },
+                    ),
+                    MenuEntry(
+                      icon: Icons.remove,
+                      text: 'Remove'.tl,
+                      color: context.colorScheme.error,
+                      onClick: () {
+                        _removeHistory(c as History);
+                      },
+                    ),
+                  ];
+                },
+              ),
+              if (_pager.error != null)
+                SliverToBoxAdapter(
+                  child: Center(
+                    child: TextButton.icon(
+                      onPressed: () => unawaited(_pager.retry()),
+                      icon: const Icon(Icons.refresh),
+                      label: Text('Retry'.tl),
+                    ),
                   ),
-                  MenuEntry(
-                    icon: Icons.remove,
-                    text: 'Remove'.tl,
-                    color: context.colorScheme.error,
-                    onClick: () {
-                      _removeHistory(c as History);
-                    },
-                  ),
-                ];
-              },
-            ),
-          ],
+                )
+              else if (_pager.loading)
+                const SliverListLoadingIndicator(),
+            ],
+          ),
         ),
       ),
     );

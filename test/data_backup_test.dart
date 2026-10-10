@@ -12,6 +12,9 @@ import 'package:venera/network/cookie_jar.dart';
 import 'package:venera/utils/archive_security.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/read_later.dart';
+import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/favorites.dart';
+import 'package:venera/foundation/reading_statistics.dart';
 import 'package:venera/utils/data.dart';
 import 'package:zip_flutter/zip_flutter.dart' as native_zip;
 
@@ -155,6 +158,24 @@ void main() {
           }),
         );
         for (final sync in [false, true]) {
+          final history = HistoryManager();
+          final item = History.fromMap({
+            'id': 'wal-history-$sync',
+            'type': 42,
+            'title': 'Recent history',
+            'subtitle': 'Author',
+            'cover': '',
+            'time': 1700000000000,
+            'ep': 1,
+            'page': 8,
+            'readEpisode': ['1'],
+          });
+          history.addHistory(item);
+          // Keep the writer open: the newest history is still in the WAL.
+          expect(
+            File('${directory.path}/history.db-wal').lengthSync(),
+            greaterThan(0),
+          );
           final exported = await exportAppData(sync);
           final extracted = Directory('${cache.path}/export-$sync');
           await ArchiveSecurity.extract(exported, extracted);
@@ -175,12 +196,31 @@ void main() {
             'fixture-session',
           );
           exportedCookies.dispose();
+          final exportedHistory = sqlite3.open('${extracted.path}/history.db');
+          try {
+            expect(
+              exportedHistory.select('PRAGMA integrity_check;').single[0],
+              'ok',
+            );
+            expect(
+              exportedHistory.select('SELECT page FROM history WHERE id = ?;', [
+                item.id,
+              ]).single[0],
+              8,
+            );
+          } finally {
+            exportedHistory.dispose();
+          }
           final expectedSourceData = sourceData.readAsStringSync();
           sourceData.writeAsStringSync('{}');
           cookies.deleteAll();
           await importAppData(exported);
           expect(sourceData.readAsStringSync(), expectedSourceData);
           expect(cookies.loadForRequest(uri).single.value, 'fixture-session');
+          expect(
+            (await HistoryManager().getPage(query: item.id)).items.single.page,
+            8,
+          );
           await exported.delete();
         }
         await sourceDir.delete(recursive: true);
@@ -221,6 +261,9 @@ void main() {
       );
 
       manager.close();
+      await HistoryManager().closeAfterReads();
+      LocalFavoritesManager().close();
+      ReadingStatisticsManager().close();
       cookies.dispose();
       SingleInstanceCookieJar.instance = null;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

@@ -218,6 +218,111 @@ class HistorySearchIndex {
   }
 }
 
+class HistoryCursor {
+  const HistoryCursor(this.time, this.id, this.type);
+
+  HistoryCursor.fromHistory(History history)
+    : time = history.time.millisecondsSinceEpoch,
+      id = history.id,
+      type = history.type.value;
+
+  final int time;
+  final String id;
+  final int type;
+}
+
+class HistoryPageResult {
+  const HistoryPageResult(this.items, {this.nextCursor});
+
+  final List<History> items;
+  final HistoryCursor? nextCursor;
+}
+
+String _historySearchCondition(
+  Database db,
+  String query,
+  Map<int, String> sources,
+) {
+  final normalized = query.trim().toLowerCase();
+  if (normalized.isEmpty) return '1';
+  final words = normalized.split(_historyQuerySeparator);
+  // SQLite's built-in lower() only handles ASCII. Keep the existing Dart
+  // search semantics, including source names, on the database worker.
+  db.createFunction(
+    functionName: 'history_matches',
+    argumentCount: const AllowedArgumentCount(4),
+    deterministic: true,
+    function: (arguments) {
+      final type = arguments[3] as int;
+      final source = type == 0 ? 'local' : sources[type] ?? 'Unknown:$type';
+      final text = [
+        arguments[0] ?? '',
+        arguments[1] ?? '',
+        arguments[2],
+        source,
+      ].join('\n').toLowerCase();
+      return words.every(text.contains) ? 1 : 0;
+    },
+  );
+  return 'history_matches(title, subtitle, id, type) = 1';
+}
+
+Future<HistoryPageResult> _readHistoryPage(
+  String dbPath,
+  String query,
+  Map<int, String> sources,
+  HistoryCursor? cursor,
+  int limit,
+) => Isolate.run(() {
+  final db = sqlite3.open(dbPath, mode: OpenMode.readOnly);
+  try {
+    db.execute('PRAGMA busy_timeout = 1000;');
+    final condition = _historySearchCondition(db, query, sources);
+    final rows = db.select(
+      '''
+      SELECT * FROM history
+      WHERE $condition
+        ${cursor == null ? '' : 'AND (time, id, type) < (?, ?, ?)'}
+      ORDER BY time DESC, id DESC, type DESC
+      LIMIT ?;
+    ''',
+      [
+        if (cursor != null) ...[cursor.time, cursor.id, cursor.type],
+        limit + 1,
+      ],
+    );
+    final items = rows.take(limit).map(History.fromRow).toList();
+    return HistoryPageResult(
+      items,
+      nextCursor: rows.length > limit
+          ? HistoryCursor.fromHistory(items.last)
+          : null,
+    );
+  } finally {
+    db.dispose();
+  }
+});
+
+Future<Set<ComicID>> _readHistoryIds(
+  String dbPath,
+  String query,
+  Map<int, String> sources,
+) => Isolate.run(() {
+  final db = sqlite3.open(dbPath, mode: OpenMode.readOnly);
+  try {
+    db.execute('PRAGMA busy_timeout = 1000;');
+    final condition = _historySearchCondition(db, query, sources);
+    return {
+      for (final row in db.select(
+        'SELECT id, type FROM history WHERE $condition;',
+      ))
+        ComicID(ComicType(row['type'] as int), row['id'] as String),
+    };
+  } finally {
+    db.dispose();
+  }
+});
+
 class HistoryManager with ChangeNotifier {
   static HistoryManager? cache;
 
@@ -227,6 +332,8 @@ class HistoryManager with ChangeNotifier {
       cache == null ? (cache = HistoryManager.create()) : cache!;
 
   late Database _db;
+  final _pendingReads = <Future<void>>{};
+  bool _closingReads = false;
 
   int get length => _db.select("select count(*) from history;").first[0] as int;
 
@@ -261,10 +368,13 @@ class HistoryManager with ChangeNotifier {
   Future<void> _initInternal() async {
     if (isInitialized) return;
     final dbPath = "${App.dataPath}/history.db";
+    var corrupt = false;
     try {
       _db = sqlite3.open(dbPath);
+      _db.execute('PRAGMA busy_timeout = 1000;');
       final integrity = _db.select('PRAGMA integrity_check;');
       if (integrity.isEmpty || integrity.first[0] != 'ok') {
+        corrupt = true;
         throw StateError('history database integrity check failed');
       }
       _db.execute("""
@@ -284,6 +394,12 @@ class HistoryManager with ChangeNotifier {
         );
       """);
     } catch (e, s) {
+      // Lock, permission and native-library errors are not database corruption.
+      if (!corrupt &&
+          !(e is SqliteException &&
+              (e.resultCode == 11 || e.resultCode == 26))) {
+        rethrow;
+      }
       Log.error(
         'History',
         'Database is corrupt; preserving it and creating a new one: $e',
@@ -297,6 +413,7 @@ class HistoryManager with ChangeNotifier {
       );
       File(dbPath).renameSync(backup.path);
       _db = sqlite3.open(dbPath);
+      _db.execute('PRAGMA busy_timeout = 1000;');
       _db.execute("""
         create table history (
           id text not null, title text, subtitle text, cover text,
@@ -341,9 +458,17 @@ class HistoryManager with ChangeNotifier {
       }
     }
 
-    notifyListeners();
+    // Background readers must not block saving progress or refreshing covers.
+    // App backups use a SQLite snapshot so committed WAL data is included.
+    _db.execute('PRAGMA journal_mode = WAL;');
+    _db.execute('''
+      CREATE INDEX IF NOT EXISTS history_time_identity_idx
+      ON history(time DESC, id DESC, type DESC);
+    ''');
     ImageFavoriteManager().init();
     isInitialized = true;
+    _closingReads = false;
+    notifyListeners();
   }
 
   static const _insertHistorySql = """
@@ -478,16 +603,72 @@ class HistoryManager with ChangeNotifier {
   List<History> getAll() {
     var res = _db.select("""
       select * from history
-      order by time DESC;
+      order by time DESC, id DESC, type DESC;
     """);
     return res.map((element) => History.fromRow(element)).toList();
+  }
+
+  Map<int, String> _searchSources(String query) => query.trim().isEmpty
+      ? const {}
+      : {
+          for (final source in ComicSource.all())
+            source.key.hashCode: '${source.key}\n${source.name}',
+        };
+
+  /// Read a bounded page on its own connection without moving native handles
+  /// across isolates. A composite cursor keeps equal timestamps deterministic.
+  Future<HistoryPageResult> getPage({
+    HistoryCursor? cursor,
+    int limit = 60,
+    String query = '',
+  }) {
+    RangeError.checkValueInInterval(limit, 1, 200, 'limit');
+    return _trackRead(
+      () => _readHistoryPage(
+        '${App.dataPath}/history.db',
+        query,
+        _searchSources(query),
+        cursor,
+        limit,
+      ),
+    );
+  }
+
+  /// Whole-query selection needs identities, not every cover and chapter set.
+  Future<Set<ComicID>> getMatchingIds({String query = ''}) => _trackRead(
+    () => _readHistoryIds(
+      '${App.dataPath}/history.db',
+      query,
+      _searchSources(query),
+    ),
+  );
+
+  Future<T> _trackRead<T>(Future<T> Function() read) async {
+    if (!isInitialized || _closingReads) {
+      throw StateError('History database is closed');
+    }
+    final done = Completer<void>();
+    _pendingReads.add(done.future);
+    try {
+      return await read();
+    } finally {
+      _pendingReads.remove(done.future);
+      done.complete();
+    }
+  }
+
+  /// Restore must wait for worker handles before replacing the database file.
+  Future<void> closeAfterReads() async {
+    _closingReads = true;
+    await Future.wait(_pendingReads.toList());
+    close();
   }
 
   /// 获取最近阅读的漫画
   List<History> getRecent() {
     var res = _db.select("""
       select * from history
-      order by time DESC
+      order by time DESC, id DESC, type DESC
       limit 20;
     """);
     return res.map((element) => History.fromRow(element)).toList();
@@ -502,6 +683,7 @@ class HistoryManager with ChangeNotifier {
   }
 
   void close() {
+    _closingReads = true;
     if (!isInitialized) return;
     isInitialized = false;
     _db.dispose();
