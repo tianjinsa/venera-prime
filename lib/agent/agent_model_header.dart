@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/consts.dart';
 import 'agent_controller.dart';
+import 'agent_models.dart';
+import 'agent_settings_page.dart';
 
 bool agentUsesMobileModelHeader(BuildContext context) =>
     MediaQuery.sizeOf(context).width <= changePoint;
@@ -76,14 +78,7 @@ class _AgentModelHeaderState extends State<AgentModelHeader> {
     _panelOpen = true;
     FocusManager.instance.primaryFocus?.unfocus();
     try {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        useSafeArea: true,
-        showDragHandle: true,
-        constraints: const BoxConstraints(maxWidth: 640),
-        builder: (_) => _ModelSelectionPanel(bridge: widget.bridge),
-      );
+      await _showModelSelection(context, widget.bridge);
     } finally {
       _panelOpen = false;
     }
@@ -102,10 +97,10 @@ class _AgentModelHeaderState extends State<AgentModelHeader> {
         message: '$name · $thinking\n选择模型与思考深度',
         child: Material(
           color: scheme.surfaceContainerHigh,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(12),
           child: InkWell(
             key: const ValueKey('agent-model-header'),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(12),
             onTap: controller == null ? null : _openPanel,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
@@ -152,121 +147,331 @@ class _AgentModelHeaderState extends State<AgentModelHeader> {
   );
 }
 
-class _ModelSelectionPanel extends StatelessWidget {
+Future<void> _showModelSelection(
+  BuildContext context,
+  AgentModelHeaderBridge bridge,
+) async {
+  final manage = await showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    constraints: const BoxConstraints(maxWidth: 640),
+    builder: (_) => _ModelSelectionPanel(bridge: bridge),
+  );
+  if (manage != true || !context.mounted) return;
+  final controller = bridge.controller;
+  if (controller == null || controller.busy) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => AgentModelsPage(store: controller.store),
+    ),
+  );
+  if (context.mounted && identical(bridge.controller, controller)) {
+    controller.reload();
+  }
+}
+
+/// The wider and standalone layouts use the same picker as the mobile header.
+class AgentModelPickerButton extends StatefulWidget {
+  final AgentController controller;
+  const AgentModelPickerButton({super.key, required this.controller});
+  @override
+  State<AgentModelPickerButton> createState() => _AgentModelPickerButtonState();
+}
+
+class _AgentModelPickerButtonState extends State<AgentModelPickerButton> {
+  bool _open = false;
+  Future<void> _show() async {
+    if (_open) return;
+    _open = true;
+    final bridge = AgentModelHeaderBridge()..bind(widget.controller);
+    FocusManager.instance.primaryFocus?.unfocus();
+    try {
+      await _showModelSelection(context, bridge);
+    } finally {
+      bridge.dispose();
+      _open = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final model = widget.controller.model;
+    return OutlinedButton(
+      key: const ValueKey('agent-model-picker-button'),
+      onPressed: _show,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.auto_awesome_outlined, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              model?.name ?? '选择模型',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              model?.thinking(widget.controller.thinkingId).label ?? '',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Icon(Icons.expand_more_rounded, size: 20),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModelSelectionPanel extends StatefulWidget {
   final AgentModelHeaderBridge bridge;
   const _ModelSelectionPanel({required this.bridge});
+  @override
+  State<_ModelSelectionPanel> createState() => _ModelSelectionPanelState();
+}
+
+class _ModelSelectionPanelState extends State<_ModelSelectionPanel> {
+  final _search = TextEditingController();
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _select(AgentController controller, String id, {String? thinking}) {
+    if (identical(widget.bridge.controller, controller) && !controller.busy) {
+      controller.selectModel(id, thinking: thinking);
+    }
+  }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: bridge,
+    animation: widget.bridge,
     builder: (context, _) {
-      final controller = bridge.controller;
+      final controller = widget.bridge.controller;
       final model = controller?.model;
       final busy = controller?.busy == true;
-      void select(String? id, {String? thinking}) {
-        if (id != null &&
-            controller != null &&
-            identical(bridge.controller, controller) &&
-            !controller.busy) {
-          controller.selectModel(id, thinking: thinking);
-        }
-      }
-
-      return SafeArea(
-        top: false,
-        child: SingleChildScrollView(
-          key: const ValueKey('agent-model-selection-panel'),
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '模型与思考深度',
-                      style: Theme.of(context).textTheme.titleLarge,
+      final theme = Theme.of(context);
+      final query = _search.text.trim().toLowerCase();
+      final models =
+          controller?.store.settings.models
+              .where(
+                (item) =>
+                    query.isEmpty ||
+                    item.name.toLowerCase().contains(query) ||
+                    item.model.toLowerCase().contains(query),
+              )
+              .toList() ??
+          const <AgentModel>[];
+      return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: SafeArea(
+          top: false,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.82,
+            ),
+            child: CustomScrollView(
+              key: const ValueKey('agent-model-selection-panel'),
+              shrinkWrap: true,
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  sliver: SliverToBoxAdapter(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '选择模型',
+                                style: theme.textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: '关闭',
+                              onPressed: () => Navigator.pop(context),
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                          ],
+                        ),
+                        if (controller == null)
+                          const Text('当前对话已关闭。')
+                        else if (model == null)
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 20),
+                            child: Text('还没有模型，先添加一个开始对话。'),
+                          )
+                        else ...[
+                          if (busy) ...[
+                            const Text('运行中，暂时不能切换模型或思考深度。'),
+                            const SizedBox(height: 12),
+                          ],
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surfaceContainerHigh,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Text('思考深度', style: theme.textTheme.labelLarge),
+                                const SizedBox(height: 4),
+                                Text(
+                                  model.name,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                Wrap(
+                                  key: const ValueKey(
+                                    'agent-header-thinking-selector',
+                                  ),
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final level in model.thinkingLevels)
+                                      ChoiceChip(
+                                        key: ValueKey(
+                                          'agent-picker-thinking-${level.id}',
+                                        ),
+                                        label: Text(level.label),
+                                        selected:
+                                            controller.thinkingId == level.id,
+                                        onSelected: busy
+                                            ? null
+                                            : (_) => _select(
+                                                controller,
+                                                model.id,
+                                                thinking: level.id,
+                                              ),
+                                        visualDensity: VisualDensity.standard,
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          TextField(
+                            key: const ValueKey('agent-model-search'),
+                            controller: _search,
+                            onChanged: (_) => setState(() {}),
+                            decoration: InputDecoration(
+                              hintText: '搜索模型名称或 ID',
+                              prefixIcon: const Icon(Icons.search_rounded),
+                              suffixIcon: query.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      tooltip: '清空搜索',
+                                      onPressed: () => setState(_search.clear),
+                                      icon: const Icon(Icons.close_rounded),
+                                    ),
+                              filled: true,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
-                  IconButton(
-                    tooltip: '关闭',
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
+                ),
+                if (model != null && models.isEmpty)
+                  const SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text(
+                        '没有匹配的模型，试试其他名称或 ID。',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              if (controller == null)
-                const Text('当前对话已关闭。')
-              else if (model == null)
-                const Text('请先在模型设置中添加模型。')
-              else ...[
-                if (busy) ...[
-                  const Text('运行中，暂时不能切换模型或思考深度。'),
-                  const SizedBox(height: 16),
-                ],
-                _selector(
-                  label: '模型',
-                  child: DropdownButton<String>(
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  sliver: SliverList.builder(
                     key: const ValueKey('agent-header-model-selector'),
-                    value: model.id,
-                    isExpanded: true,
-                    itemHeight: null,
-                    items: controller.store.settings.models
-                        .map(
-                          (item) => DropdownMenuItem(
-                            value: item.id,
-                            child: Text(
-                              item.name,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
+                    itemCount: models.length,
+                    itemBuilder: (context, index) {
+                      final item = models[index];
+                      final selected = item.id == model?.id;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Material(
+                          color: selected
+                              ? theme.colorScheme.secondaryContainer
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(16),
+                          child: ListTile(
+                            key: ValueKey('agent-picker-model-${item.id}'),
+                            selected: selected,
+                            enabled: !busy,
+                            selectedColor:
+                                theme.colorScheme.onSecondaryContainer,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
+                            ),
+                            leading: Icon(
+                              selected
+                                  ? Icons.check_circle_rounded
+                                  : Icons.circle_outlined,
+                            ),
+                            title: Text(
+                              item.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            subtitle: Text(item.model),
+                            onTap: busy || controller == null
+                                ? null
+                                : () => _select(controller, item.id),
                           ),
-                        )
-                        .toList(),
-                    onChanged: busy ? null : select,
+                        ),
+                      );
+                    },
                   ),
                 ),
-                const SizedBox(height: 20),
-                _selector(
-                  label: '思考深度',
-                  child: DropdownButton<String>(
-                    key: const ValueKey('agent-header-thinking-selector'),
-                    value: controller.thinkingId,
-                    isExpanded: true,
-                    itemHeight: null,
-                    items: model.thinkingLevels
-                        .map(
-                          (level) => DropdownMenuItem(
-                            value: level.id,
-                            child: Text(
-                              level.label,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: busy
-                        ? null
-                        : (id) => select(model.id, thinking: id),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                    child: TextButton.icon(
+                      key: const ValueKey('agent-picker-manage-models'),
+                      onPressed: controller == null || busy
+                          ? null
+                          : () => Navigator.pop(context, true),
+                      icon: const Icon(Icons.tune_rounded),
+                      label: const Text('管理模型'),
+                    ),
                   ),
                 ),
               ],
-            ],
+            ),
           ),
         ),
       );
     },
   );
-
-  Widget _selector({required String label, required Widget child}) =>
-      InputDecorator(
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
-        child: DropdownButtonHideUnderline(child: child),
-      );
 }

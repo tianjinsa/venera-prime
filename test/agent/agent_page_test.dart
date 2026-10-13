@@ -68,7 +68,8 @@ void main() {
         }
         await tester.tap(find.byKey(const ValueKey('agent-settings')));
         await tester.pumpAndSettle();
-        expect(find.text('Agent 模型设置'), findsOneWidget);
+        expect(find.text('Agent 设置'), findsOneWidget);
+        await tapAgentSetting(tester, 'agent-settings-models');
         await tester.tap(find.byKey(const ValueKey('agent-add-model')));
         await tester.pumpAndSettle();
         expect(find.byKey(const ValueKey('agent-model-name')), findsOneWidget);

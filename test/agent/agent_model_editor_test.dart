@@ -45,6 +45,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
     await tester.pumpWidget(MaterialApp(home: AgentSettingsPage(store: store)));
+    await tapAgentSetting(tester, 'agent-settings-models');
     await tester.tap(find.text(model.name));
     await tester.pumpAndSettle();
   }
@@ -71,45 +72,73 @@ void main() {
 
   const android = TargetPlatformVariant({TargetPlatform.android});
 
+  testWidgets('leaving a changed model offers to retain or discard the draft', (
+    tester,
+  ) async {
+    await openEditor(tester);
+    await tester.enterText(field('name'), '尚未保存的名称');
+    await tester.pump();
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('放弃未保存的修改？'), findsOneWidget);
+    await tester.tap(find.text('继续编辑'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextFormField>(field('name')).controller!.text,
+      '尚未保存的名称',
+    );
+    expect(store.settings.models.single.name, model.name);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('放弃修改'));
+    await tester.pumpAndSettle();
+    expect(find.text('模型管理'), findsOneWidget);
+    expect(store.settings.models.single.name, model.name);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('all model fields request ordinary Android text input', (
     tester,
   ) async {
     await openEditor(tester);
-    await tester.tap(find.text('高级请求配置'));
-    await tester.pumpAndSettle();
-
-    for (final name in [
-      'name',
-      'url',
-      'model',
-      'key',
-      'thinking',
-      'context',
-      'temperature',
-      'body',
-      'headers',
-    ]) {
-      await tester.ensureVisible(field(name));
-      await tester.showKeyboard(field(name));
-      await tester.pump();
-      final call = tester.testTextInput.log.lastWhere(
-        (call) => call.method == 'TextInput.setClient',
-      );
-      final configuration = (call.arguments as List)[1] as Map;
-      expect(configuration['obscureText'], false, reason: name);
-      expect(configuration['enableSuggestions'], true, reason: name);
-      expect(configuration['autocorrect'], false, reason: name);
-      expect(
-        (configuration['inputType'] as Map)['name'],
-        ['thinking', 'body', 'headers'].contains(name)
-            ? 'TextInputType.multiline'
-            : 'TextInputType.text',
-        reason: name,
-      );
-      if (name == 'key') {
-        expect(configuration['enableIMEPersonalizedLearning'], false);
+    Future<void> checkFields(List<String> names) async {
+      for (final name in names) {
+        await tester.ensureVisible(field(name));
+        await tester.showKeyboard(field(name));
+        await tester.pump();
+        final call = tester.testTextInput.log.lastWhere(
+          (call) => call.method == 'TextInput.setClient',
+        );
+        final configuration = (call.arguments as List)[1] as Map;
+        expect(configuration['obscureText'], false, reason: name);
+        expect(configuration['enableSuggestions'], true, reason: name);
+        expect(configuration['autocorrect'], false, reason: name);
+        expect(
+          (configuration['inputType'] as Map)['name'],
+          ['thinking', 'body', 'headers'].contains(name)
+              ? 'TextInputType.multiline'
+              : 'TextInputType.text',
+          reason: name,
+        );
+        if (name == 'key') {
+          expect(configuration['enableIMEPersonalizedLearning'], false);
+        }
       }
+      tester.testTextInput.hide();
+      await tester.pump();
     }
+
+    await checkFields(['name', 'url', 'model', 'key']);
+    await tapAgentSetting(tester, 'agent-model-thinking-settings');
+    await checkFields(['thinking', 'context']);
+    await tester.tap(find.text('完成配置'));
+    await tester.pumpAndSettle();
+    await tapAgentSetting(tester, 'agent-model-advanced');
+    await checkFields(['body', 'headers']);
+    await tester.tap(find.text('完成配置'));
+    await tester.pumpAndSettle();
+    await tapAgentSetting(tester, 'agent-model-capabilities');
+    await checkFields(['temperature', 'max_output']);
     expect(tester.takeException(), isNull);
   }, variant: android);
 
@@ -143,7 +172,7 @@ void main() {
           as Map;
     });
     expect(persisted![model.id], pastedKey);
-    expect(find.text('Agent 模型设置'), findsOneWidget);
+    expect(find.text('模型管理'), findsOneWidget);
     expect(tester.takeException(), isNull);
   }, variant: android);
 
@@ -240,7 +269,7 @@ void main() {
       await tester.pumpAndSettle();
       clipboard.complete({'text': 'late-test-key'});
       await tester.pumpAndSettle();
-      expect(find.text('Agent 模型设置'), findsOneWidget);
+      expect(find.text('模型管理'), findsOneWidget);
       expect(store.secrets[model.id], previousKey);
       expect(tester.takeException(), isNull);
     },

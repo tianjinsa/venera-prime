@@ -30,10 +30,12 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(home: AgentSettingsPage(store: store)),
         );
+        await tapAgentSetting(tester, 'agent-settings-models');
         await tester.tap(find.byKey(const ValueKey('agent-add-model')));
         await tester.pumpAndSettle();
         await tester.enterText(field('name'), '我的模型');
         await tester.enterText(field('model'), 'example-model');
+        await tapAgentSetting(tester, 'agent-model-thinking-settings');
         await tester.enterText(
           field('thinking'),
           jsonEncode([
@@ -51,16 +53,16 @@ void main() {
         );
         await tester.pump();
         expect(
-          tester.widget<DropdownButton<String>>(field('default')).value,
-          'low',
+          find.descendant(of: field('default'), matching: find.text('快速')),
+          findsOneWidget,
         );
         await tester.tap(field('default'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('深入').last);
         await tester.pumpAndSettle();
         expect(
-          tester.widget<DropdownButton<String>>(field('default')).value,
-          'high',
+          find.descendant(of: field('default'), matching: find.text('深入')),
+          findsOneWidget,
         );
         await tester.enterText(
           field('thinking'),
@@ -68,13 +70,20 @@ void main() {
         );
         await tester.pump();
         expect(
-          tester.widget<DropdownButton<String>>(field('default')).value,
-          'low',
+          find.descendant(of: field('default'), matching: find.text('快速')),
+          findsOneWidget,
         );
         await tester.enterText(field('thinking'), '[');
         await tester.pump();
         expect(
-          tester.widget<DropdownButton<String>>(field('default')).onChanged,
+          tester
+              .widget<InkWell>(
+                find.descendant(
+                  of: field('default'),
+                  matching: find.byType(InkWell),
+                ),
+              )
+              .onTap,
           isNull,
         );
         expect(find.text('请先填写有效的思考深度列表'), findsOneWidget);
@@ -86,11 +95,13 @@ void main() {
         await tester.enterText(field('context'), '200000');
         await tester.pump();
         expect(
-          tester.widget<DropdownButton<String>>(field('default')).value,
-          'deep',
+          find.descendant(of: field('default'), matching: find.text('深度思考')),
+          findsOneWidget,
         );
         expect(find.textContaining('最大工具轮数'), findsNothing);
         expect(field('rounds'), findsNothing);
+        await tester.tap(find.text('完成配置'));
+        await tester.pumpAndSettle();
         await tester.runAsync(() async {
           await tester.tap(find.text('保存模型'));
           for (var i = 0; i < 100 && store.settings.models.isEmpty; i++) {
@@ -104,7 +115,7 @@ void main() {
           store.settings.models.single.toJson().containsKey('max_tool_rounds'),
           false,
         );
-        expect(find.text('Agent 模型设置'), findsOneWidget);
+        expect(find.text('模型管理'), findsOneWidget);
         expect(tester.takeException(), isNull);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -135,6 +146,7 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: AgentSettingsPage(store: store)),
       );
+      await tapAgentSetting(tester, 'agent-settings-models');
       await tester.tap(find.byKey(const ValueKey('agent-add-model')));
       await tester.pumpAndSettle();
       await tester.enterText(field('name'), 'Claude');
@@ -143,6 +155,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Anthropic Messages').last);
       await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-model-thinking-settings');
       // No JSON is needed: supported levels are listed as choices.
       expect(field('thinking'), findsNothing);
       expect(chip('off'), findsOneWidget);
@@ -157,12 +170,14 @@ void main() {
       expect(selected('xhigh'), true);
       expect(selected('default'), false);
       expect(
-        tester.widget<DropdownButton<String>>(field('default')).value,
-        'low',
+        find.descendant(of: field('default'), matching: find.text('低')),
+        findsOneWidget,
       );
       await tester.tap(field('default'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('超高').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('完成配置'));
       await tester.pumpAndSettle();
       await tester.runAsync(() async {
         await tester.tap(find.text('保存模型'));
@@ -192,6 +207,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('OpenAI Responses').last);
       await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-model-thinking-settings');
       expect(chip('minimal'), findsOneWidget);
       expect(chip('off'), findsNothing);
       expect(selected('xhigh'), true);

@@ -621,7 +621,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                 ),
               IconButton(
                 key: const ValueKey('agent-settings'),
-                tooltip: '模型设置',
+                tooltip: 'Agent 设置',
                 onPressed: () => _act(_settings),
                 icon: const Icon(Icons.tune),
               ),
@@ -634,60 +634,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
                 agentUsesMobileModelHeader(context)))
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: model.id,
-                    underline: const SizedBox.shrink(),
-                    items: controller.store.settings.models
-                        .map(
-                          (m) => DropdownMenuItem(
-                            value: m.id,
-                            child: Text(
-                              m.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: controller.busy
-                        ? null
-                        : (id) {
-                            if (id != null) controller.selectModel(id);
-                          },
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: controller.thinkingId,
-                    underline: const SizedBox.shrink(),
-                    items: model.thinkingLevels
-                        .map(
-                          (level) => DropdownMenuItem(
-                            value: level.id,
-                            child: Text(
-                              level.label,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: controller.busy
-                        ? null
-                        : (id) =>
-                              controller.selectModel(model.id, thinking: id),
-                  ),
-                ),
-              ],
-            ),
+            child: AgentModelPickerButton(controller: controller),
           ),
         const Divider(height: 1, thickness: .6),
         Expanded(
@@ -870,10 +817,7 @@ class _AgentPageState extends State<AgentPage> with WidgetsBindingObserver {
             color: Theme.of(context).colorScheme.surface,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [
-                if (model != null) _contextStatus(),
-                _composer(),
-              ],
+              children: [if (model != null) _contextStatus(), _composer()],
             ),
           ),
         ),

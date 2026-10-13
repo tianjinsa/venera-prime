@@ -118,10 +118,18 @@ void main() {
           expect(tools.first['max_uses'], 5);
         }
         final roundTrip = AgentModel.fromJson(_model(protocol).toJson());
+        expect(roundTrip.protocol.supportsNativeWebSearch, true);
+        expect(roundTrip.validate, returnsNormally);
         expect(roundTrip.nativeWebSearch, true);
       },
     );
   }
+
+  test('Chat Completions cannot enable native search', () {
+    expect(AgentProtocol.chat.supportsNativeWebSearch, false);
+    expect(_model(AgentProtocol.chat).validate, throwsFormatException);
+    expect(_model(AgentProtocol.chat, native: false).validate, returnsNormally);
+  });
 
   test('explicit unversioned and DeepSeek Messages endpoints remain exact', () {
     expect(

@@ -272,6 +272,7 @@ void main() {
       () => Future<void>.delayed(const Duration(milliseconds: 30)),
     );
     await tester.pumpAndSettle();
+    await tapAgentSetting(tester, 'agent-settings-search');
   }
 
   Future<void> persist(
@@ -293,15 +294,17 @@ void main() {
   }
 
   testWidgets(
-    'four independent switches and DeepSeek configuration are saved without changing the chat model',
+    'separate search pages save DeepSeek configuration without changing the chat model',
     (tester) async {
       await openSettings(tester);
       for (final engine in AgentSearchEngine.values) {
         expect(
-          find.byKey(ValueKey('agent-search-${engine.name}')),
+          find.byKey(ValueKey('agent-search-provider-${engine.name}')),
           findsOneWidget,
         );
       }
+      await tapAgentSetting(tester, 'agent-search-provider-deepseek');
+      expect(find.byKey(const ValueKey('agent-deepseek-key')), findsNothing);
       await tester.tap(find.byKey(const ValueKey('agent-search-deepseek')));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('agent-deepseek-key')), findsOneWidget);
@@ -329,6 +332,9 @@ void main() {
       expect(store.settings.webSearch.bing, false);
       expect(store.settings.webSearch.google, false);
 
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-settings-models');
       await tester.tap(find.text(model.name));
       await tester.pumpAndSettle();
       await tester.enterText(
@@ -348,7 +354,7 @@ void main() {
   );
 
   testWidgets(
-    'Tavily key supports paste and clearing it disables only Tavily',
+    'Tavily key supports paste and disabling hides but retains its key',
     (tester) async {
       await tester.runAsync(
         () => store.saveSettings(
@@ -374,13 +380,18 @@ void main() {
         ),
       );
       await openSettings(tester);
+      await tapAgentSetting(tester, 'agent-search-provider-tavily');
+      expect(
+        find.byKey(const ValueKey('agent-tavily-key-input')),
+        findsNothing,
+      );
       await tester.tap(find.byKey(const ValueKey('agent-search-tavily')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('agent-tavily-paste-key')));
       await tester.pumpAndSettle();
       expect(
         tester
-            .widget<TextField>(
+            .widget<TextFormField>(
               find.byKey(const ValueKey('agent-tavily-key-input')),
             )
             .controller!
@@ -397,18 +408,23 @@ void main() {
         'tvly-ui-key',
       );
       expect(store.settings.webSearch.bing, true);
-      await tester.tap(find.byKey(const ValueKey('agent-search-tavily-key')));
+      await tapAgentSetting(tester, 'agent-search-provider-tavily');
       await tester.pumpAndSettle();
-      await tester.enterText(
+      await tester.tap(find.byKey(const ValueKey('agent-search-tavily')));
+      await tester.pumpAndSettle();
+      expect(
         find.byKey(const ValueKey('agent-tavily-key-input')),
-        '',
+        findsNothing,
       );
       await persist(
         tester,
         find.byKey(const ValueKey('agent-tavily-save-key')),
         () => !store.settings.webSearch.tavily,
       );
-      expect(store.secrets[AgentWebSearchSettings.tavilySecretId], '');
+      expect(
+        store.secrets[AgentWebSearchSettings.tavilySecretId],
+        'tvly-ui-key',
+      );
       expect(store.settings.webSearch.bing, true);
       expect(store.secrets[model.id], 'model-key');
       expect(tester.takeException(), isNull);
@@ -432,6 +448,7 @@ void main() {
         ),
       );
       await openSettings(tester);
+      await tapAgentSetting(tester, 'agent-search-provider-${engine.name}');
       await tester.tap(find.byKey(ValueKey('agent-search-${engine.name}')));
       await tester.pumpAndSettle();
       final field = find.byKey(
@@ -449,7 +466,7 @@ void main() {
       clipboard.complete({'text': 'stale-key'});
       await tester.pumpAndSettle();
       expect(
-        tester.widget<TextField>(field).controller!.text,
+        tester.widget<TextFormField>(field).controller!.text,
         'new-manual-key',
       );
       clipboard = Completer<Object?>();
@@ -458,10 +475,10 @@ void main() {
       clipboard.complete({'text': ' \n '});
       await tester.pumpAndSettle();
       expect(
-        tester.widget<TextField>(field).controller!.text,
+        tester.widget<TextFormField>(field).controller!.text,
         'new-manual-key',
       );
-      await tester.tap(find.text('取消'));
+      await tester.tap(find.byType(BackButton));
       await tester.pumpAndSettle();
       expect(store.settings.webSearch.enabled(engine), false);
       expect(tester.takeException(), isNull);
@@ -480,16 +497,27 @@ void main() {
         ),
       );
       await openSettings(tester);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-settings-models');
       await tester.tap(find.text(model.name));
       await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-model-capabilities');
       final toggle = find.byKey(const ValueKey('agent-model-native-search'));
       expect(tester.widget<SwitchListTile>(toggle).onChanged, isNull);
+      await tester.tap(find.text('完成配置'));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('agent-model-protocol')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Anthropic Messages').last);
       await tester.pumpAndSettle();
+      await tapAgentSetting(tester, 'agent-model-capabilities');
+      expect(find.textContaining('DeepSeek'), findsNothing);
+      expect(find.textContaining('仅在模型服务商支持时可用'), findsOneWidget);
       await tester.ensureVisible(toggle);
       await tester.tap(toggle);
+      await tester.tap(find.text('完成配置'));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('保存模型'));
       await persist(
         tester,

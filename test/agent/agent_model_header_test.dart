@@ -22,6 +22,9 @@ class _HeaderHostState extends State<_HeaderHost> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   int _tab = 1;
   int _generation = 0;
+  // The real page uses the shared session. Keep each injected test controller's
+  // owner alive while NaviPane reparents its content during width animations.
+  final _pageKeys = <int, GlobalKey>{};
 
   @override
   Widget build(BuildContext context) => NaviPane(
@@ -51,7 +54,7 @@ class _HeaderHostState extends State<_HeaderHost> {
     }),
     pageBuilder: (tab) => tab == 1
         ? AgentPage(
-            key: ValueKey('page-$_generation'),
+            key: _pageKeys.putIfAbsent(_generation, GlobalKey.new),
             controller: widget.controllers[_generation],
             modelHeaderBridge: widget.bridge,
           )
@@ -165,8 +168,8 @@ void main() {
       expect(panel, findsOneWidget);
       expect(modelSelector, findsOneWidget);
       expect(thinkingSelector, findsOneWidget);
-      // The first tap expands the panel, not a popup list of model options.
-      expect(find.text(secondModel.name), findsNothing);
+      // Models are immediately selectable without a second dropdown.
+      expect(find.text(secondModel.name), findsOneWidget);
       expect(tester.getSize(panel).width, greaterThan(rect.width));
       expect(tester.takeException(), isNull);
     });
@@ -178,16 +181,12 @@ void main() {
       await pumpHost(tester, width: 320);
       await tester.tap(header);
       await tester.pumpAndSettle();
-      await tester.tap(modelSelector);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text(secondModel.name).last);
+      await tapAgentSetting(tester, 'agent-picker-model-second');
       await tester.pumpAndSettle();
       expect(controllers.first.model?.id, secondModel.id);
       expect(controllers.first.thinkingId, 'fast');
       expect(panel, findsOneWidget);
-      await tester.tap(thinkingSelector);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('深入').last);
+      await tapAgentSetting(tester, 'agent-picker-thinking-deep');
       await tester.pumpAndSettle();
       expect(controllers.first.thinkingId, 'deep');
       await tester.tap(find.byTooltip('关闭'));
@@ -222,11 +221,19 @@ void main() {
       controllers.first.reload();
       await tester.pumpAndSettle();
       expect(
-        tester.widget<DropdownButton<String>>(modelSelector).onChanged,
+        tester
+            .widget<ListTile>(
+              find.byKey(const ValueKey('agent-picker-model-first')),
+            )
+            .onTap,
         isNull,
       );
       expect(
-        tester.widget<DropdownButton<String>>(thinkingSelector).onChanged,
+        tester
+            .widget<ChoiceChip>(
+              find.byKey(const ValueKey('agent-picker-thinking-deep')),
+            )
+            .onSelected,
         isNull,
       );
       expect(find.text('运行中，暂时不能切换模型或思考深度。'), findsOneWidget);
@@ -234,19 +241,54 @@ void main() {
       controllers.first.reload();
       await tester.pumpAndSettle();
       expect(
-        tester.widget<DropdownButton<String>>(modelSelector).onChanged,
+        tester
+            .widget<ListTile>(
+              find.byKey(const ValueKey('agent-picker-model-first')),
+            )
+            .onTap,
         isNotNull,
       );
       expect(tester.takeException(), isNull);
     },
   );
 
-  testWidgets('wide layouts retain the existing model selectors', (
+  testWidgets('wide layouts use the same searchable model picker', (
     tester,
   ) async {
     await pumpHost(tester, width: 1000);
     expect(header, findsNothing);
-    expect(find.byType(DropdownButton<String>), findsNWidgets(2));
+    expect(find.byType(DropdownButton<String>), findsNothing);
+    await tapAgentSetting(tester, 'agent-model-picker-button');
+    expect(find.byKey(const ValueKey('agent-model-search')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('picker searches model IDs without changing the selection', (
+    tester,
+  ) async {
+    await pumpHost(tester, width: 400);
+    await tester.tap(header);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('agent-model-search')),
+      'second-model',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('agent-picker-model-first')),
+      findsNothing,
+    );
+    expect(controllers.first.model!.id, 'first');
+    await tapAgentSetting(tester, 'agent-picker-model-second');
+    expect(controllers.first.model!.id, 'second');
+    expect(controllers.first.thinkingId, 'fast');
+    await tester.enterText(
+      find.byKey(const ValueKey('agent-model-search')),
+      'no match',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('没有匹配的模型，试试其他名称或 ID。'), findsOneWidget);
+    expect(controllers.first.model!.id, 'second');
     expect(tester.takeException(), isNull);
   });
 

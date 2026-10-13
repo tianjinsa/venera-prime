@@ -243,6 +243,9 @@ enum AgentProtocol {
   final String path;
   const AgentProtocol(this.id, this.label, this.path);
 
+  /// Native search follows the API protocol, not a model or provider allowlist.
+  bool get supportsNativeWebSearch => this == responses || this == messages;
+
   static AgentProtocol parse(Object? value) =>
       values.firstWhere((p) => p.id == value, orElse: () => chat);
 }
@@ -374,7 +377,7 @@ class AgentModel {
     if (maxOutputTokens != null && maxOutputTokens! < 1) {
       throw const FormatException('最大输出 tokens 需要是正整数');
     }
-    if (nativeWebSearch && protocol == AgentProtocol.chat) {
+    if (nativeWebSearch && !protocol.supportsNativeWebSearch) {
       throw const FormatException('原生搜索需要 Responses 或 Messages 接口');
     }
   }
