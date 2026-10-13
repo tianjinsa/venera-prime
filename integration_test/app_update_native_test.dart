@@ -108,10 +108,21 @@ void main() {
             await stage('wrong-signer.apk'),
             'signing certificate does not match',
           );
+          final signers = metadata['runnerSignersSha256'] as List<dynamic>?;
+          if (signers != null && signers.length > 1) {
+            expect(signers.toSet().length, 2);
+            await rejected(
+              await stage('subset-signer.apk'),
+              'signing certificate does not match',
+            );
+            debugPrint(
+              'Native update rejected a strict subset of installed signers',
+            );
+          }
           final valid = await stage('valid-new.apk');
           await AndroidAppUpdater.validate(valid);
           debugPrint(
-            'Native update accepted matching package, newer version, same signer',
+            'Native update accepted matching package, newer version, same ${signers?.length ?? 1} signer(s)',
           );
         } finally {
           for (final file in created) {

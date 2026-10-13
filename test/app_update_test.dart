@@ -138,17 +138,31 @@ void main() {
       );
       expect(dir.listSync(), isEmpty);
     });
-    test('path traversal cannot escape update directory', () async {
-      await expectLater(
-        AppUpdateDownloader(dio: localDio()).download(
-          ReleaseAsset(name: '../bad.apk', url: asset().url, size: 4),
-          dir,
-          cancelToken: CancelToken(),
-        ),
-        throwsFormatException,
-      );
-      expect(dir.listSync(), isEmpty);
-    });
+    test(
+      'invalid filenames cannot escape or replace the update directory',
+      () async {
+        for (final name in [
+          '',
+          '/',
+          '.',
+          '..',
+          '../bad.apk',
+          r'..\bad.apk',
+          'notes.txt',
+        ]) {
+          await expectLater(
+            AppUpdateDownloader(dio: localDio()).download(
+              ReleaseAsset(name: name, url: asset().url, size: 4),
+              dir,
+              cancelToken: CancelToken(),
+            ),
+            throwsFormatException,
+          );
+          expect(dir.listSync(), isEmpty);
+          expect(File('${dir.path}.part').existsSync(), isFalse);
+        }
+      },
+    );
   });
 
   testWidgets(

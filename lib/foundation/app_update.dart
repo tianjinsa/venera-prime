@@ -133,10 +133,10 @@ class AppUpdateDownloader {
   }) async {
     await directory.create(recursive: true);
     // Only a basename from a release may be used inside the updater cache.
-    if (p.basename(asset.name) != asset.name ||
+    if (asset.size <= 0 ||
+        p.basename(asset.name) != asset.name ||
         asset.name.contains('\\') ||
-        asset.name == '.' ||
-        asset.name == '..') {
+        !asset.name.toLowerCase().endsWith('.apk')) {
       throw const FormatException('Invalid update filename');
     }
     final target = File(p.join(directory.path, asset.name));

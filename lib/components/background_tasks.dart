@@ -262,6 +262,8 @@ class BackgroundTaskOverlay extends StatefulWidget {
 
 class _BackgroundTaskOverlayState extends State<BackgroundTaskOverlay> {
   bool _right = true;
+  bool _keyboardFocus = false;
+  final _badgeFocus = FocusNode(debugLabel: 'Background task badge');
   double _fraction = 1;
   Offset? _drag;
   Rect? _pendingExclusion;
@@ -323,123 +325,167 @@ class _BackgroundTaskOverlayState extends State<BackgroundTaskOverlay> {
   @override
   void dispose() {
     _sendExclusion(null);
+    _badgeFocus.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      const size = 44.0;
-      final mq = MediaQuery.of(context);
-      final minY = math.max(mq.padding.top, mq.viewPadding.top);
-      final maxY = math.max(
-        minY,
-        constraints.maxHeight -
-            math.max(
-              math.max(mq.padding.bottom, mq.viewPadding.bottom),
-              mq.viewInsets.bottom,
-            ) -
-            size,
-      );
-      final y = _drag?.dy ?? (minY + (maxY - minY) * _fraction);
-      // Cutouts remain protected; gesture insets are not visual padding. The
-      // badge has its own small Android gesture-exclusion rectangle instead.
-      final minX = math.max(mq.padding.left, mq.viewPadding.left);
-      final maxX = math.max(
-        minX,
-        constraints.maxWidth -
-            math.max(mq.padding.right, mq.viewPadding.right) -
-            size,
-      );
-      final x = _drag != null
-          ? _drag!.dx.clamp(minX, maxX)
-          : (_right ? maxX + 18 : minX - 18);
-      _updateExclusion(
-        context,
-        widget.enabled
-            ? Rect.fromLTWH(x, y.clamp(minY, maxY), size, size)
-            : null,
-        mq.devicePixelRatio,
-      );
-      return Stack(
-        clipBehavior: Clip.hardEdge,
-        children: [
-          Positioned.fill(child: widget.child),
-          if (widget.enabled)
-            AnimatedPositioned(
-              duration: Duration(milliseconds: _drag == null ? 180 : 0),
-              left: x,
-              top: y.clamp(minY, maxY),
-              width: size,
-              height: size,
-              child: ListenableBuilder(
-                listenable: BackgroundTasks.instance.activeCountListenable,
-                builder: (context, _) {
-                  final count = BackgroundTasks.instance.activeCount;
-                  return Semantics(
-                    label: 'Background tasks'.tl,
-                    button: true,
-                    child: _TaskBadgeOpacity(
-                      restingOpacity: _drag != null
-                          ? .95
-                          : count == 0
-                          ? .25
-                          : .55,
-                      child: Material(
-                        color: Theme.of(context).colorScheme.primaryContainer,
-                        shape: const CircleBorder(),
-                        elevation: 2,
-                        child: GestureDetector(
-                          key: const Key('background-task-badge'),
-                          behavior: HitTestBehavior.opaque,
-                          dragStartBehavior: DragStartBehavior.down,
-                          onTap: () => showBackgroundTasks(context),
-                          onPanStart: (_) => setState(
-                            () => _drag = Offset(x.clamp(minX, maxX), y),
-                          ),
-                          onPanUpdate: (event) => setState(
-                            () => _drag = Offset(
-                              (_drag!.dx + event.delta.dx).clamp(minX, maxX),
-                              (_drag!.dy + event.delta.dy).clamp(minY, maxY),
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      if (widget.enabled)
+        const SingleActivator(LogicalKeyboardKey.f6): _badgeFocus.requestFocus,
+    },
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        const size = 44.0;
+        final mq = MediaQuery.of(context);
+        final minY = math.max(mq.padding.top, mq.viewPadding.top);
+        final maxY = math.max(
+          minY,
+          constraints.maxHeight -
+              math.max(
+                math.max(mq.padding.bottom, mq.viewPadding.bottom),
+                mq.viewInsets.bottom,
+              ) -
+              size,
+        );
+        final y = _drag?.dy ?? (minY + (maxY - minY) * _fraction);
+        // Cutouts remain protected; gesture insets are not visual padding. The
+        // badge has its own small Android gesture-exclusion rectangle instead.
+        final minX = math.max(mq.padding.left, mq.viewPadding.left);
+        final maxX = math.max(
+          minX,
+          constraints.maxWidth -
+              math.max(mq.padding.right, mq.viewPadding.right) -
+              size,
+        );
+        final x = _drag != null
+            ? _drag!.dx.clamp(minX, maxX)
+            : (_right ? maxX + 18 : minX - 18);
+        _updateExclusion(
+          context,
+          widget.enabled
+              ? Rect.fromLTWH(x, y.clamp(minY, maxY), size, size)
+              : null,
+          mq.devicePixelRatio,
+        );
+        return Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            Positioned.fill(child: widget.child),
+            if (widget.enabled)
+              AnimatedPositioned(
+                duration: Duration(milliseconds: _drag == null ? 180 : 0),
+                left: x,
+                top: y.clamp(minY, maxY),
+                width: size,
+                height: size,
+                child: ListenableBuilder(
+                  listenable: BackgroundTasks.instance.activeCountListenable,
+                  builder: (context, _) {
+                    final count = BackgroundTasks.instance.activeCount;
+                    return FocusableActionDetector(
+                      focusNode: _badgeFocus,
+                      onShowFocusHighlight: (value) =>
+                          setState(() => _keyboardFocus = value),
+                      shortcuts: const {
+                        SingleActivator(LogicalKeyboardKey.enter):
+                            ActivateIntent(),
+                        SingleActivator(LogicalKeyboardKey.space):
+                            ActivateIntent(),
+                      },
+                      actions: {
+                        ActivateIntent: CallbackAction<ActivateIntent>(
+                          onInvoke: (_) {
+                            showBackgroundTasks(context);
+                            return null;
+                          },
+                        ),
+                      },
+                      child: Semantics(
+                        label: 'Background tasks'.tl,
+                        tooltip: '${"Background tasks".tl} (F6)',
+                        button: true,
+                        child: _TaskBadgeOpacity(
+                          restingOpacity: _drag != null || _keyboardFocus
+                              ? .95
+                              : count == 0
+                              ? .25
+                              : .55,
+                          child: Material(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.primaryContainer,
+                            shape: CircleBorder(
+                              side: _keyboardFocus
+                                  ? BorderSide(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onPrimaryContainer,
+                                      width: 2,
+                                    )
+                                  : BorderSide.none,
                             ),
-                          ),
-                          onPanEnd: (_) => setState(() {
-                            _right =
-                                _drag!.dx + size / 2 >=
-                                constraints.maxWidth / 2;
-                            final droppedY = _drag!.dy.clamp(minY, maxY);
-                            // Snap near either corner, retaining free vertical
-                            // placement when released along the middle edge.
-                            final toTop = droppedY - minY;
-                            final toBottom = maxY - droppedY;
-                            _fraction = maxY == minY
-                                ? 0
-                                : math.min(toTop, toBottom) <= size
-                                ? (toTop < toBottom ? 0 : 1)
-                                : (droppedY - minY) / (maxY - minY);
-                            _drag = null;
-                          }),
-                          onPanCancel: () => setState(() => _drag = null),
-                          child: Center(
-                            child: count == 0
-                                ? const Icon(Icons.work_outline, size: 18)
-                                : Text(
-                                    '$count',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                            elevation: 2,
+                            child: GestureDetector(
+                              key: const Key('background-task-badge'),
+                              behavior: HitTestBehavior.opaque,
+                              dragStartBehavior: DragStartBehavior.down,
+                              onTap: () => showBackgroundTasks(context),
+                              onPanStart: (_) => setState(
+                                () => _drag = Offset(x.clamp(minX, maxX), y),
+                              ),
+                              onPanUpdate: (event) => setState(
+                                () => _drag = Offset(
+                                  (_drag!.dx + event.delta.dx).clamp(
+                                    minX,
+                                    maxX,
                                   ),
+                                  (_drag!.dy + event.delta.dy).clamp(
+                                    minY,
+                                    maxY,
+                                  ),
+                                ),
+                              ),
+                              onPanEnd: (_) => setState(() {
+                                _right =
+                                    _drag!.dx + size / 2 >=
+                                    constraints.maxWidth / 2;
+                                final droppedY = _drag!.dy.clamp(minY, maxY);
+                                // Snap near either corner, retaining free vertical
+                                // placement when released along the middle edge.
+                                final toTop = droppedY - minY;
+                                final toBottom = maxY - droppedY;
+                                _fraction = maxY == minY
+                                    ? 0
+                                    : math.min(toTop, toBottom) <= size
+                                    ? (toTop < toBottom ? 0 : 1)
+                                    : (droppedY - minY) / (maxY - minY);
+                                _drag = null;
+                              }),
+                              onPanCancel: () => setState(() => _drag = null),
+                              child: Center(
+                                child: count == 0
+                                    ? const Icon(Icons.work_outline, size: 18)
+                                    : Text(
+                                        '$count',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
-            ),
-        ],
-      );
-    },
+          ],
+        );
+      },
+    ),
   );
 }
 

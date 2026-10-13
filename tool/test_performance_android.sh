@@ -47,9 +47,13 @@ trap verify_normal_app EXIT
 # uninstalls that identity after testing. Prebuild and verify the isolated app,
 # use a private APK copy, and disable runner cleanup as an additional safeguard.
 export ORG_GRADLE_PROJECT_primeIntegrationTest=true
-"$flutter" build apk --profile --no-pub --target "$target"
 apk="$run_dir/performance-audit.apk"
-cp build/app/outputs/flutter-apk/app-profile.apk "$apk"
+if [[ -n "${INTEGRATION_TEST_APK:-}" ]]; then
+  cp "$INTEGRATION_TEST_APK" "$apk"
+else
+  "$flutter" build apk --profile --no-pub --target "$target"
+  cp build/app/outputs/flutter-apk/app-profile.apk "$apk"
+fi
 "$aapt" dump badging "$apk" > "$run_dir/apk-badging.txt"
 IFS= read -r package_line < "$run_dir/apk-badging.txt"
 if [[ "$package_line" != "package: name='$test_package' "* ]]; then

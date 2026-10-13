@@ -29,29 +29,40 @@ class _ExplorePageState extends State<ExplorePage>
 
   late List<String> pages;
 
+  late Map<String, (ComicSource, ExplorePageData)> pageDefinitions;
+
+  Map<String, (ComicSource, ExplorePageData)> readPageDefinitions() {
+    final result = <String, (ComicSource, ExplorePageData)>{};
+    for (final source in ComicSource.all()) {
+      for (final page in source.explorePages) {
+        result.putIfAbsent(page.title, () => (source, page));
+      }
+    }
+    return result;
+  }
+
   void onSettingsChanged() {
     var explorePages = List<String>.from(appdata.settings["explore_pages"]);
-    var all = ComicSource.all()
-        .map((e) => e.explorePages)
-        .expand((e) => e.map((e) => e.title))
-        .toList();
-    explorePages = explorePages.where((e) => all.contains(e)).toList();
+    final definitions = readPageDefinitions();
+    explorePages = explorePages.where(definitions.containsKey).toList();
     if (!pages.isEqualTo(explorePages)) {
       final selectedPage = pages.isEmpty ? null : pages[controller.index];
       final selectedIndex = explorePages.indexOf(selectedPage ?? '');
       controller.dispose();
       setState(() {
         pages = explorePages;
+        pageDefinitions = definitions;
         controller = TabController(
           length: pages.length,
           initialIndex: selectedIndex < 0 ? 0 : selectedIndex,
           vsync: this,
         );
       });
-    } else if (pages.isEmpty) {
+    } else if (pages.isEmpty ||
+        pages.any((title) => pageDefinitions[title] != definitions[title])) {
       // An installed source may have no enabled explore pages. Refresh the
       // empty-state action as well when the source list finishes loading.
-      setState(() {});
+      setState(() => pageDefinitions = definitions);
     }
   }
 
@@ -72,11 +83,8 @@ class _ExplorePageState extends State<ExplorePage>
   @override
   void initState() {
     pages = List<String>.from(appdata.settings["explore_pages"]);
-    var all = ComicSource.all()
-        .map((e) => e.explorePages)
-        .expand((e) => e.map((e) => e.title))
-        .toList();
-    pages = pages.where((e) => all.contains(e)).toList();
+    pageDefinitions = readPageDefinitions();
+    pages = pages.where(pageDefinitions.containsKey).toList();
     controller = TabController(
       length: pages.length,
       vsync: this,
@@ -127,7 +135,9 @@ class _ExplorePageState extends State<ExplorePage>
   }
 
   Widget buildBody(String i) => Material(
-        child: _SingleExplorePage(i, key: PageStorageKey(i)),
+        // A source update can retain the title but replace its loaders. Give
+        // the replacement fresh state and a separate PageStorage namespace.
+        child: _SingleExplorePage(i, key: PageStorageKey(pageDefinitions[i])),
       );
 
   Widget buildEmpty() {

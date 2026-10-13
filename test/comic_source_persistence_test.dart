@@ -18,6 +18,46 @@ class _Sync extends Fake implements DataSync {
   }
 }
 
+class _ObservedFile extends Fake implements File {
+  _ObservedFile(this.file, this.afterRename);
+
+  final File file;
+  final Future<void> Function() afterRename;
+
+  @override
+  String get path => file.path;
+  @override
+  Directory get parent => file.parent;
+  @override
+  Future<bool> exists() => file.exists();
+  @override
+  Future<String> readAsString({Encoding encoding = utf8}) =>
+      file.readAsString(encoding: encoding);
+  @override
+  Future<File> writeAsString(
+    String contents, {
+    FileMode mode = FileMode.write,
+    Encoding encoding = utf8,
+    bool flush = false,
+  }) => file.writeAsString(
+    contents,
+    mode: mode,
+    encoding: encoding,
+    flush: flush,
+  );
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) =>
+      file.delete(recursive: recursive);
+  @override
+  Future<File> copy(String newPath) => file.copy(newPath);
+  @override
+  Future<File> rename(String newPath) async {
+    final result = await file.rename(newPath);
+    await afterRename();
+    return result;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
@@ -36,6 +76,39 @@ void main() {
     DataSync.instance = previousSync;
     await root.delete(recursive: true);
   });
+
+  test(
+    'external backup readers always see a committed source data file',
+    () async {
+      final source = sourceFixture();
+      source.data = {'value': 'old'};
+      await source.saveData();
+      final target = File('${root.path}/comic_source/${source.key}.data');
+      final files = {
+        for (final suffix in ['', '.tmp', '.bak'])
+          '${target.path}$suffix': File('${target.path}$suffix'),
+      };
+      final observed = <String?>[];
+      source.data['value'] = 'new';
+      await IOOverrides.runZoned(
+        () => source.saveData(),
+        createFile: (path) => _ObservedFile(files[path]!, () async {
+          // Backup export runs in a different isolate and cannot join the
+          // source save queue. Observe each actual filesystem rename boundary.
+          observed.add(
+            await target.exists() ? await target.readAsString() : null,
+          );
+        }),
+      );
+      expect(observed, isNotEmpty);
+      expect(observed, isNot(contains(null)));
+      expect(
+        observed.map((value) => jsonDecode(value!)['value']),
+        everyElement(isIn(['old', 'new'])),
+      );
+      expect(jsonDecode(await target.readAsString())['value'], 'new');
+    },
+  );
 
   test(
     'identical nested JSON and reloaded sources do not write or upload',

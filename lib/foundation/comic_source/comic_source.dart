@@ -432,7 +432,9 @@ class ComicSource {
       await tempFile.writeAsString(content, flush: true);
       await backupFile.deleteIgnoreError();
       if (await file.exists()) {
-        await file.rename(backupFile.path);
+        // Backup export reads from another isolate. Keep the committed path
+        // present until the adjacent temporary file atomically replaces it.
+        await file.copy(backupFile.path);
       }
       try {
         await tempFile.rename(file.path);

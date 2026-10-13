@@ -41,6 +41,62 @@ ExplorePageData _page(String title) => ExplorePageData(
 void main() {
   setUp(() async => ensureTestTranslations());
 
+  testWidgets(
+    'replacing a source refreshes same-title catalogs without stale cached data',
+    (tester) async {
+      final previous = appdata.settings['explore_pages'];
+      final manager = ComicSourceManager();
+      var oldLoads = 0;
+      var newLoads = 0;
+      ExplorePageData catalog(String content, VoidCallback loaded) =>
+          ExplorePageData(
+            'Catalog',
+            ExplorePageType.singlePageWithMultiPart,
+            null,
+            null,
+            () async {
+              loaded();
+              return Res([ExplorePagePart(content, const [], null)]);
+            },
+            null,
+          );
+      final original = sourceFixture(
+        explore: [catalog('Old source content', () => oldLoads++)],
+      );
+      manager.add(original);
+      appdata.settings['explore_pages'] = ['Catalog'];
+      addTearDown(() {
+        appdata.settings['explore_pages'] = previous;
+        manager.remove(original.key);
+      });
+      await tester.pumpWidget(_initialExplorePage());
+      await tester.pumpAndSettle();
+      expect(find.text('Old source content'), findsOneWidget);
+      final state = tester.state(find.byType(ExplorePage));
+
+      manager.replace(
+        sourceFixture(
+          explore: [catalog('New source content', () => newLoads++)],
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.state(find.byType(ExplorePage)), same(state));
+      expect(find.text('Old source content'), findsNothing);
+      expect(find.text('New source content'), findsOneWidget);
+      expect(oldLoads, 1);
+      expect(newLoads, 1);
+      manager.notifyStateChange();
+      await tester.pumpAndSettle();
+      expect(newLoads, 1);
+      await tester.tap(find.byType(FloatingActionButton));
+      await tester.pumpAndSettle();
+      expect(oldLoads, 1);
+      expect(newLoads, 2);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets('initial explore page reacts to delayed source readiness', (
     tester,
   ) async {

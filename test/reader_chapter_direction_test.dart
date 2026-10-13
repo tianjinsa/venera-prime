@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:venera/components/window_frame.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
@@ -13,6 +15,40 @@ import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/pages/reader/reader.dart';
 import 'package:venera/utils/translations.dart';
+
+import 'support/test_translations.dart';
+
+Future<void> _waitForContinuousImages(WidgetTester tester) async {
+  if (find.byType(Reader).evaluate().isEmpty ||
+      !appdata.settings['readerMode'].toString().startsWith('continuous')) {
+    return;
+  }
+  bool imagesDecoded() {
+    final images = find.byType(ComicImage);
+    return images.evaluate().isNotEmpty &&
+        images.evaluate().every(
+          (element) => find
+              .descendant(
+                of: find.byWidget(element.widget),
+                matching: find.byType(RawImage),
+              )
+              .evaluate()
+              .isNotEmpty,
+        );
+  }
+
+  for (var i = 0; i < 60 && !imagesDecoded(); i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 30)),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  expect(
+    imagesDecoded(),
+    isTrue,
+    reason: 'chapter navigation waits for decoded image extents',
+  );
+}
 
 void main() {
   testWidgets(
@@ -91,6 +127,7 @@ void main() {
           );
           await tester.pump(const Duration(milliseconds: 300));
         }
+        await _waitForContinuousImages(tester);
       }
 
       for (final mode in ReaderMode.values) {
@@ -265,4 +302,265 @@ void main() {
       await tester.runAsync(() => root.delete(recursive: true));
     },
   );
+
+  for (final mode in ReaderMode.values.where((mode) => mode.isContinuous)) {
+    for (final reversed in [false, true]) {
+      testWidgets(
+        'long boundary images scroll before changing chapters (${mode.key}, reverse=$reversed)',
+        (tester) async {
+          tester.view.physicalSize = const Size(600, 800);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          await ensureTestTranslations();
+          final snapshot = Map<String, dynamic>.from(
+            jsonDecode(jsonEncode(appdata.toJson())),
+          );
+          final root = (await tester.runAsync(
+            () => Directory.systemTemp.createTemp('long-chapter-direction-'),
+          ))!;
+          App.dataPath = root.path;
+          App.cachePath = root.path;
+          for (final channel in [
+            'flutter_memory_info',
+            'window_manager',
+            'venera/method_channel',
+          ]) {
+            tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+              MethodChannel(channel),
+              (call) async => call.method == 'isMaximized' ? false : null,
+            );
+          }
+          tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            const MethodChannel('plugins.flutter.io/path_provider'),
+            (_) async => root.path,
+          );
+          for (final entry in {
+            'readerMode': mode.key,
+            'enablePageAnimation': false,
+            'readerTwoPageSpread': false,
+            'readerPageMarginEnabled': reversed,
+            'readerPageMarginPercent': 15.0,
+            'readerScreenPicNumberForLandscape': 1,
+            'readerScreenPicNumberForPortrait': 1,
+            'limitImageWidth': false,
+            'enableTapToTurnPages': true,
+            'reverseTapToTurnPages': reversed,
+            'enableDoubleTapToZoom': false,
+            'enableClockAndBatteryInfoInReader': false,
+            'enableTurnPageByVolumeKey': false,
+            'recordReadingStatistics': false,
+            'removeReadLaterOnComplete': false,
+            'webdav': <String>[],
+          }.entries) {
+            appdata.settings[entry.key] = entry.value;
+          }
+          final vertical = mode == ReaderMode.continuousTopToBottom;
+          final rtl = mode == ReaderMode.continuousRightToLeft;
+          final local = LocalManager();
+          const chapters = ComicChapters({'ep1': 'First', 'ep2': 'Second'});
+          late LocalComic comic;
+          await tester.runAsync(() async {
+            File(
+              '${root.path}/local_path',
+            ).writeAsStringSync('${root.path}/local');
+            final recorder = ui.PictureRecorder();
+            final width = vertical ? 320 : 1920;
+            final height = vertical ? 1920 : 320;
+            Canvas(recorder).drawRect(
+              Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+              Paint()..color = Colors.orange,
+            );
+            final picture = recorder.endRecording();
+            final image = await picture.toImage(width, height);
+            final bytes = (await image.toByteData(
+              format: ui.ImageByteFormat.png,
+            ))!.buffer.asUint8List();
+            image.dispose();
+            picture.dispose();
+            for (final ep in chapters.ids) {
+              final dir = Directory('${root.path}/local/comic/$ep')
+                ..createSync(recursive: true);
+              for (var i = 1; i <= 2; i++) {
+                File('${dir.path}/$i.png').writeAsBytesSync(bytes);
+              }
+            }
+            await local.init();
+            await LocalFavoritesManager().init();
+            await HistoryManager().init();
+            comic = LocalComic(
+              id: 'long-direction',
+              title: 'Long direction',
+              subtitle: '',
+              tags: [],
+              directory: 'comic',
+              chapters: chapters,
+              cover: 'ep1/1.png',
+              comicType: ComicType.local,
+              downloadedChapters: chapters.ids.toList(),
+              createdAt: DateTime.now(),
+            );
+            await local.add(comic);
+          });
+          Future<void> settle() async {
+            for (var i = 0; i < 3; i++) {
+              await tester.runAsync(
+                () => Future<void>.delayed(const Duration(milliseconds: 20)),
+              );
+              await tester.pump(const Duration(milliseconds: 300));
+            }
+            await _waitForContinuousImages(tester);
+          }
+
+          addTearDown(() async {
+            await tester.pumpWidget(const SizedBox());
+            await settle();
+            local.close();
+            LocalFavoritesManager().close();
+            HistoryManager().close();
+            appdata.restoreMemorySnapshot(snapshot);
+            await tester.runAsync(() => root.delete(recursive: true));
+          });
+          await tester.pumpWidget(
+            MaterialApp(
+              navigatorKey: App.rootNavigatorKey,
+              builder: (context, child) => Material(child: WindowFrame(child!)),
+              home: Reader(
+                type: ComicType.local,
+                cid: comic.id,
+                name: comic.title,
+                chapters: chapters,
+                initialChapter: 2,
+                history: History.fromModel(model: comic, ep: 2, page: 1),
+                author: '',
+                tags: [],
+              ),
+            ),
+          );
+          await settle();
+          for (
+            var i = 0;
+            i < 30 && find.byType(RawImage).evaluate().isEmpty;
+            i++
+          ) {
+            await settle();
+          }
+          expect(find.byType(RawImage), findsWidgets);
+          final dynamic state = tester.state(find.byType(Reader));
+          final rect = tester.getRect(find.byType(Reader));
+          final nextAtEnd = !rtl != reversed;
+          final next = vertical
+              ? Offset(
+                  rect.center.dx,
+                  rect.top + rect.height * (reversed ? .1 : .9),
+                )
+              : Offset(
+                  rect.left + rect.width * (nextAtEnd ? .9 : .1),
+                  rect.center.dy,
+                );
+          final prev = vertical
+              ? Offset(
+                  rect.center.dx,
+                  rect.top + rect.height * (reversed ? .9 : .1),
+                )
+              : Offset(
+                  rect.left + rect.width * (nextAtEnd ? .1 : .9),
+                  rect.center.dy,
+                );
+          ScrollPosition position() => tester
+              .state<ScrollableState>(
+                find
+                    .descendant(
+                      of: find.byType(ScrollablePositionedList),
+                      matching: find.byType(Scrollable),
+                    )
+                    .first,
+              )
+              .position;
+          // A real drag puts the first long image partway through the viewport.
+          final drag = await tester.startGesture(rect.center);
+          await drag.moveBy(
+            vertical ? const Offset(0, -250) : Offset(rtl ? 250 : -250, 0),
+          );
+          await tester.pump(const Duration(milliseconds: 500));
+          await drag.up();
+          await settle();
+          expect(state.chapter, 2);
+          expect(state.page, 1);
+          final beforeBack = position().pixels;
+          expect(beforeBack, greaterThan(position().minScrollExtent + 1));
+          await tester.tapAt(prev);
+          await settle();
+          expect(
+            state.chapter,
+            2,
+            reason:
+                'first image is not the chapter start while partially scrolled',
+          );
+          expect(
+            position().pixels,
+            lessThan(beforeBack),
+            reason: 'backward taps must still scroll the long image',
+          );
+
+          tester
+              .widget<ScrollablePositionedList>(
+                find.byType(ScrollablePositionedList),
+              )
+              .itemScrollController!
+              .jumpTo(index: 1);
+          await settle();
+          await tester.tapAt(prev);
+          await settle();
+          expect(state.chapter, 1);
+          for (
+            var i = 0;
+            i < 30 &&
+                (state.isLoading ||
+                    find.byType(ScrollablePositionedList).evaluate().isEmpty ||
+                    find.byType(RawImage).evaluate().isEmpty);
+            i++
+          ) {
+            await settle();
+          }
+          // Test the forward case from the start of the decoded final image.
+          state.toPage(2, animate: false);
+          await settle();
+          expect(state.page, 2);
+          expect(position().pixels, lessThan(position().maxScrollExtent - 1));
+          for (
+            var i = 0;
+            i < 20 && position().pixels < position().maxScrollExtent - .5;
+            i++
+          ) {
+            final beforeForward = position().pixels;
+            await tester.tapAt(next);
+            await settle();
+            expect(
+              state.chapter,
+              1,
+              reason: 'the last image still extends beyond the viewport',
+            );
+            expect(
+              position().pixels,
+              greaterThan(beforeForward),
+              reason: 'forward taps must scroll to the actual image end',
+            );
+          }
+          expect(position().pixels, closeTo(position().maxScrollExtent, .5));
+          await tester.tapAt(next);
+          await settle();
+          expect(
+            state.chapter,
+            2,
+            reason: 'only a tap at the real scroll end advances the chapter',
+          );
+          await tester.pumpWidget(const SizedBox());
+          await tester.pump(const Duration(seconds: 2));
+          await settle();
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
 }

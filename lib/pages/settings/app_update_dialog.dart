@@ -52,12 +52,18 @@ class _AppUpdateDialogState extends State<_AppUpdateDialog> {
       );
       if (!mounted) return;
       Navigator.pop(context);
-      App.rootContext.showMessage(
-        message: task.isRunning
-            ? 'Update is downloading in background. View progress in Background tasks.'
-                  .tl
-            : 'Update downloaded. Tap Install in Background tasks.'.tl,
-      );
+      final message = switch (task.status) {
+        BackgroundTaskStatus.failed =>
+          task.message.isNotEmpty ? task.message : 'Update failed'.tl,
+        BackgroundTaskStatus.cancelled => 'Cancelled'.tl,
+        BackgroundTaskStatus.completed
+            when AppUpdateService.instance.readyFile != null =>
+          'Update downloaded. Tap Install in Background tasks.'.tl,
+        _ =>
+          'Update is downloading in background. View progress in Background tasks.'
+              .tl,
+      };
+      App.rootContext.showMessage(message: message);
     } catch (error, stack) {
       Log.error('App update', error, stack);
       if (mounted) setState(() => _error = '${'Update failed'.tl}\n$error');

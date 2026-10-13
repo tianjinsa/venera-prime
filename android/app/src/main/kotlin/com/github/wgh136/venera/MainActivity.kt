@@ -291,10 +291,11 @@ class MainActivity : FlutterFragmentActivity() {
         require(candidateVersion > installedVersion) { "Update is not newer than this app" }
         val signaturesMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val signers = candidate.signingInfo?.apkContentsSigners
-            !signers.isNullOrEmpty() && signers.all {
-                packageManager.hasSigningCertificate(packageName, it.toByteArray(),
-                    PackageManager.CERT_INPUT_RAW_X509)
-            }
+            // hasSigningCertificate also accepts historical certificates and
+            // does not establish equality for a multi-signer installation.
+            // This updater supports the exact current signing identity.
+            !signers.isNullOrEmpty() &&
+                signers.toSet() == installed.signingInfo?.apkContentsSigners?.toSet()
         } else {
             val signers = candidate.signatures
             !signers.isNullOrEmpty() && signers.toSet() == installed.signatures?.toSet()
@@ -319,6 +320,7 @@ class MainActivity : FlutterFragmentActivity() {
         try {
             fun launchInstaller() {
                 try {
+                    check(!isFinishing && !isDestroyed) { "Update activity is no longer available" }
                     val uri = FileProvider.getUriForFile(this, "$packageName.updates", apk)
                     val intent = Intent(Intent.ACTION_VIEW)
                         .setDataAndType(uri, "application/vnd.android.package-archive")
@@ -330,13 +332,27 @@ class MainActivity : FlutterFragmentActivity() {
                 }
             }
 
+            check(!isFinishing && !isDestroyed) { "Update activity is no longer available" }
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 !packageManager.canRequestPackageInstalls()) {
                 val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:$packageName"))
                 startContractForResult(ActivityResultContracts.StartActivityForResult(), intent) {
                     if (packageManager.canRequestPackageInstalls()) {
-                        launchInstaller()
+                        // Permission UI can remain open while the cached file
+                        // changes. Recheck its current bytes off the UI thread
+                        // before handing the URI to Android's installer.
+                        Thread {
+                            try {
+                                val checked = validateUpdate(apk.path)
+                                runOnUiThread { launchUpdateInstaller(checked, result) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("install_update_failed", e.message, null)
+                                }
+                            }
+                        }.start()
                     } else {
                         result.success(false)
                     }

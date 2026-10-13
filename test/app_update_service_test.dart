@@ -365,7 +365,7 @@ void main() {
   );
 
   test(
-    'tampering after download prevents installation and retains the retry entry',
+    'tampering after download offers a fresh download instead of a broken installer',
     () async {
       final updates = service();
       final task = await updates.startDownload(_release, _asset);
@@ -375,8 +375,150 @@ void main() {
       expect(installs, 0);
       expect(task.errors.last, contains('checksum mismatch'));
       expect(task.onOpenResult, isNotNull);
-      await updates.readyFile!.writeAsBytes(_bytes);
+      expect(updates.readyFile, isNull);
+      expect(task.needsAttention, isFalse);
+      expect(task.resultLabel, 'Download'.tl);
+      expect(File('${directory.path}/ready.json').existsSync(), isFalse);
+      final next = Completer<BackgroundTask>();
+      void changed() {
+        final latest = tasks.latest(AppUpdateService.taskKey);
+        if (latest != task && latest != null && !next.isCompleted) {
+          next.complete(latest);
+        }
+      }
+
+      tasks.addListener(changed);
+      task.onOpenResult!();
+      final retry = await next.future.timeout(const Duration(seconds: 5));
+      tasks.removeListener(changed);
+      await _finish(retry);
+      expect(downloader.calls, 2);
       expect(await updates.installReadyUpdate(), isTrue);
+    },
+  );
+  for (final damage in ['missing', 'changed']) {
+    test(
+      'a $damage ready APK is downloaded again on an explicit update request',
+      () async {
+        final updates = service();
+        final original = await updates.startDownload(_release, _asset);
+        await _finish(original);
+        if (damage == 'missing') {
+          await updates.readyFile!.delete();
+        } else {
+          await updates.readyFile!.writeAsBytes([4, 3, 2, 1]);
+        }
+        final retry = await updates.startDownload(_release, _asset);
+        expect(retry, isNot(same(original)));
+        await _finish(retry);
+        expect(downloader.calls, 2);
+        expect(await updates.readyFile!.readAsBytes(), _bytes);
+        expect(original.pinned, isFalse);
+        expect(original.onOpenResult, isNull);
+        expect(await updates.installReadyUpdate(), isTrue);
+      },
+    );
+  }
+
+  test(
+    'startup cleans orphan updates without deleting unrelated files',
+    () async {
+      await File('${directory.path}/old.apk').writeAsBytes(_bytes);
+      await File('${directory.path}/old.apk.part').writeAsBytes([1]);
+      await File('${directory.path}/ready.json.tmp').writeAsString('{}');
+      await File('${directory.path}/notes.txt').writeAsString('keep');
+      await Directory('${directory.path}/nested').create();
+      await File('${directory.path}/nested/keep.apk').writeAsBytes(_bytes);
+      await service().restore();
+      expect(
+        directory.listSync().map(
+          (e) => e.uri.pathSegments.where((s) => s.isNotEmpty).last,
+        ),
+        unorderedEquals(['notes.txt', 'nested']),
+      );
+      expect(File('${directory.path}/nested/keep.apk').existsSync(), isTrue);
+    },
+  );
+
+  test(
+    'startup removes orphan update links without following their targets',
+    () async {
+      final outside = await Directory.systemTemp.createTemp('update-outside-');
+      try {
+        final kept = File('${outside.path}/keep.apk');
+        await kept.writeAsBytes(_bytes);
+        try {
+          await Link('${directory.path}/linked.apk').create(kept.path);
+        } on FileSystemException catch (error) {
+          if (Platform.isWindows && error.osError?.errorCode == 1314) {
+            markTestSkipped(
+              'Creating symbolic links requires a Windows privilege',
+            );
+            return;
+          }
+          rethrow;
+        }
+        await service().restore();
+        expect(directory.listSync(), isEmpty);
+        expect(await kept.readAsBytes(), _bytes);
+      } finally {
+        await outside.delete(recursive: true);
+      }
+    },
+  );
+
+  test('restoring a valid update keeps only its APK and metadata', () async {
+    final initial = service();
+    await _finish(await initial.startDownload(_release, _asset));
+    await File('${directory.path}/older.apk').writeAsBytes(_bytes);
+    await File('${directory.path}/interrupted.apk.part').writeAsBytes([1]);
+    final registry = BackgroundTasks();
+    try {
+      final restored = service(registry: registry);
+      await restored.restore();
+      expect(restored.readyFile!.existsSync(), isTrue);
+      expect(directory.listSync().length, 2);
+      expect(File('${directory.path}/ready.json').existsSync(), isTrue);
+    } finally {
+      registry.dispose();
+    }
+  });
+
+  test('replacing a ready update removes the previous APK', () async {
+    final updates = service();
+    await _finish(await updates.startDownload(_release, _asset));
+    final oldFile = updates.readyFile!;
+    final newer = ReleaseAsset(name: 'newer.apk', url: _asset.url, size: 4);
+    final task = await updates.startDownload(
+      const LatestRelease(version: '4.0', title: '', body: '', url: ''),
+      newer,
+    );
+    await _finish(task);
+    expect(oldFile.existsSync(), isFalse);
+    expect(updates.readyFile!.path, endsWith('newer.apk'));
+    expect(directory.listSync().length, 2);
+  });
+
+  test(
+    'an installer exception preserves verified APK and permits an install retry',
+    () async {
+      var shouldFail = true;
+      final updates = service(
+        installer: (_) async {
+          installs++;
+          if (shouldFail) throw StateError('installer temporarily unavailable');
+          return true;
+        },
+      );
+      final task = await updates.startDownload(_release, _asset);
+      await _finish(task);
+      expect(await updates.installReadyUpdate(), isFalse);
+      expect(updates.readyFile!.existsSync(), isTrue);
+      expect(task.resultLabel, 'Install'.tl);
+      shouldFail = false;
+      expect(await updates.installReadyUpdate(), isTrue);
+      expect(downloader.calls, 1);
+      expect(installs, 2);
     },
   );
 }

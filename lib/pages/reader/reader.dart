@@ -140,6 +140,11 @@ class _ReaderState extends State<Reader>
       if (!forward && controller.isAtChapterStart) {
         return !isFirstChapterOfGroup && toPrevChapter(toLastPage: true);
       }
+      if (forward ? toNextPage() : toPrevPage()) return true;
+      // The first/last image can be taller or wider than the viewport. Its
+      // page number is not a chapter boundary: scroll its remaining content
+      // instead of falling through to gallery-style chapter navigation.
+      return controller.scrollWithinPage(forward: forward);
     }
     if (forward) {
       return toNextPage() || (!isLastChapterOfGroup && toNextChapter());

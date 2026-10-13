@@ -66,8 +66,9 @@ class AppUpdateService {
     if (_restored) return;
     _restored = true;
     File? metadata;
+    Directory? directory;
     try {
-      final directory = _directory();
+      directory = _directory();
       metadata = File(p.join(directory.path, 'ready.json'));
       if (!await metadata.exists()) return;
       final data = jsonDecode(await metadata.readAsString()) as Map;
@@ -90,6 +91,8 @@ class AppUpdateService {
     } catch (_) {
       // Cache restoration must never prevent startup or offer an invalid APK.
       await _delete(metadata);
+    } finally {
+      if (directory != null) await _cleanCache(directory, keep: _ready?.file);
     }
   }
 
@@ -110,8 +113,20 @@ class AppUpdateService {
         ready.asset.url == asset.url &&
         ready.asset.size == asset.size &&
         ready.asset.digest == asset.digest) {
-      return existing!;
+      try {
+        // Android may evict cache files while this process remains alive.
+        // Never offer a remembered installation action for a missing/corrupt APK.
+        await _verifyFile(
+          ready.file,
+          ready.asset,
+          expectedDigest: ready.digest,
+        );
+        return existing!;
+      } catch (_) {
+        // A new explicit download request repairs unusable cached content.
+      }
     }
+    if (ready != null) await _discardReady(ready);
     existing?.setPresentation(pinned: false, needsAttention: false);
     existing?.onOpenResult = null;
     _ready = null;
@@ -234,7 +249,9 @@ class AppUpdateService {
     _installation = completion.future;
     unawaited(() async {
       try {
-        completion.complete(await _install());
+        // Share the preparation queue so cache verification/replacement cannot
+        // race an installation request for the previous ready file.
+        completion.complete(await _prepare(_install));
       } catch (_) {
         // _install records actionable errors; this also guards UI callbacks.
         completion.complete(false);
@@ -254,7 +271,42 @@ class AppUpdateService {
       if (!isNewerAppVersion(ready.version, _currentVersion())) {
         throw const FormatException('Update version is not newer');
       }
-      await _verifyFile(ready.file, ready.asset, expectedDigest: ready.digest);
+      try {
+        await _verifyFile(
+          ready.file,
+          ready.asset,
+          expectedDigest: ready.digest,
+        );
+      } catch (error) {
+        await _discardReady(ready);
+        task.errors.add(error.toString());
+        task.resultLabel = 'Download'.tl;
+        task.onOpenResult = () {
+          unawaited(
+            startDownload(
+              LatestRelease(
+                version: ready.version,
+                title: '',
+                body: '',
+                url: '',
+              ),
+              ready.asset,
+            ).then<void>(
+              (_) {},
+              onError: (Object error, StackTrace _) {
+                task.errors.add(error.toString());
+                task.setPresentation(message: '${'Update failed'.tl}\n$error');
+              },
+            ),
+          );
+        };
+        task.setPresentation(
+          pinned: true,
+          needsAttention: false,
+          message: '${'Update failed'.tl}\n$error',
+        );
+        return false;
+      }
       await _validate(ready.file);
       final launched = await _installer(ready.file);
       task.setPresentation(
@@ -275,6 +327,34 @@ class AppUpdateService {
         message: '${'Update failed'.tl}\n$error',
       );
       return false;
+    }
+  }
+
+  Future<void> _discardReady(_ReadyUpdate ready) async {
+    if (identical(_ready, ready)) _ready = null;
+    await _delete(File(p.join(ready.file.parent.path, 'ready.json')));
+    await _delete(ready.file);
+  }
+
+  // The updater owns these files. Leave unrelated files and directories alone,
+  // and never follow links while cleaning interrupted/obsolete downloads.
+  static Future<void> _cleanCache(Directory directory, {File? keep}) async {
+    try {
+      if (!await directory.exists()) return;
+      await for (final entry in directory.list(followLinks: false)) {
+        if (entry is! File && entry is! Link) continue;
+        if (keep != null && p.equals(entry.absolute.path, keep.absolute.path)) {
+          continue;
+        }
+        final name = p.basename(entry.path).toLowerCase();
+        if (name.endsWith('.apk') ||
+            name.endsWith('.apk.part') ||
+            name == 'ready.json.tmp') {
+          await _delete(File(entry.path));
+        }
+      }
+    } catch (_) {
+      // Cache housekeeping must not prevent startup or a fresh download.
     }
   }
 
@@ -312,7 +392,12 @@ class AppUpdateService {
 
   static Future<void> _delete(File? file) async {
     try {
-      if (file != null && await file.exists()) await file.delete();
+      if (file == null) return;
+      final type = await FileSystemEntity.type(file.path, followLinks: false);
+      if (type == FileSystemEntityType.file ||
+          type == FileSystemEntityType.link) {
+        await file.delete();
+      }
     } catch (_) {}
   }
 

@@ -751,6 +751,19 @@ class _ContinuousModeState extends State<_ContinuousMode>
             (state._imageInfo != null || state._lastException != null),
       );
 
+  bool scrollWithinPage({required bool forward}) {
+    if (!_visibleImagesReady || _scrollController?.hasClients != true) {
+      return false;
+    }
+    final position = scrollController.position;
+    final remaining = forward
+        ? position.maxScrollExtent - position.pixels
+        : position.pixels - position.minScrollExtent;
+    if (remaining <= 0.5) return false;
+    smoothTo(position.viewportDimension * (forward ? 1 : -1));
+    return true;
+  }
+
   var isCTRLPressed = false;
   static var _isMouseScrolling = false;
   var fingers = 0;

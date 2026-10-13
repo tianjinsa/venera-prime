@@ -37,6 +37,59 @@ void main() {
     BackgroundTasks.instance.configure(history: {});
   });
 
+  testWidgets('badge supports F6 focus and Enter or Space activation', (
+    tester,
+  ) async {
+    final visible = ValueNotifier(true);
+    addTearDown(visible.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        builder: (context, child) => ValueListenableBuilder<bool>(
+          valueListenable: visible,
+          child: child,
+          builder: (context, enabled, child) =>
+              BackgroundTaskOverlay(enabled: enabled, child: child!),
+        ),
+        home: const Scaffold(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final badge = find.byKey(const Key('background-task-badge'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.f6);
+    await tester.pumpAndSettle();
+    expect(Focus.of(tester.element(badge)).hasFocus, isTrue);
+    expect(
+      tester
+          .widget<Opacity>(
+            find.byKey(const Key('background-task-badge-opacity')),
+          )
+          .opacity,
+      .95,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('No background tasks'), findsOneWidget);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    Focus.of(tester.element(badge)).requestFocus();
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pumpAndSettle();
+    expect(find.text('No background tasks'), findsOneWidget);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    visible.value = false;
+    await tester.pumpAndSettle();
+    expect(badge, findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f6);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('No background tasks'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('attention breathes only while visible and preserves app state', (
     tester,
   ) async {
