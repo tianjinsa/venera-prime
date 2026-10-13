@@ -315,13 +315,21 @@ class _AgentChoiceField<T> extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          enabled: onChanged != null,
-          title: Text(label),
-          subtitle: Text(selected?.$2 ?? '请先配置可选项'),
-          trailing: const Icon(Icons.arrow_drop_down),
-          onTap: onChanged == null ? null : () => _choose(context),
+        Material(
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(8),
+          clipBehavior: Clip.antiAlias,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
+            ),
+            enabled: onChanged != null,
+            title: Text(label),
+            subtitle: Text(selected?.$2 ?? '请先配置可选项'),
+            trailing: const Icon(Icons.arrow_drop_down),
+            onTap: onChanged == null ? null : () => _choose(context),
+          ),
         ),
         if (hint != null) ...[const SizedBox(height: 4), _AgentHelpText(hint!)],
       ],
