@@ -11,6 +11,7 @@ import 'package:venera/pages/main_page.dart';
 import 'package:venera/utils/io.dart';
 import 'package:window_manager/window_manager.dart';
 import 'components/components.dart';
+import 'components/background_tasks.dart';
 import 'components/window_frame.dart';
 import 'foundation/app.dart';
 import 'foundation/appdata.dart';
@@ -78,24 +79,45 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     App.registerForceRebuild(forceRebuild);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     WidgetsBinding.instance.addObserver(this);
+    _authenticated = appdata.settings['authorizationRequired'] != true;
+    _tasksVisible.value = _authenticated && _initializationFailure == null;
     if (_initializationFailure == null) {
       checkUpdates();
     }
+    _sourceUpdateTimer = Timer.periodic(const Duration(hours: 1), (_) {
+      if (_initializationFailure == null) checkSourceUpdates(automatic: true);
+    });
     super.initState();
   }
 
   bool isAuthPageActive = false;
+  final _tasksVisible = ValueNotifier<bool>(false);
+  bool _authenticated = false;
+  Timer? _sourceUpdateTimer;
+
+  @override
+  void dispose() {
+    _sourceUpdateTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _tasksVisible.dispose();
+    super.dispose();
+  }
 
   OverlayEntry? hideContentOverlay;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_initializationFailure == null && state == AppLifecycleState.resumed) {
+      checkSourceUpdates(automatic: true);
+      _tasksVisible.value = _authenticated;
+    }
     if (_initializationFailure != null ||
         !App.isMobile ||
         !appdata.settings['authorizationRequired']) {
       return;
     }
     if (state == AppLifecycleState.inactive && hideContentOverlay == null) {
+      _tasksVisible.value = false;
       hideContentOverlay = OverlayEntry(
         builder: (context) {
           return Positioned.fill(
@@ -117,11 +139,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         !isAuthPageActive &&
         !IO.isSelectingFiles) {
       isAuthPageActive = true;
+      _authenticated = false;
+      _tasksVisible.value = false;
       App.rootContext.to(
         () => AuthPage(
           onSuccessfulAuth: () {
             App.rootContext.pop();
             isAuthPageActive = false;
+            _authenticated = true;
+            _tasksVisible.value = true;
           },
         ),
       );
@@ -197,12 +223,18 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           final failure = await init();
           if (!mounted) return;
           setState(() => _initializationFailure = failure);
-          if (failure == null) checkUpdates();
+          if (failure == null) {
+            _authenticated = appdata.settings['authorizationRequired'] != true;
+            _tasksVisible.value = _authenticated;
+            checkUpdates();
+          }
         },
       );
     } else if (appdata.settings['authorizationRequired']) {
       home = AuthPage(
         onSuccessfulAuth: () {
+          _authenticated = true;
+          _tasksVisible.value = true;
           App.rootContext.toReplacement(() => const MainPage());
         },
       );
@@ -272,17 +304,38 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                   MediaQuery.of(context).viewPadding.top <= 0 ||
                   MediaQuery.of(context).viewPadding.top > 200;
 
+              widget = OverlayWidget(widget);
+              widget = ListenableBuilder(
+                listenable: Listenable.merge([_tasksVisible, appdata.settings]),
+                child: widget,
+                builder: (context, child) => BackgroundTaskOverlay(
+                  enabled:
+                      _tasksVisible.value &&
+                      _initializationFailure == null &&
+                      appdata.settings['showBackgroundTaskButton'] != false,
+                  child: child!,
+                ),
+              );
               if (isPaddingCheckError && Platform.isAndroid) {
                 widget = MediaQuery(
                   data: MediaQuery.of(context).copyWith(
-                    viewPadding: const EdgeInsets.only(top: 15, bottom: 15),
-                    padding: const EdgeInsets.only(top: 15, bottom: 15),
+                    viewPadding: EdgeInsets.fromLTRB(
+                      MediaQuery.of(context).viewPadding.left,
+                      15,
+                      MediaQuery.of(context).viewPadding.right,
+                      15,
+                    ),
+                    padding: EdgeInsets.fromLTRB(
+                      MediaQuery.of(context).padding.left,
+                      15,
+                      MediaQuery.of(context).padding.right,
+                      15,
+                    ),
                   ),
                   child: widget,
                 );
               }
 
-              widget = OverlayWidget(widget);
               if (App.isDesktop) {
                 widget = Shortcuts(
                   shortcuts: {

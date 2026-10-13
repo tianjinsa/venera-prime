@@ -842,6 +842,7 @@ class SliverGridComics extends StatefulWidget {
     this.listenToHistoryChanges = true,
     this.filterBlockedComics = true,
     this.filterBlockedWords = true,
+    this.itemWrapper,
   });
 
   final List<Comic> comics;
@@ -854,6 +855,9 @@ class SliverGridComics extends StatefulWidget {
 
   /// History can show previously read comics without reapplying keyword rules.
   final bool filterBlockedWords;
+
+  /// Decorates a tile while retaining the shared grid layout and interactions.
+  final Widget Function(Comic comic, Widget child)? itemWrapper;
 
   final Map<Comic, bool>? selections;
 
@@ -960,6 +964,7 @@ class SliverGridComicsState extends State<SliverGridComics> {
       heroIDs: heroIDs,
       findChildIndexCallback: _findChildIndex,
       selection: widget.selections,
+      itemWrapper: widget.itemWrapper,
       onLastItemBuild: widget.onLastItemBuild,
       badgeBuilder: widget.badgeBuilder,
       menuBuilder: widget.menuBuilder,
@@ -980,9 +985,12 @@ class _SliverGridComics extends StatelessWidget {
     this.onTap,
     this.onLongPressed,
     this.selection,
+    this.itemWrapper,
   });
 
   final List<Comic> comics;
+
+  final Widget Function(Comic comic, Widget child)? itemWrapper;
 
   final List<int> heroIDs;
 
@@ -1012,7 +1020,7 @@ class _SliverGridComics extends StatelessWidget {
           var isSelected = selection == null
               ? false
               : selection![comics[index]] ?? false;
-          var comic = ComicTile(
+          Widget comic = ComicTile(
             key: ValueKey(heroIDs[index]),
             comic: comics[index],
             badge: badge,
@@ -1025,23 +1033,28 @@ class _SliverGridComics extends StatelessWidget {
                 : null,
             heroID: heroIDs[index],
           );
-          if (selection == null) {
-            return comic;
+          if (selection != null) {
+            comic = AnimatedContainer(
+              key: ValueKey(heroIDs[index]),
+              duration: const Duration(milliseconds: 150),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? Theme.of(
+                        context,
+                      ).colorScheme.secondaryContainer.toOpacity(0.72)
+                    : null,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              margin: const EdgeInsets.all(4),
+              child: comic,
+            );
           }
-          return AnimatedContainer(
-            key: ValueKey(heroIDs[index]),
-            duration: const Duration(milliseconds: 150),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? Theme.of(
-                      context,
-                    ).colorScheme.secondaryContainer.toOpacity(0.72)
-                  : null,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            margin: const EdgeInsets.all(4),
-            child: comic,
-          );
+          return itemWrapper == null
+              ? comic
+              : KeyedSubtree(
+                  key: ValueKey(heroIDs[index]),
+                  child: itemWrapper!(comics[index], comic),
+                );
         },
         childCount: comics.length,
         findChildIndexCallback: findChildIndexCallback,

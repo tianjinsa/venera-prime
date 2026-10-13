@@ -22,10 +22,9 @@ abstract class ImageDownloader {
   ]) async* {
     checkStop?.call();
     final cacheKey = "$url@$sourceKey${cid != null ? '@$cid' : ''}";
-    final cache = await CacheManager().findCache(cacheKey);
+    final data = await CacheManager().readCache(cacheKey);
 
-    if (cache != null) {
-      var data = await cache.readAsBytes();
+    if (data != null) {
       if (detectFileType(data).mime.startsWith('image/')) {
         yield ImageDownloadProgress(
           currentBytes: data.length,
@@ -201,6 +200,7 @@ abstract class ImageDownloader {
     String cid,
     String eid, {
     bool cacheResult = true,
+    bool useCache = true,
   }) {
     return _loadComicImage(
       imageKey,
@@ -208,6 +208,7 @@ abstract class ImageDownloader {
       cid,
       eid,
       cacheResult: cacheResult,
+      useCache: useCache,
     );
   }
 
@@ -217,12 +218,12 @@ abstract class ImageDownloader {
     String cid,
     String eid, {
     bool cacheResult = true,
+    bool useCache = true,
   }) async* {
     final cacheKey = "$imageKey@$sourceKey@$cid@$eid";
-    final cache = await CacheManager().findCache(cacheKey);
+    final data = useCache ? await CacheManager().readCache(cacheKey) : null;
 
-    if (cache != null) {
-      var data = await cache.readAsBytes();
+    if (data != null) {
       if (detectFileType(data).mime.startsWith('image/')) {
         yield ImageDownloadProgress(
           currentBytes: data.length,

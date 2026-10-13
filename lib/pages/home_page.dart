@@ -1016,6 +1016,7 @@ class _ImportComicsWidgetState extends State<_ImportComicsWidget> {
       5 => await importer.localDownloads(),
       int() => true,
     };
+    if (!mounted) return;
     if (result) {
       context.pop();
     } else {

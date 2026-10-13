@@ -21,7 +21,9 @@ class _ExplorePageState extends State<ExplorePage>
     with TickerProviderStateMixin, AutomaticKeepAliveClientMixin<ExplorePage> {
   late TabController controller;
 
-  bool showFB = true;
+  // Scroll notifications should only rebuild the refresh button, not every
+  // source tab and comic grid.
+  final _showRefreshButton = ValueNotifier<bool>(true);
 
   double location = 0;
 
@@ -35,18 +37,26 @@ class _ExplorePageState extends State<ExplorePage>
         .toList();
     explorePages = explorePages.where((e) => all.contains(e)).toList();
     if (!pages.isEqualTo(explorePages)) {
+      final selectedPage = pages.isEmpty ? null : pages[controller.index];
+      final selectedIndex = explorePages.indexOf(selectedPage ?? '');
+      controller.dispose();
       setState(() {
         pages = explorePages;
         controller = TabController(
           length: pages.length,
+          initialIndex: selectedIndex < 0 ? 0 : selectedIndex,
           vsync: this,
         );
       });
+    } else if (pages.isEmpty) {
+      // An installed source may have no enabled explore pages. Refresh the
+      // empty-state action as well when the source list finishes loading.
+      setState(() {});
     }
   }
 
   void onNaviItemTapped(int index) {
-    if (index == 2) {
+    if (index == 2 && pages.isNotEmpty) {
       int page = controller.index;
       String currentPageId = pages[page];
       GlobalState.find<_SingleExplorePageState>(currentPageId).toTop();
@@ -72,6 +82,9 @@ class _ExplorePageState extends State<ExplorePage>
       vsync: this,
     );
     appdata.settings.addListener(onSettingsChanged);
+    // Sources initialize in the background after the initial page is mounted.
+    // Their completion does not necessarily change the saved page settings.
+    ComicSourceManager().addListener(onSettingsChanged);
     NaviPane.of(context).addNaviItemTapListener(onNaviItemTapped);
     super.initState();
   }
@@ -85,7 +98,9 @@ class _ExplorePageState extends State<ExplorePage>
   @override
   void dispose() {
     controller.dispose();
+    _showRefreshButton.dispose();
     appdata.settings.removeListener(onSettingsChanged);
+    ComicSourceManager().removeListener(onSettingsChanged);
     naviPane?.removeNaviItemTapListener(onNaviItemTapped);
     super.dispose();
   }
@@ -166,25 +181,16 @@ class _ExplorePageState extends State<ExplorePage>
                 child: NotificationListener<ScrollNotification>(
                   onNotification: (notifications) {
                     if (notifications.metrics.axis == Axis.horizontal) {
-                      if (!showFB) {
-                        setState(() {
-                          showFB = true;
-                        });
-                      }
+                      _showRefreshButton.value = true;
                       return true;
                     }
 
                     var current = notifications.metrics.pixels;
                     var overflow = notifications.metrics.outOfRange;
-                    if (current > location && current != 0 && showFB) {
-                      setState(() {
-                        showFB = false;
-                      });
-                    } else if ((current < location - 50 || current == 0) &&
-                        !showFB) {
-                      setState(() {
-                        showFB = true;
-                      });
+                    if (current > location && current != 0) {
+                      _showRefreshButton.value = false;
+                    } else if (current < location - 50 || current == 0) {
+                      _showRefreshButton.value = true;
                     }
                     if ((current > location || current < location - 50) &&
                         !overflow) {
@@ -208,20 +214,26 @@ class _ExplorePageState extends State<ExplorePage>
         Positioned(
           right: 16,
           bottom: 16,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 150),
-            reverseDuration: const Duration(milliseconds: 150),
-            child: showFB ? buildFAB() : const SizedBox(),
-            transitionBuilder: (widget, animation) {
-              var tween = Tween<Offset>(
-                  begin: const Offset(0, 1), end: const Offset(0, 0));
-              return SlideTransition(
-                position: tween.animate(animation),
-                child: widget,
-              );
-            },
+          child: ValueListenableBuilder<bool>(
+            valueListenable: _showRefreshButton,
+            builder: (context, visible, child) => AnimatedSwitcher(
+              duration: const Duration(milliseconds: 150),
+              reverseDuration: const Duration(milliseconds: 150),
+              child: visible ? child! : const SizedBox(),
+              transitionBuilder: (widget, animation) {
+                var tween = Tween<Offset>(
+                  begin: const Offset(0, 1),
+                  end: const Offset(0, 0),
+                );
+                return SlideTransition(
+                  position: tween.animate(animation),
+                  child: widget,
+                );
+              },
+            ),
+            child: buildFAB(),
           ),
-        )
+        ),
       ],
     );
   }

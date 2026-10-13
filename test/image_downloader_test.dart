@@ -32,6 +32,7 @@ void main() {
       expect(events, hasLength(1));
       expect(events.single.imageBytes, imageBytes);
     } finally {
+      await CacheManager.instance?.close();
       CacheManager.instance = null;
       await root.delete(recursive: true);
     }

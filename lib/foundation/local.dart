@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:xml/xml.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
@@ -948,7 +949,21 @@ class LocalManager with ChangeNotifier {
   }
 
   void completeTask(DownloadTask task) {
-    add(task.toLocalComic());
+    unawaited(
+      add(task.toLocalComic()).then(
+        (_) {
+          task.completeBackgroundTask();
+        },
+        onError: (Object error, StackTrace stack) {
+          task.failBackgroundTask(error);
+          Log.error(
+            'Download',
+            'Failed to save downloaded comic: $error',
+            stack,
+          );
+        },
+      ),
+    );
     downloadingTasks.remove(task);
     notifyListeners();
     saveCurrentDownloadingTasks();
@@ -1021,7 +1036,10 @@ class LocalManager with ChangeNotifier {
           if (e is! Map<String, dynamic>) continue;
           try {
             var task = DownloadTask.fromJson(e);
-            if (task != null) downloadingTasks.add(task);
+            if (task != null) {
+              downloadingTasks.add(task);
+              task.trackBackgroundTask(queued: true);
+            }
           } catch (taskError, taskStack) {
             Log.error(
               "LocalManager",
@@ -1041,6 +1059,7 @@ class LocalManager with ChangeNotifier {
       return;
     }
     downloadingTasks.add(task);
+    task.trackBackgroundTask(queued: true);
     notifyListeners();
     saveCurrentDownloadingTasks();
     downloadingTasks.first.resume();
@@ -1144,101 +1163,127 @@ class LocalManager with ChangeNotifier {
     }
   }
 
-  /// Deletes the directories in a separate isolate to avoid blocking the UI thread.
+  static int _deleteBatchId = 0;
+
+  /// Keep each deletion batch independent: another batch must never replace or
+  /// deduplicate work that has already removed its corresponding DB records.
   static void _deleteDirectories(List<Directory> directories) {
+    if (directories.isEmpty) return;
     final paths = directories.map((dir) => dir.path).toList();
     final root = path_utils.canonicalize(LocalManager().path);
     unawaited(
-      Isolate.run(() async {
-            var errors = <String>[];
-            await SAFTaskWorker().init();
-            await overrideIO(() async {
-              for (var path in paths) {
-                var dir = Directory(path);
-                try {
-                  final target = path_utils.canonicalize(path);
-                  var current = target;
-                  var safe =
-                      target != root && path_utils.isWithin(root, target);
-                  while (safe) {
-                    if (FileSystemEntity.typeSync(
-                          current,
-                          followLinks: false,
-                        ) ==
-                        FileSystemEntityType.link) {
-                      safe = false;
-                      break;
-                    }
-                    if (current == root) break;
-                    final parent = path_utils.dirname(current);
-                    if (parent == current ||
-                        (parent != root &&
-                            !path_utils.isWithin(root, parent))) {
-                      safe = false;
-                      break;
-                    }
-                    current = parent;
-                  }
-                  if (!safe) {
-                    throw const FileSystemException(
-                      'Refusing to delete a path outside local storage',
-                    );
-                  }
-                  for (var attempt = 0; attempt < 3; attempt++) {
-                    if (!await dir.exists()) {
-                      break;
-                    }
-                    if (FileSystemEntity.typeSync(
-                          dir.path,
-                          followLinks: false,
-                        ) ==
-                        FileSystemEntityType.link) {
-                      throw const FileSystemException(
-                        'Refusing to delete a symbolic link',
-                      );
-                    }
-                    try {
-                      await dir.delete(recursive: true);
-                    } catch (e) {
-                      if (attempt == 2) rethrow;
-                    }
-                    if (!await dir.exists()) {
-                      break;
-                    }
-                    await Future.delayed(
-                      Duration(milliseconds: 100 * (attempt + 1)),
-                    );
-                  }
-                  if (await dir.exists()) {
-                    throw FileSystemException(
-                      'Directory still exists after delete retries',
-                      dir.path,
-                    );
-                  }
-                } catch (e, s) {
-                  errors.add(
-                    "Failed to delete local directory ${dir.path}: "
-                    "$e\n${s.toString()}",
-                  );
-                }
-              }
+      BackgroundTasks.instance
+          .run<void>('local-delete:${++_deleteBatchId}', 'Delete local files', (
+            task,
+          ) async {
+            task.update(completed: 0, total: paths.length);
+            final progress = ReceivePort();
+            final subscription = progress.listen((completed) {
+              task.update(completed: completed as int);
             });
-            return errors;
-          })
-          .then((errors) {
-            for (var error in errors) {
-              Log.error("LocalManager", error);
+            late List<String> errors;
+            try {
+              errors = await _deleteDirectoriesInIsolate(
+                paths,
+                root,
+                progress.sendPort,
+              );
+            } finally {
+              await subscription.cancel();
+              progress.close();
             }
+            for (final error in errors) {
+              task.addError(error);
+              Log.error('LocalManager', error);
+            }
+            task.update(completed: paths.length);
           })
-          .catchError((e, s) {
+          .catchError((Object error, StackTrace stack) {
+            // BackgroundTasks.run has already retained the failure for inspection.
             Log.error(
-              "LocalManager",
-              "Failed to run local directory cleanup: $e",
-              s,
+              'LocalManager',
+              'Failed to run local directory cleanup: $error',
+              stack,
             );
           }),
     );
   }
+
+  // Only send paths, the captured storage root, and a SendPort to the worker.
+  // In particular, do not capture the UI task/notifier in an isolate closure.
+  static Future<List<String>> _deleteDirectoriesInIsolate(
+    List<String> paths,
+    String root,
+    SendPort progress,
+  ) => Isolate.run(() async {
+    var errors = <String>[];
+    await SAFTaskWorker().init();
+    await overrideIO(() async {
+      var completed = 0;
+      for (var path in paths) {
+        var dir = Directory(path);
+        try {
+          final target = path_utils.canonicalize(path);
+          var current = target;
+          var safe = target != root && path_utils.isWithin(root, target);
+          while (safe) {
+            if (FileSystemEntity.typeSync(current, followLinks: false) ==
+                FileSystemEntityType.link) {
+              safe = false;
+              break;
+            }
+            if (current == root) break;
+            final parent = path_utils.dirname(current);
+            if (parent == current ||
+                (parent != root && !path_utils.isWithin(root, parent))) {
+              safe = false;
+              break;
+            }
+            current = parent;
+          }
+          if (!safe) {
+            throw const FileSystemException(
+              'Refusing to delete a path outside local storage',
+            );
+          }
+          for (var attempt = 0; attempt < 3; attempt++) {
+            if (!await dir.exists()) {
+              break;
+            }
+            if (FileSystemEntity.typeSync(dir.path, followLinks: false) ==
+                FileSystemEntityType.link) {
+              throw const FileSystemException(
+                'Refusing to delete a symbolic link',
+              );
+            }
+            try {
+              await dir.delete(recursive: true);
+            } catch (e) {
+              if (attempt == 2) rethrow;
+            }
+            if (!await dir.exists()) {
+              break;
+            }
+            await Future.delayed(Duration(milliseconds: 100 * (attempt + 1)));
+          }
+          if (await dir.exists()) {
+            throw FileSystemException(
+              'Directory still exists after delete retries',
+              dir.path,
+            );
+          }
+        } catch (e, s) {
+          errors.add(
+            "Failed to delete local directory ${dir.path}: "
+            "$e\n${s.toString()}",
+          );
+        } finally {
+          progress.send(++completed);
+        }
+      }
+    });
+    return errors;
+  });
 
   bool _isManagedPath(String candidate) {
     final root = path_utils.canonicalize(path);

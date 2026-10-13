@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'package:venera/foundation/background_tasks.dart';
+import 'package:venera/components/background_tasks.dart';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -9,6 +12,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera/components/components.dart';
 import 'package:venera/foundation/app.dart';
+import 'package:venera/foundation/app_update.dart';
+import 'package:venera/foundation/app_update_service.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/cache_manager.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -17,13 +22,17 @@ import 'package:venera/foundation/js_engine.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/pages/reading_statistics_page.dart';
 import 'package:venera/pages/settings/home_layout_page.dart';
+import 'package:venera/pages/settings/cache_retention_setting.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/reader_orientation_behavior.dart';
 import 'package:venera/network/app_dio.dart';
 import 'package:venera/utils/data.dart';
 import 'package:venera/utils/data_sync.dart';
 import 'package:venera/utils/io.dart';
+import 'package:venera/utils/import_comic.dart';
 import 'package:venera/utils/translations.dart';
+
+export 'package:venera/foundation/app_update.dart' show LatestRelease;
 
 part 'reader.dart';
 part 'explore_settings.dart';
@@ -32,6 +41,7 @@ part 'appearance.dart';
 part 'local_favorites.dart';
 part 'app.dart';
 part 'about.dart';
+part 'app_update_dialog.dart';
 part 'network.dart';
 part 'debug.dart';
 

@@ -6,6 +6,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_saf/flutter_saf.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/cache_manager.dart';
+import 'package:venera/foundation/cache_maintenance_service.dart';
+import 'package:venera/foundation/background_tasks.dart';
+import 'package:venera/foundation/app_update_service.dart';
+import 'package:venera/foundation/update_schedule.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_source/source_library.dart';
 import 'package:venera/foundation/js_engine.dart';
@@ -87,9 +91,27 @@ Future<InitializationFailure?> init() async {
   } catch (e, s) {
     Log.error("init", "$e\n$s");
   }
+  final taskHistory = appdata.implicitData['backgroundTaskHistory'];
+  BackgroundTasks.instance.configure(
+    history: taskHistory is Map ? Map<String, dynamic>.from(taskHistory) : {},
+    persist: () {
+      appdata.implicitData['backgroundTaskHistory'] =
+          BackgroundTasks.instance.history;
+      appdata.writeImplicitData();
+    },
+  );
   CacheManager().setLimitSize(appdata.settings['cacheSize']);
-  unawaited(_initComicSources());
+  CacheMaintenanceService.instance.start();
+  unawaited(
+    _ensureComicSourcesInitialized().catchError((
+      Object error,
+      StackTrace stack,
+    ) {
+      Log.error('comic source init', error, stack);
+    }),
+  );
   if (App.isAndroid) {
+    unawaited(AppUpdateService.instance.restore());
     handleLinks();
     handleTextShare();
     try {
@@ -112,22 +134,57 @@ Future<InitializationFailure?> init() async {
   return null;
 }
 
-Future<void> _initComicSources() async {
-  await Future<void>.delayed(const Duration(milliseconds: 500));
-  try {
+final _comicSourcesInitialization = RetryableInitialization();
+final _safInitialization = RetryableInitialization();
+Future<void>? _sourceUpdateCheck;
+bool _sourceManagerAttempted = false;
+bool _followUpdatesRequested = false;
+
+Future<void> _ensureComicSourcesInitialized() =>
+    _comicSourcesInitialization.run(_initComicSources);
+
+Future<void> _initComicSources() => BackgroundTasks.instance.run<void>(
+  'source-initialization',
+  "Initialize comic sources".tl,
+  (task) async {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    task.update(total: 3, message: "Preparing source runtime".tl);
     await Future.wait([
       ensureRHttpInitialized(),
-      SAFTaskWorker().init().wait(),
-      JsEngine().init().wait(),
+      _safInitialization.run(() => SAFTaskWorker().init()),
     ]);
-    await ComicSourceManager().init().wait();
-    App.local.restoreDownloadingTasks();
+    // JsEngine currently logs some initialization exceptions internally.
+    // Verify the bootstrap before declaring readiness, and discard a broken
+    // runtime so a later attempt can genuinely recreate it.
+    final engine = JsEngine();
+    try {
+      await engine.init();
+      if (engine.runCode(
+            "typeof ComicSource !== 'undefined' && typeof ComicSource.sources === 'object'",
+          ) !=
+          true) {
+        throw StateError('Comic source runtime initialization failed');
+      }
+    } catch (_) {
+      engine.dispose();
+      rethrow;
+    }
+    task.update(completed: 1, message: "Loading comic sources".tl);
+    final manager = ComicSourceManager();
+    final retry = _sourceManagerAttempted;
+    _sourceManagerAttempted = true;
+    if (retry) {
+      await manager.reload();
+    } else {
+      await manager.init();
+    }
+    task.update(completed: 2);
     _checkOldConfigs();
-    ComicSourceManager().notifyStateChange();
-  } catch (e, s) {
-    Log.error("comic source init", "$e\n$s");
-  }
-}
+    App.local.restoreDownloadingTasks();
+    manager.notifyStateChange();
+    task.update(completed: 3);
+  },
+);
 
 void _checkOldConfigs() {
   if (appdata.settings['searchSources'] == null) {
@@ -171,20 +228,66 @@ void _checkOldConfigs() {
 }
 
 Future<void> _checkAppUpdates() async {
-  var lastCheck = appdata.implicitData['lastCheckUpdate'] ?? 0;
-  var now = DateTime.now().millisecondsSinceEpoch;
-  if (now - lastCheck < 24 * 60 * 60 * 1000) {
+  // Turning this off must not consume the next successful-check interval.
+  if (appdata.settings['checkUpdateOnStart'] != true) return;
+  if (!isUpdateCheckDue(
+    now: DateTime.now(),
+    checkRecord: BackgroundTasks.instance.history['app-update-check'],
+  )) {
     return;
   }
-  appdata.implicitData['lastCheckUpdate'] = now;
-  appdata.writeImplicitData();
-  ComicSourcePage.checkComicSourceUpdate();
-  if (appdata.settings['checkUpdateOnStart']) {
-    await checkUpdateUi(false, true);
-  }
+  await checkUpdateUi(false, true);
 }
 
 void checkUpdates() {
-  _checkAppUpdates();
-  FollowUpdatesService.initChecker();
+  unawaited(_checkAppUpdates());
+  _followUpdatesRequested = true;
+  checkSourceUpdates();
+}
+
+/// Source checks have their own completion-based daily gate. Initialization
+/// failures and failed script application use the shorter retry interval.
+void checkSourceUpdates({bool automatic = false}) {
+  final optedIn = appdata.settings['autoUpdateComicSources'] == true;
+  if (automatic && !optedIn && _comicSourcesInitialization.isInitialized) {
+    return;
+  }
+  if (_sourceUpdateCheck != null) return;
+  _sourceUpdateCheck =
+      () async {
+            final tasks = BackgroundTasks.instance;
+            // Initial startup always tries once. Subsequent resume/hourly calls wait
+            // after a failure rather than continually retrying a broken runtime.
+            if (!_comicSourcesInitialization.isInitialized &&
+                !_comicSourcesInitialization.isRunning &&
+                !isUpdateCheckDue(
+                  now: DateTime.now(),
+                  checkRecord: tasks.history['source-initialization'],
+                  successInterval: Duration.zero,
+                )) {
+              return;
+            }
+            await _ensureComicSourcesInitialized();
+            if (_followUpdatesRequested) FollowUpdatesService.initChecker();
+            if (automatic &&
+                appdata.settings['autoUpdateComicSources'] != true) {
+              return;
+            }
+            if (ComicSource.all().isEmpty) return;
+            if (tasks.latest('source-update-all')?.isRunning == true) return;
+            if (!isUpdateCheckDue(
+              now: DateTime.now(),
+              checkRecord: tasks.history['source-check'],
+              applicationRecord: tasks.history['source-update-all'],
+              hasPendingApplications:
+                  ComicSourcePage.automaticUpdateKeys().isNotEmpty,
+            )) {
+              return;
+            }
+            await ComicSourcePage.runStartupUpdates();
+          }()
+          .catchError((Object error, StackTrace stack) {
+            Log.error('Automatic source update', error, stack);
+          })
+          .whenComplete(() => _sourceUpdateCheck = null);
 }

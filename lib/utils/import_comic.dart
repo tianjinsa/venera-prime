@@ -22,55 +22,118 @@ class ImportComic {
 
   const ImportComic({this.selectedFolder, this.copyToLocal = true});
 
-  Future<bool> cbz() async {
-    var file = await selectFile(ext: ['cbz', 'zip', '7z', 'cb7']);
-    Map<String?, List<LocalComic>> imported = {};
-    if (file == null) {
+  static Future<void> _libraryWork = Future.value();
+
+  /// Import, rescan and path changes all mutate the same local library.
+  /// Keep them ordered even when their progress views are minimized.
+  static Future<T> withLibraryLock<T>(Future<T> Function() action) {
+    final operation = _libraryWork.then((_) => action());
+    _libraryWork = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return operation;
+  }
+
+  static bool _importing = false;
+  static bool get isImporting => _importing;
+
+  Future<bool> _exclusive(Future<bool> Function() action) async {
+    if (_importing) {
+      App.rootContext.showMessage(
+        message: 'A comic import is already running'.tl,
+      );
       return false;
     }
-    var controller = showLoadingDialog(App.rootContext, allowCancel: false);
+    _importing = true;
     try {
-      var comic = await CBZ.import(File(file.path));
-      imported[selectedFolder] = [comic];
-    } catch (e, s) {
-      Log.error("Import Comic", e.toString(), s);
-      App.rootContext.showMessage(message: e.toString());
+      return await withLibraryLock(action);
+    } finally {
+      _importing = false;
     }
-    controller.close();
-    return registerComics(imported, false);
   }
 
-  Future<bool> multipleCbz() async {
-    var picker = DirectoryPicker();
-    var dir = await picker.pickDirectory(directAccess: true);
-    if (dir != null) {
-      var files = (await dir.list().toList()).whereType<File>().toList();
-      const supportedExtensions = ['cbz', 'zip', '7z', 'cb7'];
-      files.removeWhere(
-        (e) => !supportedExtensions.contains(e.extension.toLowerCase()),
+  Future<bool> cbz() => _exclusive(_cbz);
+  Future<bool> multipleCbz() => _exclusive(_multipleCbz);
+  Future<bool> ehViewer() => _exclusive(_ehViewer);
+  Future<bool> directory(bool single) => _exclusive(() => _directory(single));
+  Future<bool> localDownloads() => _exclusive(_localDownloads);
+
+  Future<bool> _cbz() async {
+    final file = await selectFile(ext: ['cbz', 'zip', '7z', 'cb7']);
+    if (file == null) return false;
+    final controller = showLoadingDialog(
+      App.rootContext,
+      allowCancel: false,
+      allowBackground: true,
+      message: 'Importing'.tl,
+    );
+    try {
+      final comic = await CBZ.import(File(file.path));
+      return await registerComics(
+        {
+          selectedFolder: [comic],
+        },
+        false,
+        controller: controller,
       );
-      Map<String?, List<LocalComic>> imported = {};
-      var controller = showLoadingDialog(App.rootContext, allowCancel: false);
-      var comics = <LocalComic>[];
-      for (var file in files) {
+    } catch (error, stack) {
+      controller.fail(error);
+      Log.error('Import Comic', error, stack);
+      App.rootContext.showMessage(message: error.toString());
+      return false;
+    } finally {
+      controller.close();
+    }
+  }
+
+  Future<bool> _multipleCbz() async {
+    final picker = DirectoryPicker();
+    final dir = await picker.pickDirectory(directAccess: true);
+    if (dir == null) return false;
+    final controller = showLoadingDialog(
+      App.rootContext,
+      allowCancel: false,
+      allowBackground: true,
+      message: 'Importing'.tl,
+      withProgress: true,
+    );
+    try {
+      const supported = ['cbz', 'zip', '7z', 'cb7'];
+      final files = (await dir.list().toList())
+          .whereType<File>()
+          .where((f) => supported.contains(f.extension.toLowerCase()))
+          .toList();
+      final comics = <LocalComic>[];
+      for (var i = 0; i < files.length; i++) {
+        final file = files[i];
         try {
-          var comic = await CBZ.import(file);
-          comics.add(comic);
-        } catch (e, s) {
-          Log.error("Import Comic", e.toString(), s);
+          comics.add(await CBZ.import(file));
+        } catch (error, stack) {
+          controller.addError('${file.name}: $error');
+          Log.error('Import Comic', error, stack);
         }
+        controller.setProgress((i + 1) / files.length);
       }
       if (comics.isEmpty) {
-        App.rootContext.showMessage(message: "No valid comics found".tl);
+        controller.addError('No valid comics found'.tl);
+        App.rootContext.showMessage(message: 'No valid comics found'.tl);
       }
-      imported[selectedFolder] = comics;
+      return await registerComics(
+        {selectedFolder: comics},
+        false,
+        controller: controller,
+      );
+    } catch (error, stack) {
+      controller.fail(error);
+      Log.error('Import Comic', error, stack);
+      return false;
+    } finally {
       controller.close();
-      return registerComics(imported, false);
     }
-    return false;
   }
 
-  Future<bool> ehViewer() async {
+  Future<bool> _ehViewer() async {
     var dbFile = await selectFile(ext: ['db']);
     final picker = DirectoryPicker();
     final comicSrc = await picker.pickDirectory();
@@ -82,13 +145,16 @@ class ImportComic {
     bool cancelled = false;
     var controller = showLoadingDialog(
       App.rootContext,
+      allowBackground: true,
+      message: 'Importing'.tl,
       onCancel: () {
         cancelled = true;
       },
     );
 
+    sql.Database? openedDatabase;
     try {
-      var db = sql.sqlite3.open(dbFile.path);
+      final db = openedDatabase = sql.sqlite3.open(dbFile.path);
 
       Future<List<LocalComic>> validateComics(List<sql.Row> comics) async {
         List<LocalComic> imported = [];
@@ -180,32 +246,50 @@ class ImportComic {
         }
       }
       db.dispose();
-
+      openedDatabase = null;
       //Android specific
       var cache = FilePath.join(App.cachePath, dbFile.name);
       await File(cache).deleteIgnoreError();
     } catch (e, s) {
+      controller.fail(e);
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
+      return false;
+    } finally {
+      openedDatabase?.dispose();
     }
-    controller.close();
-    if (cancelled) return false;
-    return registerComics(imported, copyToLocal);
+    if (cancelled) {
+      controller.close();
+      return false;
+    }
+    return registerComics(
+      imported,
+      copyToLocal,
+      controller: controller,
+      isCancelled: () => cancelled,
+    );
   }
 
-  Future<bool> directory(bool single) async {
+  Future<bool> _directory(bool single) async {
     final picker = DirectoryPicker();
     final path = await picker.pickDirectory();
     if (path == null) {
       return false;
     }
     Map<String?, List<LocalComic>> imported = {selectedFolder: []};
+    final controller = showLoadingDialog(
+      App.rootContext,
+      allowCancel: false,
+      allowBackground: true,
+      message: 'Importing'.tl,
+    );
     try {
       if (single) {
         var result = await _checkSingleComic(path);
         if (result != null) {
           imported[selectedFolder]!.add(result);
         } else {
+          controller.fail('Invalid Comic'.tl);
           App.rootContext.showMessage(message: "Invalid Comic".tl);
           return false;
         }
@@ -220,18 +304,22 @@ class ImportComic {
         }
       }
     } catch (e, s) {
+      controller.fail(e);
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
+      return false;
     }
-    return registerComics(imported, copyToLocal);
+    return registerComics(imported, copyToLocal, controller: controller);
   }
 
-  Future<bool> localDownloads() async {
+  Future<bool> _localDownloads() async {
     var localDir = LocalManager().directory;
     Map<String?, List<LocalComic>> imported = {null: []};
     bool cancelled = false;
     var controller = showLoadingDialog(
       App.rootContext,
+      allowBackground: true,
+      message: 'Importing'.tl,
       onCancel: () {
         cancelled = true;
       },
@@ -239,7 +327,7 @@ class ImportComic {
     try {
       if (!await localDir.exists()) {
         App.rootContext.showMessage(message: "Local path not found".tl);
-        controller.close();
+        controller.fail('Local path not found'.tl);
         return false;
       }
       await for (var entry in localDir.list()) {
@@ -262,12 +350,21 @@ class ImportComic {
         App.rootContext.showMessage(message: "No valid comics found".tl);
       }
     } catch (e, s) {
+      controller.fail(e);
       Log.error("Import Comic", e.toString(), s);
       App.rootContext.showMessage(message: e.toString());
+      return false;
     }
-    controller.close();
-    if (cancelled) return false;
-    return registerComics(imported, false);
+    if (cancelled) {
+      controller.close();
+      return false;
+    }
+    return registerComics(
+      imported,
+      false,
+      controller: controller,
+      isCancelled: () => cancelled,
+    );
   }
 
   //Automatically search for cover image and chapters
@@ -403,8 +500,9 @@ class ImportComic {
   }
 
   Future<Map<String?, List<LocalComic>>> _copyComicsToLocalDir(
-    Map<String?, List<LocalComic>> comics,
-  ) async {
+    Map<String?, List<LocalComic>> comics, {
+    LoadingDialogController? controller,
+  }) async {
     var destPath = LocalManager().path;
     final canonicalDest = path_utils.canonicalize(destPath);
     bool isInLocalStorage(LocalComic comic) {
@@ -455,6 +553,7 @@ class ImportComic {
           );
         }
       } catch (e, s) {
+        controller?.addError(e);
         App.rootContext.showMessage(message: "Failed to copy comics".tl);
         Log.error("Import Comic", e.toString(), s);
         return result;
@@ -465,12 +564,26 @@ class ImportComic {
 
   Future<bool> registerComics(
     Map<String?, List<LocalComic>> importedComics,
-    bool copy,
-  ) async {
+    bool copy, {
+    LoadingDialogController? controller,
+    bool Function()? isCancelled,
+  }) async {
+    controller ??= showLoadingDialog(
+      App.rootContext,
+      allowCancel: false,
+      allowBackground: true,
+      message: 'Importing'.tl,
+    );
     try {
+      if (isCancelled?.call() == true) return false;
+      controller.setProgress(null);
       if (copy) {
-        importedComics = await _copyComicsToLocalDir(importedComics);
+        importedComics = await _copyComicsToLocalDir(
+          importedComics,
+          controller: controller,
+        );
       }
+      if (isCancelled?.call() == true) return false;
       int importedCount = 0;
       for (var folder in importedComics.keys) {
         for (var comic in importedComics[folder]!) {
@@ -514,13 +627,16 @@ class ImportComic {
           }
         }
       }
-      App.rootContext.showMessage(
-        message: "Imported @a comics".tlParams({'a': importedCount}),
-      );
+      final message = "Imported @a comics".tlParams({'a': importedCount});
+      controller.setMessage(message);
+      App.rootContext.showMessage(message: message);
     } catch (e, s) {
+      controller.fail(e);
       App.rootContext.showMessage(message: "Failed to register comics".tl);
       Log.error("Import Comic", e.toString(), s);
       return false;
+    } finally {
+      controller.close();
     }
     return true;
   }

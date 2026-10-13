@@ -977,9 +977,11 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     if (imageKey.startsWith("file://")) {
       data = await File(imageKey.substring(7)).readAsBytes();
     } else {
-      data = await (await CacheManager().findCache(
+      final cached = await CacheManager().readCache(
         "$imageKey@${context.reader.type.sourceKey}@${context.reader.cid}@${context.reader.eid}",
-      ))!.readAsBytes();
+      );
+      if (cached == null) return null;
+      data = cached;
     }
     return (i, data);
   }

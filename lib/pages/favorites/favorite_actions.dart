@@ -132,152 +132,115 @@ void addFavorite(List<Comic> comics) {
   );
 }
 
-Future<List<FavoriteItem>> updateComicsInfo(String? folder) async {
-  final manager = LocalFavoritesManager();
-  final folders = folder == null ? manager.folderNames.toList() : [folder];
-  final memberships = <FavoriteItem, List<String>>{};
-  for (final name in folders) {
-    for (final comic in manager.getFolderComics(name)) {
-      memberships.putIfAbsent(comic, () => []).add(name);
-    }
-  }
-  final comics = memberships.keys.toList();
+String favoriteInfoTaskKey(String? folder) =>
+    'favorite-info:${folder == null ? 'all' : jsonEncode(folder)}';
 
-  Future<void> updateSingleComic(int index) async {
-    int retry = 3;
-
-    while (true) {
-      try {
-        var c = comics[index];
-        var comicSource = c.type.comicSource;
-        if (c.type == ComicType.local) return;
-        if (comicSource?.loadComicInfo == null) {
-          throw StateError('Comic source is unavailable');
-        }
-
-        var newInfo = (await comicSource!.loadComicInfo!(c.id)).data;
-
-        var newTags = <String>[];
-        for (var entry in newInfo.tags.entries) {
-          const shouldIgnore = ['author', 'artist', 'time'];
-          var namespace = entry.key;
-          if (shouldIgnore.contains(namespace.toLowerCase())) {
-            continue;
-          }
-          for (var tag in entry.value) {
-            newTags.add("$namespace:$tag");
-          }
-        }
-
-        comics[index] = FavoriteItem(
-          id: c.id,
-          name: newInfo.title,
-          coverPath: newInfo.cover,
-          author:
-              newInfo.subTitle ??
-              newInfo.tags['author']?.firstOrNull ??
-              c.author,
-          type: c.type,
-          tags: newTags,
-        );
-
-        for (final name in memberships[c]!) {
-          manager.updateInfo(name, comics[index]);
-        }
-        return;
-      } catch (e) {
-        retry--;
-        if (retry == 0) {
-          rethrow;
-        }
-        continue;
+Future<List<FavoriteItem>> updateComicsInfo(String? folder) {
+  final tasks = BackgroundTasks.instance;
+  final key = favoriteInfoTaskKey(folder);
+  final result = tasks.run<List<FavoriteItem>>(key, "Update Comics Info".tl, (
+    task,
+  ) async {
+    final manager = LocalFavoritesManager();
+    final folders = folder == null ? manager.folderNames.toList() : [folder];
+    final memberships = <FavoriteItem, List<String>>{};
+    for (final name in folders) {
+      if (!manager.existsFolder(name)) continue;
+      for (final comic in manager.getFolderComics(name)) {
+        memberships.putIfAbsent(comic, () => []).add(name);
       }
     }
-  }
+    final comics = memberships.keys.toList();
+    var completed = 0;
+      task.update(
+        completed: 0,
+        total: comics.length,
+        message: folder ?? 'All'.tl,
+      );
 
-  var finished = ValueNotifier(0);
-
-  var errors = 0;
-  final errorNames = <String>[];
-
-  var index = 0;
-
-  bool isCanceled = false;
-
-  showDialog(
-    context: App.rootContext,
-    builder: (context) {
-      return ValueListenableBuilder(
-        valueListenable: finished,
-        builder: (context, value, child) {
-          var isFinished = value == comics.length;
-          return ContentDialog(
-            title: isFinished ? "Finished".tl : "Updating".tl,
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: comics.isEmpty ? 1 : value / comics.length,
-                ),
-                const SizedBox(height: 4),
-                Text("$value/${comics.length}"),
-                const SizedBox(height: 4),
-                if (errors > 0) Text("Errors: $errors"),
-                if (errorNames.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(errorNames.join('\n')),
-                ],
-              ],
-            ).paddingHorizontal(16),
-            actions: [
-              Button.filled(
-                color: isFinished ? null : context.colorScheme.error,
-                onPressed: () {
-                  isCanceled = true;
-                  context.pop();
-                },
-                child: isFinished ? Text("OK".tl) : Text("Cancel".tl),
-              ),
-            ],
+    Future<void> updateSingleComic(int index) async {
+      final comic = comics[index];
+      if (comic.type == ComicType.local) return;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        if (task.cancelRequested) return;
+        try {
+          final source = comic.type.comicSource;
+          if (source?.loadComicInfo == null) {
+            throw StateError('Comic source is unavailable');
+          }
+          final newInfo = (await source!.loadComicInfo!(comic.id)).data;
+          if (task.cancelRequested) return;
+          final newTags = <String>[];
+          for (final entry in newInfo.tags.entries) {
+            if (['author', 'artist', 'time'].contains(entry.key.toLowerCase())) {
+              continue;
+            }
+            for (final tag in entry.value) {
+              newTags.add('${entry.key}:$tag');
+            }
+          }
+          final updated = FavoriteItem(
+            id: comic.id,
+            name: newInfo.title,
+            coverPath: newInfo.cover,
+            author:
+                newInfo.subTitle ??
+                newInfo.tags['author']?.firstOrNull ??
+                comic.author,
+            type: comic.type,
+            tags: newTags,
           );
-        },
-      );
-    },
-  ).then((_) {
-    isCanceled = true;
-  });
+          comics[index] = updated;
+          for (final name in memberships[comic]!) {
+            // Background refresh must not recreate folders or memberships
+            // that the user removes while the request is in flight.
+            if (manager.existsFolder(name) &&
+                manager.comicExists(name, comic.id, comic.type)) {
+              manager.updateInfo(name, updated);
+            }
+          }
+          return;
+        } catch (error) {
+          if (task.cancelRequested) return;
+          if (attempt == 2) task.addError('${comic.name}: $error');
+        }
+      }
+    }
 
-  while (index < comics.length) {
-    var futures = <Future>[];
     const maxConcurrency = 4;
-
-    if (isCanceled) {
-      return comics;
+    for (
+      var index = 0;
+      index < comics.length && !task.cancelRequested;
+      index += maxConcurrency
+    ) {
+      final futures = <Future<void>>[];
+      for (
+        var i = index;
+        i < comics.length && i < index + maxConcurrency;
+        i++
+      ) {
+        futures.add(
+          updateSingleComic(i).then((_) {
+            if (!task.cancelRequested) task.update(completed: ++completed);
+          }),
+        );
+      }
+      await Future.wait(futures);
     }
-
-    for (var i = 0; i < maxConcurrency; i++) {
-      if (index + i >= comics.length) break;
-      futures.add(
-        updateSingleComic(index + i).then(
-          (v) {
-            finished.value++;
-          },
-          onError: (error, _) {
-            errors++;
-            errorNames.add(comics[index + i].name);
-            finished.value++;
-          },
-        ),
-      );
+    // A folder view may have changed while the task was minimized.
+    if (folder != null) {
+      return manager.existsFolder(folder)
+          ? manager.getFolderComics(folder)
+          : <FavoriteItem>[];
     }
-
-    await Future.wait(futures);
-    index += maxConcurrency;
-  }
-
-  return comics;
+    return comics;
+  }, cancellable: true);
+  showBackgroundTask(App.rootContext, tasks.latest(key)!);
+  return result.catchError((Object error, StackTrace stack) {
+    // The registry has retained the failure; no detached route owns this job.
+    Log.error('Update Comics Info', error, stack);
+    return <FavoriteItem>[];
+  });
 }
 
 /// Refresh all folders in one cancellable operation, fetching duplicates once.
@@ -339,200 +302,133 @@ Future<void> importNetworkFolder(
   String? folder,
   String? folderID,
 ) async {
-  var comicSource = ComicSource.find(source);
-  if (comicSource == null) {
+  final comicSource = ComicSource.find(source);
+  if (comicSource == null || updatePageNum <= 0) return;
+  final resultName = folder == null || folder.isEmpty ? comicSource.name : folder;
+  final manager = LocalFavoritesManager();
+  if (manager.existsFolder(resultName) &&
+      !manager.isLinkedToNetworkFolder(resultName, source, folderID ?? '')) {
+    App.rootContext.showMessage(message: "Folder already exists".tl);
     return;
   }
-  if (folder != null && folder.isEmpty) {
-    folder = null;
-  }
-  var resultName = folder ?? comicSource.name;
-  var exists = LocalFavoritesManager().existsFolder(resultName);
-  if (exists) {
-    if (!LocalFavoritesManager()
-        .isLinkedToNetworkFolder(resultName, source, folderID ?? "")) {
-      App.rootContext.showMessage(message: "Folder already exists".tl);
-      return;
-    }
-  }
-  if (!exists) {
-    LocalFavoritesManager().createFolder(resultName);
-    LocalFavoritesManager().linkFolderToNetwork(
-      resultName,
-      source,
-      folderID ?? "",
-    );
-  }
-  bool isOldToNewSort = comicSource.favoriteData?.isOldToNewSort ?? false;
-  var current = 0;
-  int receivedComics = 0;
-  int requestCount = 0;
-  var isFinished = false;
-  int maxPage = 1;
-  List<FavoriteItem> comics = [];
-  String? next;
-  // 如果是从旧到新, 先取一下maxPage
-  if (isOldToNewSort) {
-    var res = await comicSource.favoriteData?.loadComic!(1, folderID);
-    maxPage = res?.subData ?? 1;
-  }
-  Future<void> fetchNext() async {
-    var retry = 3;
-    while (updatePageNum > requestCount && !isFinished) {
-      try {
-        if (comicSource.favoriteData?.loadComic != null) {
-          // 从旧到新的情况下, 假设有10页, 更新3页, 则从第8页开始, 8, 9, 10 三页
-          next ??=
-              isOldToNewSort ? (maxPage - updatePageNum + 1).toString() : '1';
-          var page = int.parse(next!);
-          var res = await comicSource.favoriteData!.loadComic!(page, folderID);
-          var count = 0;
-          receivedComics += res.data.length;
-          for (var c in res.data) {
-            if (!LocalFavoritesManager()
-                .comicExists(resultName, c.id, ComicType(source.hashCode))) {
-              count++;
-              comics.add(FavoriteItem(
-                id: c.id,
-                name: c.title,
-                coverPath: c.cover,
-                type: ComicType(source.hashCode),
-                author: c.subtitle ?? '',
-                tags: c.tags ?? [],
-              ));
-            }
-          }
-          requestCount++;
-          current += count;
-          if (res.data.isEmpty || res.subData == page) {
-            isFinished = true;
-            next = null;
-          } else {
-            next = (page + 1).toString();
-          }
-        } else if (comicSource.favoriteData?.loadNext != null) {
-          var res = await comicSource.favoriteData!.loadNext!(next, folderID);
-          var count = 0;
-          receivedComics += res.data.length;
-          for (var c in res.data) {
-            if (!LocalFavoritesManager()
-                .comicExists(resultName, c.id, ComicType(source.hashCode))) {
-              count++;
-              comics.add(FavoriteItem(
-                id: c.id,
-                name: c.title,
-                coverPath: c.cover,
-                type: ComicType(source.hashCode),
-                author: c.subtitle ?? '',
-                tags: c.tags ?? [],
-              ));
-            }
-          }
-          requestCount++;
-          current += count;
-          if (res.data.isEmpty || res.subData == null) {
-            isFinished = true;
-            next = null;
-          } else {
-            next = res.subData;
-          }
-        } else {
-          throw "Unsupported source";
-        }
-        return;
-      } catch (e) {
-        retry--;
-        if (retry == 0) {
-          rethrow;
-        }
-        continue;
+  final key = 'network-favorites-import:${jsonEncode([source, folderID, resultName])}';
+  final future = BackgroundTasks.instance.run<void>(
+    key, '${"Importing".tl}: $resultName', (task) async {
+      if (task.cancelRequested) return;
+      if (!manager.existsFolder(resultName)) {
+        manager.createFolder(resultName);
+        manager.linkFolderToNetwork(resultName, source, folderID ?? '');
       }
-    }
-    // 跳出循环, 表示已经完成, 强制为 true, 避免死循环
-    isFinished = true;
-  }
+      final data = comicSource.favoriteData;
+      if (data == null || (data.loadComic == null && data.loadNext == null)) {
+        throw StateError('Unsupported source');
+      }
+      final oldToNew = data.isOldToNewSort == true;
+      final type = ComicType.fromKey(source);
+      var received = 0;
+      var pages = 0;
+      var finished = false;
+      var page = 1;
+      String? cursor;
+      final seen = <String>{};
+      final seenCursors = <String>{};
+      var comics = <FavoriteItem>[];
+      Res<List<Comic>>? firstPage;
 
-  bool isCanceled = false;
-  String? errorMsg;
-  bool isErrored() => errorMsg != null;
+      Future<Res<List<Comic>>?> request(Future<Res<List<Comic>>> Function() load) async {
+        for (var attempt = 0; attempt < 3; attempt++) {
+          if (task.cancelRequested) return null;
+          try {
+            final result = await load();
+            if (task.cancelRequested) return null;
+            if (result.error) throw StateError(result.errorMessage ?? 'Network error');
+            return result;
+          } catch (_) {
+            if (task.cancelRequested) return null;
+            if (attempt == 2) rethrow;
+          }
+        }
+        return null;
+      }
 
-  void Function()? updateDialog;
-  void Function()? closeDialog;
-
-  showDialog(
-    context: App.rootContext,
-    builder: (context) {
-      return StatefulBuilder(
-        builder: (context, setState) {
-          updateDialog = () => setState(() {});
-          closeDialog = () => Navigator.pop(context);
-          return ContentDialog(
-            title: isFinished
-                ? "Finished".tl
-                : isErrored()
-                    ? "Error".tl
-                    : "Importing".tl,
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value: isFinished ? 1 : null,
-                ),
-                const SizedBox(height: 4),
-                Text("Imported @a comics, loaded @b pages, received @c comics"
-                    .tlParams({
-                  "a": current,
-                  "b": requestCount,
-                  "c": receivedComics,
-                })),
-                const SizedBox(height: 4),
-                if (isErrored()) Text("Error: $errorMsg"),
-              ],
-            ).paddingHorizontal(16),
-            actions: [
-              Button.filled(
-                color: (isFinished || isErrored())
-                    ? null
-                    : context.colorScheme.error,
-                onPressed: () {
-                  isCanceled = true;
-                  context.pop();
-                },
-                child: (isFinished || isErrored())
-                    ? Text("OK".tl)
-                    : Text("Cancel".tl),
-              ),
-            ],
-          );
-        },
-      );
-    },
-  ).then((_) {
-    isCanceled = true;
-  });
-
-  while (!isFinished && !isCanceled) {
-    try {
-      await fetchNext();
-      updateDialog?.call();
-    } catch (e) {
-      errorMsg = e.toString();
-      updateDialog?.call();
-      break;
-    }
-  }
+      String progressMessage(int count) =>
+          "Imported @a comics, loaded @b pages, received @c comics".tlParams({
+            'a': count, 'b': pages, 'c': received,
+          });
+      task.update(message: progressMessage(0));
+      try {
+        if (oldToNew && data.loadComic != null) {
+          firstPage = await request(() => data.loadComic!(1, folderID));
+          if (firstPage != null) {
+            final totalPages = firstPage.subData is int ? firstPage.subData as int : 1;
+            page = max(1, totalPages - updatePageNum + 1);
+          }
+        }
+        while (!finished && pages < updatePageNum && !task.cancelRequested) {
+          Res<List<Comic>>? result;
+          if (data.loadComic != null) {
+            result = page == 1 && firstPage != null
+                ? firstPage
+                : await request(() => data.loadComic!(page, folderID));
+            firstPage = null;
+          } else {
+            result = await request(() => data.loadNext!(cursor, folderID));
+          }
+          if (result == null || task.cancelRequested) break;
+          // User changes made while minimized must not recreate/rebind a folder.
+          if (!manager.existsFolder(resultName) ||
+              !manager.isLinkedToNetworkFolder(resultName, source, folderID ?? '')) {
+            throw StateError('Favorite folder was removed or its link changed');
+          }
+          received += result.data.length;
+          for (final comic in result.data) {
+            if (seen.add(comic.id) && !manager.comicExists(resultName, comic.id, type)) {
+              comics.add(FavoriteItem(
+                id: comic.id, name: comic.title, coverPath: comic.cover,
+                type: type, author: comic.subtitle ?? '', tags: comic.tags ?? [],
+              ));
+            }
+          }
+          pages++;
+          finished = result.data.isEmpty;
+          if (data.loadComic != null) {
+            if (result.subData is int && result.subData > 0) {
+              final totalPages = result.subData as int;
+              task.update(total: min(updatePageNum, pages + max(0, totalPages - page)));
+              finished = finished || page >= totalPages;
+            }
+            page++;
+          } else {
+            final next = result.subData?.toString();
+            finished = finished || next == null;
+            if (!finished && !seenCursors.add(next)) {
+              throw StateError('Source repeated a favorite page cursor');
+            }
+            cursor = next;
+          }
+          task.update(completed: pages, message: progressMessage(comics.length));
+        }
+      } catch (error, stack) {
+        task.addError(error.toString());
+        Log.error('Import network favorites', error, stack);
+      }
+      if (!manager.existsFolder(resultName) ||
+          !manager.isLinkedToNetworkFolder(resultName, source, folderID ?? '')) {
+        throw StateError('Favorite folder was removed or its link changed');
+      }
+      if (appdata.settings['newFavoriteAddTo'] == 'start' && !oldToNew) {
+        comics = comics.reversed.toList();
+      }
+      // Preserve successfully fetched pages on cancellation or later failure,
+      // as before. SQL insertion deduplicates against concurrent local edits.
+      final inserted = manager.addComics(resultName, comics);
+      task.update(completed: pages, message: progressMessage(inserted));
+    }, cancellable: true,
+  );
+  showBackgroundTask(App.rootContext, BackgroundTasks.instance.latest(key)!);
   try {
-    if (appdata.settings['newFavoriteAddTo'] == "start" && !isOldToNewSort) {
-      // 如果是插到最前, 并且是从新到旧, 反转一下
-      comics = comics.reversed.toList();
-    }
-    LocalFavoritesManager().addComics(resultName, comics);
-    // 延迟一点, 让用户看清楚到底新增了多少
-    await Future.delayed(const Duration(milliseconds: 500));
-    closeDialog?.call();
-  } catch (e, stackTrace) {
-    Log.error("Unhandled Exception", e.toString(), stackTrace);
+    await future;
+  } catch (error, stack) {
+    Log.error('Import network favorites', error, stack);
   }
 }

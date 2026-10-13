@@ -126,6 +126,28 @@ class _ReaderState extends State<Reader>
     if (mounted) setState(() {});
   }
 
+  /// Map input to reading order before resolving page and chapter boundaries.
+  @override
+  bool turnPage({required bool forward}) {
+    if (isLoading) return false;
+    final controller = _imageViewController;
+    if (controller is _ContinuousModeState) {
+      // Several short images can remain visible at the end. The first visible
+      // image number alone does not identify the actual chapter boundary.
+      if (forward && controller.isAtChapterEnd) {
+        return !isLastChapterOfGroup && toNextChapter();
+      }
+      if (!forward && controller.isAtChapterStart) {
+        return !isFirstChapterOfGroup && toPrevChapter(toLastPage: true);
+      }
+    }
+    if (forward) {
+      return toNextPage() || (!isLastChapterOfGroup && toNextChapter());
+    }
+    return toPrevPage() ||
+        (!isFirstChapterOfGroup && toPrevChapter(toLastPage: true));
+  }
+
   /// The maximum page number for images only (excluding chapter comments page).
   /// This is used for display purposes and history recording.
   @override
@@ -684,26 +706,16 @@ abstract mixin class _ImagePerPageHandler {
 }
 
 abstract mixin class _VolumeListener {
-  bool toNextPage();
-
-  bool toPrevPage();
-
-  bool toNextChapter();
-
-  bool toPrevChapter({bool toLastPage = false});
+  bool turnPage({required bool forward});
 
   VolumeListener? volumeListener;
 
   void onDown() {
-    if (!toNextPage()) {
-      toNextChapter();
-    }
+    turnPage(forward: true);
   }
 
   void onUp() {
-    if (!toPrevPage()) {
-      toPrevChapter(toLastPage: true);
-    }
+    turnPage(forward: false);
   }
 
   void handleVolumeEvent() {

@@ -146,15 +146,7 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
       return;
     }
     if (context.reader.mode.key.startsWith('gallery')) {
-      if (forward) {
-        if (!context.reader.toNextPage() && !context.reader.isLastChapterOfGroup) {
-          context.reader.toNextChapter();
-        }
-      } else {
-        if (!context.reader.toPrevPage() && !context.reader.isFirstChapterOfGroup) {
-          context.reader.toPrevChapter(toLastPage: true);
-        }
-      }
+      context.reader.turnPage(forward: forward);
     }
   }
 
@@ -236,12 +228,12 @@ class _ReaderGestureDetectorState extends AutomaticGlobalState<_ReaderGestureDet
           isBottom = true;
         }
         bool isCenter = false;
-        var prev = () => context.reader.toPrevPage();
-        var next = () => context.reader.toNextPage();
+        var prev = () => context.reader.turnPage(forward: false);
+        var next = () => context.reader.turnPage(forward: true);
         if (appdata.settings.getReaderSetting(
             reader.cid, reader.type.sourceKey, 'reverseTapToTurnPages')) {
-          prev = () => context.reader.toNextPage();
-          next = () => context.reader.toPrevPage();
+          prev = () => context.reader.turnPage(forward: true);
+          next = () => context.reader.turnPage(forward: false);
         }
         switch (context.reader.mode) {
           case ReaderMode.galleryLeftToRight:

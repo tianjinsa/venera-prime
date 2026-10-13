@@ -55,6 +55,22 @@ void main() {
     expect(manager.folderComics('Favorites'), 0);
     expect(manager.folderComics('Archive'), 1);
     expect(manager.folderComics('Reading'), 1);
+    expect(manager.isExist(comic.id, comic.type), true);
+
+    // Membership must reflect the move before another edit or shutdown,
+    // including a move into a folder that already contains the comic.
+    manager.addComic('Favorites', comic);
+    manager.batchMoveFavoritesToFolders(
+      'Favorites',
+      ['Archive', 'Reading', 'Archive'],
+      [comic, comic],
+    );
+    expect(manager.folderComics('Archive'), 1);
+    expect(manager.folderComics('Reading'), 1);
+    manager.deleteComicWithId('Archive', comic.id, comic.type);
+    expect(manager.isExist(comic.id, comic.type), true);
+    manager.deleteComicWithId('Reading', comic.id, comic.type);
+    expect(manager.isExist(comic.id, comic.type), false);
 
     manager.close();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

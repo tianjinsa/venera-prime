@@ -6,6 +6,10 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.graphics.Rect
+import android.view.View
+import android.view.ViewGroup
+import io.flutter.embedding.android.FlutterView
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -18,6 +22,7 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -129,6 +134,16 @@ class MainActivity : FlutterFragmentActivity() {
         launcher.launch(input)
     }
 
+    private fun findFlutterView(view: View): FlutterView? {
+        if (view is FlutterView) return view
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                findFlutterView(view.getChildAt(index))?.let { return it }
+            }
+        }
+        return null
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         GeneratedPluginRegistrant.registerWith(flutterEngine)
         val methodChannel = MethodChannel(
@@ -144,6 +159,34 @@ class MainActivity : FlutterFragmentActivity() {
                     releaseAgentImages(call.argument<List<String>>("paths") ?: emptyList())
                     res.success(null)
                 }
+                "setTaskButtonGestureExclusion" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val view = findFlutterView(window.decorView)
+                        val bounds = call.argument<List<Int>>("rect")
+                        val rect = if (bounds?.size == 4) {
+                            Rect(bounds[0], bounds[1], bounds[2], bounds[3])
+                        } else null
+                        // Only this small floating control owns the edge gesture;
+                        // the rest of the screen keeps the system Back gesture.
+                        if (view != null) {
+                            view.systemGestureExclusionRects =
+                                if (rect != null && rect.intersect(0, 0, view.width, view.height)) {
+                                    listOf(rect)
+                                } else emptyList()
+                        }
+                    }
+                    res.success(null)
+                }
+                "getSupportedAbis" -> res.success(Build.SUPPORTED_ABIS.toList())
+                "validateUpdate" -> Thread {
+                    try {
+                        validateUpdate(call.argument<String>("path"))
+                        runOnUiThread { res.success(null) }
+                    } catch (e: Exception) {
+                        runOnUiThread { res.error("invalid_update", e.message, null) }
+                    }
+                }.start()
+                "installUpdate" -> installUpdate(call.argument<String>("path"), res)
                 "setScreenOn" -> {
                     val set = call.argument<Boolean>("set") ?: false
                     if (set) {
@@ -225,6 +268,85 @@ class MainActivity : FlutterFragmentActivity() {
                     textShareHandler = null
                 }
             })
+    }
+
+    @Suppress("DEPRECATION")
+    private fun validateUpdate(path: String?): File {
+        requireNotNull(path) { "Missing update path" }
+        val apk = File(path).canonicalFile
+        val updateDir = File(cacheDir, "updates").canonicalFile
+        require(apk.parentFile == updateDir && apk.isFile && apk.extension == "apk") {
+            "Invalid update path"
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        val candidate = packageManager.getPackageArchiveInfo(apk.path, flags)
+            ?: throw IllegalArgumentException("Invalid APK")
+        val installed = packageManager.getPackageInfo(packageName, flags)
+        require(candidate.packageName == packageName) { "Update package does not match this app" }
+        val candidateVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            candidate.longVersionCode else candidate.versionCode.toLong()
+        val installedVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            installed.longVersionCode else installed.versionCode.toLong()
+        require(candidateVersion > installedVersion) { "Update is not newer than this app" }
+        val signaturesMatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val signers = candidate.signingInfo?.apkContentsSigners
+            !signers.isNullOrEmpty() && signers.all {
+                packageManager.hasSigningCertificate(packageName, it.toByteArray(),
+                    PackageManager.CERT_INPUT_RAW_X509)
+            }
+        } else {
+            val signers = candidate.signatures
+            !signers.isNullOrEmpty() && signers.toSet() == installed.signatures?.toSet()
+        }
+        require(signaturesMatch) { "Update signing certificate does not match this app" }
+
+        return apk
+    }
+
+    private fun installUpdate(path: String?, result: MethodChannel.Result) {
+        Thread {
+            try {
+                val apk = validateUpdate(path)
+                runOnUiThread { launchUpdateInstaller(apk, result) }
+            } catch (e: Exception) {
+                runOnUiThread { result.error("install_update_failed", e.message, null) }
+            }
+        }.start()
+    }
+
+    private fun launchUpdateInstaller(apk: File, result: MethodChannel.Result) {
+        try {
+            fun launchInstaller() {
+                try {
+                    val uri = FileProvider.getUriForFile(this, "$packageName.updates", apk)
+                    val intent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    startActivity(intent)
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("install_update_failed", e.message, null)
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !packageManager.canRequestPackageInstalls()) {
+                val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName"))
+                startContractForResult(ActivityResultContracts.StartActivityForResult(), intent) {
+                    if (packageManager.canRequestPackageInstalls()) {
+                        launchInstaller()
+                    } else {
+                        result.success(false)
+                    }
+                }
+            } else {
+                launchInstaller()
+            }
+        } catch (e: Exception) {
+            result.error("install_update_failed", e.message, null)
+        }
     }
 
     private fun getProxy(): String {

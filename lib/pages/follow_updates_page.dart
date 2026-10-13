@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
+import 'package:venera/components/background_tasks.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/favorites.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/utils/data_sync.dart';
 import 'package:venera/utils/translations.dart';
 import '../foundation/global_state.dart';
@@ -120,18 +123,6 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
   static const _checkIntervalOptions = [1, 6, 12, 24, 48, 72, 168];
 
   String? get folder => appdata.settings["followUpdatesFolder"];
-
-  void _showUpdateFailures(List<UpdateProgress> failures) {
-    if (!mounted || failures.isEmpty) return;
-    final lines = failures
-        .map((progress) {
-          final name = progress.comic?.name ?? 'Unknown comic';
-          final error = progress.errorMessage ?? 'Unknown error';
-          return '$name\n$error';
-        })
-        .join('\n\n');
-    showDialogMessage(App.rootContext, 'Error'.tl, lines);
-  }
 
   var updatedComics = <FavoriteItemWithUpdateInfo>[];
   var allComics = <FavoriteItemWithUpdateInfo>[];
@@ -320,7 +311,29 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ListTile(leading: Icon(Icons.stars_outlined), title: Text(folder!)),
+            ListenableBuilder(
+              listenable: BackgroundTasks.instance,
+              builder: (context, _) {
+                final key = 'follow-updates:$folder';
+                final task = BackgroundTasks.instance.latest(key);
+                return ListTile(
+                  key: const Key('follow-update-task-status'),
+                  leading: Icon(
+                    task?.status == BackgroundTaskStatus.failed
+                        ? Icons.error_outline
+                        : Icons.stars_outlined,
+                  ),
+                  title: Text(folder!),
+                  subtitle: TaskStatusText(taskKey: key),
+                  trailing: task == null
+                      ? null
+                      : const Icon(Icons.chevron_right),
+                  onTap: task == null
+                      ? null
+                      : () => showBackgroundTask(context, task),
+                );
+              },
+            ),
             Text(
               "Automatic update checking enabled.".tl,
               style: ts.s14,
@@ -450,12 +463,58 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
         if (updatedComics.isNotEmpty)
           SliverToBoxAdapter(
             child: Text(
-              "The comic will be marked as no updates as soon as you read it."
+              "Read a comic or swipe left to mark its latest chapters as read. Following stays enabled."
                   .tl,
             ).paddingHorizontal(16).paddingVertical(4),
           ),
         if (updatedComics.isNotEmpty)
-          SliverGridComics(comics: updatedComics, filterBlockedComics: false)
+          SliverGridComics(
+            comics: updatedComics,
+            filterBlockedComics: false,
+            itemWrapper: (comic, child) {
+              final item = comic as FavoriteItemWithUpdateInfo;
+              final currentFolder = folder;
+              return Dismissible(
+                key: ValueKey<Object>((
+                  currentFolder,
+                  item.type.value,
+                  item.id,
+                )),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: AlignmentDirectional.centerEnd,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          'Mark latest as read'.tl,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.end,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.done_all),
+                    ],
+                  ),
+                ),
+                onDismissed: (_) {
+                  if (folder != currentFolder) return;
+                  // Acknowledge the current update only. Keep the favorite,
+                  // chapter baseline and tracking configuration intact.
+                  LocalFavoritesManager().markAsRead(item.id, item.type);
+                  appdata.saveData();
+                },
+                child: child,
+              );
+            },
+          )
         else
           SliverToBoxAdapter(
             child: Row(
@@ -586,107 +645,24 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
   }
 
   void disable() {
-    appdata.settings["followUpdatesFolder"] = null;
-    appdata.saveData();
-    updateFollowUpdatesUI();
+    FollowUpdatesService.disable();
   }
 
-  void setFolder(String folder) async {
-    FollowUpdatesService._cancelChecking?.call();
-    LocalFavoritesManager().prepareTableForFollowUpdates(folder, false);
-
-    var count = LocalFavoritesManager().count(folder);
-
-    if (count > 0) {
-      bool isCanceled = false;
-      void onCancel() {
-        isCanceled = true;
-      }
-
-      var loadingController = showLoadingDialog(
-        App.rootContext,
-        withProgress: true,
-        cancelButtonText: "Cancel".tl,
-        onCancel: onCancel,
-        message: "Updating comics...".tl,
-      );
-
-      final failures = <UpdateProgress>[];
-      try {
-        await for (var progress in updateFolder(
-          folder,
-          true,
-          shouldCancel: () => isCanceled || !mounted,
-          markNewUpdates: false,
-        )) {
-          if (isCanceled) continue;
-          if (progress.errorMessage != null) failures.add(progress);
-          if (progress.total > 0) {
-            loadingController.setProgress(progress.current / progress.total);
-          }
-        }
-      } finally {
-        loadingController.close();
-      }
-      if (isCanceled) return;
-      _showUpdateFailures(failures);
-    }
-
-    if (!mounted) return;
-    setState(() {
-      appdata.settings["followUpdatesFolder"] = folder;
-      allComics = LocalFavoritesManager().getComicsWithUpdatesInfo(folder);
-      sortComics();
-      updatedComics = allComics.where((c) => c.hasNewUpdate).toList();
-    });
-    updateFollowUpdatesUI();
-    appdata.saveData();
+  void setFolder(String folder) {
+    final task = FollowUpdatesService.selectFolder(folder);
+    unawaited(showBackgroundTask(context, task));
   }
 
-  void checkNow() async {
-    FollowUpdatesService._cancelChecking?.call();
-
-    bool isCanceled = false;
-    void onCancel() {
-      isCanceled = true;
-    }
-
-    var loadingController = showLoadingDialog(
-      App.rootContext,
-      withProgress: true,
-      cancelButtonText: "Cancel".tl,
-      onCancel: onCancel,
-      message: "Updating comics...".tl,
+  void checkNow() {
+    final selected = folder;
+    if (selected == null) return;
+    final existing = BackgroundTasks.instance.latest(
+      'follow-updates:$selected',
     );
-
-    int updated = 0;
-    final failures = <UpdateProgress>[];
-
-    try {
-      await for (var progress in updateFolder(
-        folder!,
-        true,
-        shouldCancel: () => isCanceled || !mounted,
-      )) {
-        if (isCanceled) continue;
-        if (progress.errorMessage != null) failures.add(progress);
-        if (progress.total > 0) {
-          loadingController.setProgress(progress.current / progress.total);
-        }
-        updated = progress.updated;
-      }
-    } finally {
-      loadingController.close();
-      updateFollowUpdatesUI();
-    }
-
-    if (isCanceled) return;
-    _showUpdateFailures(failures);
-
-    if (updated > 0) {
-      GlobalState.findOrNull<_FollowUpdatesWidgetState>()?.updateCount();
-      updateComics();
-    }
+    final task = existing?.isRunning == true
+        ? existing!
+        : FollowUpdatesService.checkFolder(selected);
+    unawaited(showBackgroundTask(context, task));
   }
 
   void updateComics() {
@@ -710,6 +686,106 @@ class _FollowUpdatesPageState extends AutomaticGlobalState<FollowUpdatesPage> {
 
 /// Background service for checking updates
 abstract class FollowUpdatesService {
+  static BackgroundTask? _folderSelection;
+  static int _selectionGeneration = 0;
+
+  /// The service retains the subscription after the initiating page is closed.
+  static BackgroundTask checkFolder(String folder) {
+    _cancelChecking?.call();
+    return _startFolderCheck(folder);
+  }
+
+  static BackgroundTask selectFolder(String folder) {
+    _folderSelection?.requestCancel();
+    final generation = ++_selectionGeneration;
+    final previousFolder = appdata.settings['followUpdatesFolder'];
+    var committed = false;
+    Future<void>? rollback;
+    _cancelChecking?.call();
+    LocalFavoritesManager().prepareTableForFollowUpdates(folder, false);
+    final task = _startFolderCheck(
+      folder,
+      markNewUpdates: false,
+      shouldCancel: () => generation != _selectionGeneration,
+      onCancel: () {
+        // A cancellation during the final settings write must not leave the
+        // newly selected folder committed. saveData serializes these writes.
+        if (committed &&
+            generation == _selectionGeneration &&
+            appdata.settings['followUpdatesFolder'] == folder) {
+          appdata.settings['followUpdatesFolder'] = previousFolder;
+          rollback = appdata.saveData();
+          updateFollowUpdatesUI();
+        }
+      },
+      onComplete: () async {
+        if (generation != _selectionGeneration ||
+            !LocalFavoritesManager().folderNames.contains(folder)) {
+          return;
+        }
+        committed = true;
+        appdata.settings['followUpdatesFolder'] = folder;
+        try {
+          await appdata.saveData();
+        } finally {
+          await rollback;
+        }
+        updateFollowUpdatesUI();
+      },
+    );
+    _folderSelection = task;
+    return task;
+  }
+
+  static void disable() {
+    _folderSelection?.requestCancel();
+    _selectionGeneration++;
+    _cancelChecking?.call();
+    final folder = appdata.settings['followUpdatesFolder'];
+    if (folder != null) {
+      BackgroundTasks.instance
+          .latest('follow-updates:$folder')
+          ?.requestCancel();
+    }
+    appdata.settings['followUpdatesFolder'] = null;
+    unawaited(appdata.saveData());
+    updateFollowUpdatesUI();
+  }
+
+  static BackgroundTask _startFolderCheck(
+    String folder, {
+    bool markNewUpdates = true,
+    bool Function()? shouldCancel,
+    void Function()? onCancel,
+    Future<void> Function()? onComplete,
+  }) {
+    final progress = updateFolder(
+      folder,
+      true,
+      markNewUpdates: markNewUpdates,
+      shouldCancel: shouldCancel,
+      onCancel: onCancel,
+      onComplete: onComplete,
+    );
+    final task = BackgroundTasks.instance.latest('follow-updates:$folder')!;
+    task.resultLabel = 'View result';
+    task.onOpenResult = () =>
+        App.rootContext.to(() => const FollowUpdatesPage());
+    unawaited(_consume(progress));
+    return task;
+  }
+
+  static Future<void> _consume(Stream<UpdateProgress> progress) async {
+    try {
+      await for (final _ in progress) {}
+    } catch (error, stack) {
+      // The underlying checker retains the failure in the task center.
+      Log.error('Check Updates', error, stack);
+    } finally {
+      updateFollowUpdatesUI();
+    }
+  }
+
   static bool _isChecking = false;
 
   static void Function()? _cancelChecking;
@@ -767,6 +843,7 @@ abstract class FollowUpdatesService {
         folder,
         false,
         shouldCancel: () => isCanceled,
+        onCancel: () => isCanceled = true,
       )) {
         if (isCanceled) {
           return;

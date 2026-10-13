@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -24,6 +26,27 @@ class _WebViewPlatform extends InAppWebViewPlatform {
   PlatformInAppWebViewWidget createPlatformInAppWebViewWidget(
     PlatformInAppWebViewWidgetCreationParams params,
   ) => _WebView(params);
+
+  @override
+  PlatformWebViewEnvironment createPlatformWebViewEnvironmentStatic() =>
+      _WebViewEnvironment(const PlatformWebViewEnvironmentCreationParams());
+}
+
+class _WebViewEnvironment extends PlatformWebViewEnvironment {
+  _WebViewEnvironment(super.params) : super.implementation();
+
+  @override
+  String get id => 'test-environment';
+
+  @override
+  Future<PlatformWebViewEnvironment> create({
+    WebViewEnvironmentSettings? settings,
+  }) async => _WebViewEnvironment(
+    PlatformWebViewEnvironmentCreationParams(settings: settings),
+  );
+
+  @override
+  Future<void> dispose() async {}
 }
 
 class _UnsupportedProxyFeature extends PlatformWebViewFeature {
@@ -54,7 +77,10 @@ class _WebView extends PlatformInAppWebViewWidget {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  setUpAll(AppTranslation.init);
+  setUpAll(() async {
+    App.dataPath = Directory.systemTemp.path;
+    await AppTranslation.init();
+  });
 
   for (final platform in [
     TargetPlatform.iOS,
@@ -68,6 +94,7 @@ void main() {
       ) async {
         final originalPlatform = InAppWebViewPlatform.instance;
         final originalProxy = appdata.settings['proxy'];
+        final originalEnvironment = AppWebview.webViewEnvironment;
         final backend = _WebViewPlatform(
           isAndroid: platform == TargetPlatform.android,
         );
@@ -80,6 +107,7 @@ void main() {
             InAppWebViewPlatform.instance = originalPlatform;
           }
           appdata.settings['proxy'] = originalProxy;
+          AppWebview.webViewEnvironment = originalEnvironment;
         });
         try {
           await tester.pumpWidget(

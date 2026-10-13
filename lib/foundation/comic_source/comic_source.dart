@@ -364,8 +364,30 @@ class ComicSource {
 
   final ArchiveDownloader? archiveDownloader;
 
-  Future<void> loadData() async {
-    var file = File("${App.dataPath}/comic_source/$key.data");
+  // Reloaded source instances share the same file and temporary filenames.
+  // Serialize reads and writes by path, and let a failed save release the queue.
+  static final _dataFileOperations = <String, Future<void>>{};
+
+  Future<void> _withDataFile(Future<void> Function(File) operation) {
+    final file = File("${App.dataPath}/comic_source/$key.data");
+    final previous = _dataFileOperations[file.path] ?? Future<void>.value();
+    final result = previous.then((_) => operation(file));
+    final settled = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    _dataFileOperations[file.path] = settled;
+    unawaited(
+      settled.then((_) {
+        if (identical(_dataFileOperations[file.path], settled)) {
+          _dataFileOperations.remove(file.path);
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<void> loadData() => _withDataFile((file) async {
     if (await file.exists()) {
       try {
         var content = await file.readAsString();
@@ -392,27 +414,22 @@ class ComicSource {
         );
       }
     }
-  }
-
-  bool _isSaving = false;
-  bool _haveWaitingTask = false;
+  });
 
   Future<void> saveData() async {
-    if (_haveWaitingTask) return;
-    while (_isSaving) {
-      _haveWaitingTask = true;
-      await Future.delayed(const Duration(milliseconds: 20));
-      _haveWaitingTask = false;
-    }
-    _isSaving = true;
-    try {
-      var file = File("${App.dataPath}/comic_source/$key.data");
+    // Capture this request before waiting: callers may mutate nested values
+    // while another save is in flight.
+    final content = jsonEncode(data);
+    await _withDataFile((file) async {
+      // Compare with committed data, including after reload or a failed write.
+      // Repeated cookie/token saves must not trigger another full backup.
+      if (await file.exists() && await file.readAsString() == content) return;
       var tempFile = File("${file.path}.tmp");
       var backupFile = File("${file.path}.bak");
       if (!await file.parent.exists()) {
         await file.parent.create(recursive: true);
       }
-      await tempFile.writeAsString(jsonEncode(data), flush: true);
+      await tempFile.writeAsString(content, flush: true);
       await backupFile.deleteIgnoreError();
       if (await file.exists()) {
         await file.rename(backupFile.path);
@@ -427,9 +444,7 @@ class ComicSource {
         rethrow;
       }
       DataSync().uploadData();
-    } finally {
-      _isSaving = false;
-    }
+    });
   }
 
   Future<bool> reLogin() async {

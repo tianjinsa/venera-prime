@@ -8,11 +8,9 @@ void showToast({
   int? seconds,
 }) {
   var newEntry = OverlayEntry(
-      builder: (context) => _ToastOverlay(
-            message: message,
-            icon: icon,
-            trailing: trailing,
-          ));
+    builder: (context) =>
+        _ToastOverlay(message: message, icon: icon, trailing: trailing),
+  );
 
   var state = context.findAncestorStateOfType<OverlayWidgetState>();
 
@@ -42,18 +40,20 @@ class _ToastOverlay extends StatelessWidget {
           color: Theme.of(context).colorScheme.inverseSurface,
           borderRadius: BorderRadius.circular(8),
           elevation: 2,
-          textStyle:
-              ts.withColor(Theme.of(context).colorScheme.onInverseSurface),
+          textStyle: ts.withColor(
+            Theme.of(context).colorScheme.onInverseSurface,
+          ),
           child: IconTheme(
             data: IconThemeData(
-                color: Theme.of(context).colorScheme.onInverseSurface),
+              color: Theme.of(context).colorScheme.onInverseSurface,
+            ),
             child: IntrinsicWidth(
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-                constraints: BoxConstraints(
-                  maxWidth: context.width - 32,
+                padding: const EdgeInsets.symmetric(
+                  vertical: 6,
+                  horizontal: 16,
                 ),
+                constraints: BoxConstraints(maxWidth: context.width - 32),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -62,12 +62,14 @@ class _ToastOverlay extends StatelessWidget {
                       child: Text(
                         message,
                         style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w500),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    if (trailing != null) trailing!.paddingLeft(8)
+                    if (trailing != null) trailing!.paddingLeft(8),
                   ],
                 ),
               ),
@@ -128,12 +130,7 @@ void showDialogMessage(BuildContext context, String title, String message) {
     builder: (context) => ContentDialog(
       title: title,
       content: Text(message).paddingHorizontal(16),
-      actions: [
-        FilledButton(
-          onPressed: context.pop,
-          child: Text("OK".tl),
-        )
-      ],
+      actions: [FilledButton(onPressed: context.pop, child: Text("OK".tl))],
     ),
   );
 }
@@ -157,9 +154,7 @@ Future<void> showConfirmDialog({
             context.pop();
             onConfirm();
           },
-          style: FilledButton.styleFrom(
-            backgroundColor: btnColor,
-          ),
+          style: FilledButton.styleFrom(backgroundColor: btnColor),
           child: Text(confirmText.tl),
         ),
       ],
@@ -167,107 +162,172 @@ Future<void> showConfirmDialog({
   );
 }
 
-class LoadingDialogController {
+class LoadingDialogController extends ChangeNotifier {
+  LoadingDialogController({String? message, bool withProgress = false})
+    : _message = message,
+      _progress = withProgress ? 0 : null;
+
   double? _progress;
-
   String? _message;
-
-  void Function()? _closeDialog;
-
-  void Function(double? value)? _serProgress;
-
-  void Function(String message)? _setMessage;
-
+  VoidCallback? _closeDialog;
+  VoidCallback? _onCancel;
+  BackgroundTask? task;
   bool closed = false;
+  bool viewClosed = false;
+  bool _cancelRequested = false;
 
+  double? get progress => _progress;
+  String? get message => _message;
+
+  /// Finish the operation, independently of whether its view is still open.
   void close() {
-    if (closed) {
-      return;
-    }
+    if (closed) return;
     closed = true;
-    if (_closeDialog == null) {
-      Future.microtask(_closeDialog!);
+    task?.finish();
+    task?.onCancel = null;
+    _dismissView();
+  }
+
+  /// Preserve a failure in the task center, then dismiss this progress view.
+  void fail(Object error) {
+    if (closed) return;
+    task?.fail(error);
+    close();
+  }
+
+  /// Record one failure while a batch continues processing other items.
+  void addError(Object error) {
+    if (!closed) task?.addError(error.toString());
+  }
+
+  void cancel() {
+    if (closed || _onCancel == null) return;
+    if (task != null) {
+      task!.requestCancel();
     } else {
-      _closeDialog!();
+      _cancelOperation();
     }
+  }
+
+  void _cancelOperation() {
+    if (closed || _cancelRequested) return;
+    _cancelRequested = true;
+    try {
+      _onCancel?.call();
+    } finally {
+      // The owner may still be awaiting an in-flight operation. Its finally
+      // block calls close() when cancellation has actually drained the work.
+      _dismissView();
+    }
+  }
+
+  /// Closing only the view keeps progress, callbacks and task ownership alive.
+  void minimize() => _dismissView();
+
+  void _dismissView() {
+    viewClosed = true;
+    final closeView = _closeDialog;
+    _closeDialog = null;
+    closeView?.call();
   }
 
   void setProgress(double? value) {
-    if (closed) {
-      return;
+    if (closed) return;
+    _progress = value?.clamp(0.0, 1.0);
+    final tracked = task;
+    if (tracked != null) {
+      if (_progress == null) tracked.total = null;
+      tracked.update(
+        completed: ((_progress ?? 0) * 100).round(),
+        total: _progress == null ? null : 100,
+      );
     }
-    _serProgress?.call(value);
+    notifyListeners();
   }
 
   void setMessage(String message) {
-    if (closed) {
-      return;
-    }
-    _setMessage?.call(message);
+    if (closed) return;
+    _message = message;
+    task?.update(message: message);
+    notifyListeners();
   }
 }
+
+int _loadingTaskSequence = 0;
 
 LoadingDialogController showLoadingDialog(
   BuildContext context, {
   void Function()? onCancel,
   bool barrierDismissible = true,
   bool allowCancel = true,
+  bool allowBackground = false,
+  bool trackTask = true,
+  String? taskKey,
   String? message,
   String cancelButtonText = "Cancel",
   bool withProgress = false,
 }) {
-  var controller = LoadingDialogController();
-  controller._message = message;
-
-  if (withProgress) {
-    controller._progress = 0;
+  final controller = LoadingDialogController(
+    message: message,
+    withProgress: withProgress,
+  );
+  final canCancel = allowCancel && onCancel != null;
+  final canDismiss = allowBackground || canCancel;
+  controller._onCancel = canCancel ? onCancel : null;
+  if (trackTask) {
+    controller.task = BackgroundTasks.instance.start(
+      taskKey ?? 'loading-dialog:${++_loadingTaskSequence}',
+      message ?? 'Loading'.tl,
+      cancellable: canCancel,
+    );
+    controller.task!.onCancel = canCancel ? controller._cancelOperation : null;
+    if (withProgress) controller.setProgress(0);
   }
 
-  var loadingDialogRoute = DialogRoute(
+  final navigator = Navigator.of(context, rootNavigator: true);
+  final route = DialogRoute<void>(
     context: context,
-    barrierDismissible: barrierDismissible,
-    builder: (BuildContext context) {
-      return StatefulBuilder(builder: (context, setState) {
-        controller._serProgress = (value) {
-          setState(() {
-            controller._progress = value;
-          });
-        };
-        controller._setMessage = (message) {
-          setState(() {
-            controller._message = message;
-          });
-        };
-        return ContentDialog(
-          title: controller._message ?? 'Loading',
+    barrierDismissible: barrierDismissible && canDismiss,
+    builder: (context) => PopScope(
+      canPop: canDismiss,
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => ContentDialog(
+          title: controller.message ?? 'Loading'.tl,
+          dismissible: canDismiss,
           content: LinearProgressIndicator(
-            value: controller._progress,
+            value: controller.progress,
             backgroundColor: context.colorScheme.surfaceContainer,
           ).paddingHorizontal(16).paddingVertical(16),
           actions: [
-            FilledButton(
-              onPressed: allowCancel
-                  ? () {
-                      controller.close();
-                      onCancel?.call();
-                    }
-                  : null,
-              child: Text(cancelButtonText.tl),
-            )
+            if (allowBackground)
+              TextButton(
+                key: const Key('loading-dialog-continue'),
+                onPressed: controller.minimize,
+                child: Text('Continue in background'.tl),
+              ),
+            if (canCancel)
+              FilledButton(
+                onPressed: controller.cancel,
+                child: Text(cancelButtonText.tl),
+              ),
           ],
-        );
-      });
-    },
+        ),
+      ),
+    ),
   );
-
-  var navigator = Navigator.of(context, rootNavigator: true);
-
-  navigator.push(loadingDialogRoute).then((value) => controller.closed = true);
-
   controller._closeDialog = () {
-    navigator.removeRoute(loadingDialogRoute);
+    if (route.isActive) navigator.removeRoute(route);
   };
-
+  navigator.push(route).then((_) {
+    controller._closeDialog = null;
+    controller.viewClosed = true;
+    // With background mode, Back/X/barrier dismiss only the view. Otherwise
+    // dismissal is a real cancel only when the operation supplied a callback.
+    if (!controller.closed && !allowBackground && canCancel) {
+      controller.cancel();
+    }
+  });
   return controller;
 }
 
@@ -297,13 +357,13 @@ class ContentDialog extends StatelessWidget {
         children: [
           title != null
               ? Appbar(
-            leading: IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: dismissible ? context.pop : null,
-            ),
-            title: Text(title!),
-            backgroundColor: Colors.transparent,
-          )
+                  leading: IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: dismissible ? context.pop : null,
+                  ),
+                  title: Text(title!),
+                  backgroundColor: Colors.transparent,
+                )
               : const SizedBox.shrink(),
           this.content,
           const SizedBox(height: 16),
@@ -442,10 +502,7 @@ void showInfoDialog({
         title: title,
         content: Text(content).paddingHorizontal(16).paddingVertical(8),
         actions: [
-          Button.filled(
-            onPressed: context.pop,
-            child: Text(confirmText.tl),
-          ),
+          Button.filled(onPressed: context.pop, child: Text(confirmText.tl)),
         ],
       );
     },
@@ -480,7 +537,7 @@ Future<int?> showSelectDialog({
                         current = i;
                       });
                     },
-                  )
+                  ),
                 ],
               ),
             ),

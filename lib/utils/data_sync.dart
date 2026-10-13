@@ -5,6 +5,7 @@ import 'package:venera/components/components.dart';
 import 'package:venera/components/window_frame.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
@@ -72,6 +73,7 @@ class DataSync with ChangeNotifier {
     showLoadingDialog(
       App.rootContext,
       cancelButtonText: "Shut Down".tl,
+      trackTask: false,
       onCancel: () => exit(0),
       barrierDismissible: false,
       message: "Uploading data...".tl,
@@ -167,6 +169,11 @@ class DataSync with ChangeNotifier {
   Future<Res<bool>> _uploadDataNow() async {
     _isUploading = true;
     _lastError = null;
+    final task = BackgroundTasks.instance.start(
+      'webdav-upload',
+      'WebDAV upload',
+    );
+    task.update(completed: 0, total: 3, message: 'Preparing backup');
     notifyListeners();
     try {
       var config = _validateConfig();
@@ -175,6 +182,7 @@ class DataSync with ChangeNotifier {
         return const Res.error('Invalid WebDAV configuration');
       }
       if (config.isEmpty) {
+        task.update(message: 'WebDAV is not configured');
         return const Res(true);
       }
       String url = config[0];
@@ -194,6 +202,7 @@ class DataSync with ChangeNotifier {
         await appdata.saveData(false);
         var data = await exportAppData(true);
         backupFile = data;
+        task.update(completed: 1, message: 'Uploading backup');
         var time = (DateTime.now().millisecondsSinceEpoch ~/ 86400000)
             .toString();
         var filename = time;
@@ -203,6 +212,7 @@ class DataSync with ChangeNotifier {
         var files = await client.readDir('/');
         files = files.where((e) => e.name!.endsWith('.venera')).toList();
         await client.write(filename, await data.readAsBytes());
+        task.update(completed: 2, message: 'Cleaning old backups');
         Log.info("Upload Data", "Data uploaded successfully");
         // Keep the previous backup until the new remote file is safely written.
         try {
@@ -215,12 +225,14 @@ class DataSync with ChangeNotifier {
             await client.remove(name);
           }
         } catch (e, s) {
+          task.addError('Uploaded backup but failed to prune old backups: $e');
           Log.error(
             "Upload Data",
             "Uploaded backup but failed to prune old backups: $e",
             s,
           );
         }
+        task.update(completed: 3, message: 'Backup uploaded');
         return const Res(true);
       } catch (e, s) {
         Log.error("Upload Data", e, s);
@@ -229,7 +241,15 @@ class DataSync with ChangeNotifier {
       } finally {
         await backupFile?.deleteIgnoreError();
       }
+    } catch (error) {
+      task.fail(error);
+      rethrow;
     } finally {
+      if (_lastError != null) {
+        task.fail(_lastError!);
+      } else {
+        task.finish();
+      }
       _isUploading = false;
       notifyListeners();
     }
@@ -244,6 +264,11 @@ class DataSync with ChangeNotifier {
     _haveWaitingTask = false;
     _isDownloading = true;
     _lastError = null;
+    final task = BackgroundTasks.instance.start(
+      'webdav-download',
+      'WebDAV download',
+    );
+    task.update(completed: 0, total: 3, message: 'Checking remote backups');
     notifyListeners();
     try {
       var config = _validateConfig();
@@ -252,6 +277,7 @@ class DataSync with ChangeNotifier {
         return const Res.error('Invalid WebDAV configuration');
       }
       if (config.isEmpty) {
+        task.update(message: 'WebDAV is not configured');
         return const Res(true);
       }
       String url = config[0];
@@ -282,10 +308,12 @@ class DataSync with ChangeNotifier {
           var currentVersion = appdata.settings['dataVersion'];
           if (currentVersion != null && int.parse(version) <= currentVersion) {
             Log.info("Data Sync", 'No new data to download');
+            task.update(completed: 3, message: 'No new data to download');
             return const Res(true);
           }
         }
         Log.info("Data Sync", "Downloading data from WebDAV server");
+        task.update(completed: 1, message: 'Downloading backup');
         downloadDirectory = await Directory(
           App.cachePath,
         ).createTemp('webdav-');
@@ -293,7 +321,9 @@ class DataSync with ChangeNotifier {
           FilePath.join(downloadDirectory.path, 'backup.venera'),
         );
         await client.read2File(file.name!, localFile.path);
+        task.update(completed: 2, message: 'Restoring backup');
         await importAppData(localFile, true);
+        task.update(completed: 3, message: 'Backup restored');
         Log.info("Data Sync", "Data downloaded successfully");
         return const Res(true);
       } catch (e, s) {
@@ -303,7 +333,15 @@ class DataSync with ChangeNotifier {
       } finally {
         await downloadDirectory?.deleteIgnoreError(recursive: true);
       }
+    } catch (error) {
+      task.fail(error);
+      rethrow;
     } finally {
+      if (_lastError != null) {
+        task.fail(_lastError!);
+      } else {
+        task.finish();
+      }
       _isDownloading = false;
       notifyListeners();
     }

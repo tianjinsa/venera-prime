@@ -1,0 +1,16 @@
+{
+  "libavif": {
+    "version": "1.4.2",
+    "repository": "https://github.com/AOMediaCodec/libavif.git",
+    "commit": "c5240fc79fe5c2407e10afd35f5505ef6333ea49",
+    "archiveUrl": "https://codeload.github.com/AOMediaCodec/libavif/tar.gz/c5240fc79fe5c2407e10afd35f5505ef6333ea49",
+    "archiveSha256": "5e9aa73e43af8021a57d744712ee0bc145267863afb7c9b118723a15dbd4cfbf"
+  },
+  "dav1d": {
+    "version": "1.5.3",
+    "repository": "https://code.videolan.org/videolan/dav1d.git",
+    "commit": "b546257f770768b2c88258c533da38b91a06f737",
+    "archiveUrl": "https://codeload.github.com/videolan/dav1d/tar.gz/b546257f770768b2c88258c533da38b91a06f737",
+    "archiveSha256": "c5b7428c3f5b28db0aee0c62f6ffb2b42f4b08e7be5ce49d7ad046aaf0dc151d"
+  }
+}

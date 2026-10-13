@@ -2,8 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:venera/components/components.dart';
+import 'package:venera/components/background_tasks.dart';
+import 'package:venera/foundation/background_tasks.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
+import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/history_pager.dart';
 import 'package:venera/utils/translations.dart';
@@ -217,62 +221,66 @@ class _HistoryPageState extends State<HistoryPage> {
     HistoryManager().remove(comic.id, comic.type);
   }
 
-  void _refreshHistory(History comic) async {
-    var result = await HistoryManager().refreshHistoryInfo(comic);
-    if (result) {
-      if (mounted) {
-        App.rootContext.showMessage(message: "Refresh Success".tl);
-      }
-    } else {
-      if (mounted) {
-        App.rootContext.showMessage(message: "Refresh Failed".tl);
-      }
-    }
-  }
-
-  void _refreshAllHistories() async {
-    bool isCanceled = false;
-    void onCancel() {
-      isCanceled = true;
-    }
-
-    var loadingController = showLoadingDialog(
-      App.rootContext,
-      withProgress: true,
-      cancelButtonText: "Cancel".tl,
-      onCancel: onCancel,
-      message: "Refreshing Histories".tl,
-    );
-
-    int success = 0;
-    int failed = 0;
-    int skipped = 0;
-
-    await for (var progress in HistoryManager().refreshAllHistoriesStream()) {
-      if (isCanceled) {
+  void _refreshHistory(History comic) {
+    final key = 'history-refresh:${comic.type.value}:${comic.id}';
+    final result = BackgroundTasks.instance.run<void>(key, 'Refresh Info'.tl, (
+      task,
+    ) async {
+      task.update(completed: 0, total: 1, message: comic.title);
+      if (comic.type == ComicType.local) {
+        task.update(
+          completed: 1,
+          message: 'Local comics do not need refreshing'.tl,
+        );
         return;
       }
-      if (progress.total > 0) {
-        loadingController.setProgress(progress.current / progress.total);
-      }
-      success = progress.success;
-      failed = progress.failed;
-      skipped = progress.skipped;
-    }
-
-    loadingController.close();
-
-    if (mounted) {
-      App.rootContext.showMessage(
-        message:
-            "Refresh Completed: Success @success, Failed @failed, Skipped @skipped"
-                .tlParams({
-                  'success': success,
-                  'failed': failed,
-                  'skipped': skipped,
-                }),
+      await HistoryManager().refreshHistoryInfo(
+        comic,
+        isCancelled: () => task.cancelRequested,
+        onError: (reason) => task.addError('${comic.title}: $reason'),
       );
-    }
+      if (!task.cancelRequested) task.update(completed: 1);
+    }, cancellable: true);
+    showBackgroundTask(context, BackgroundTasks.instance.latest(key)!);
+    unawaited(
+      result.catchError((Object error, StackTrace stack) {
+        Log.error('History refresh', error, stack);
+      }),
+    );
+  }
+
+  void _refreshAllHistories() {
+    const key = 'history-refresh:all';
+    final result = BackgroundTasks.instance.run<void>(
+      key,
+      'Refreshing Histories'.tl,
+      (task) async {
+        await for (final progress in HistoryManager().refreshAllHistoriesStream(
+          isCancelled: () => task.cancelRequested,
+          onError: (history, reason) =>
+              task.addError('${history.title}: $reason'),
+        )) {
+          task.update(
+            completed: progress.current,
+            total: progress.total,
+            message:
+                'Refresh Completed: Success @success, Failed @failed, Skipped @skipped'
+                    .tlParams({
+                      'success': progress.success,
+                      'failed': progress.failed,
+                      'skipped': progress.skipped,
+                    }),
+          );
+        }
+      },
+      cancellable: true,
+    );
+    showBackgroundTask(context, BackgroundTasks.instance.latest(key)!);
+    unawaited(
+      result.catchError((Object error, StackTrace stack) {
+        Log.error('History refresh', error, stack);
+      }),
+    );
   }
 
   @override
@@ -441,6 +449,12 @@ class _HistoryPageState extends State<HistoryPage> {
                       : searchMode
                       ? searchActions
                       : normalActions,
+                ),
+                const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    child: TaskStatusText(taskKey: 'history-refresh:all'),
+                  ),
                 ),
                 SliverGridComics(
                   key: _gridKey,

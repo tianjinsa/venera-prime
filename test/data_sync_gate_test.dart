@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/components/window_frame.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/utils/data_sync.dart';
 
 void main() {
@@ -32,6 +33,7 @@ void main() {
     appdata.implicitData['webdavAutoSync'] = false;
     appdata.settings['dataVersion'] = 100;
     final sync = DataSync();
+    final taskCount = BackgroundTasks.instance.tasks.length;
     var notifications = 0;
     void onChange() => notifications++;
     sync.addListener(onChange);
@@ -40,6 +42,7 @@ void main() {
     }
     expect(sync.isUploading, isFalse);
     expect(sync.uploadQueued, isFalse);
+    expect(BackgroundTasks.instance.tasks.length, taskCount);
     expect(notifications, 0);
     expect(appdata.settings['dataVersion'], 100);
     expect(root.listSync(), isEmpty);

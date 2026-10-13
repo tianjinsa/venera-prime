@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:venera/foundation/cache_manager.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/utils/image_codec.dart';
 
 abstract class BaseImageProvider<T extends BaseImageProvider<T>>
     extends ImageProvider<T> {
@@ -106,9 +107,9 @@ abstract class BaseImageProvider<T extends BaseImageProvider<T>>
       }
 
       try {
-        final buffer = await ImmutableBuffer.fromUint8List(data);
-        return await decode(
-          buffer,
+        return await decodeImageBytes(
+          data,
+          decode: decode,
           getTargetSize: enableResize ? _getTargetSize : null,
         );
       } catch (e) {

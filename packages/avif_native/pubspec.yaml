@@ -1,0 +1,17 @@
+name: avif_native
+description: Vendored avif_native with reproducible 16 KB aligned Android decoders.
+version: 0.1.1
+repository: https://github.com/Zhangw1998/avif_native
+issue_tracker: https://github.com/Zhangw1998/avif_native/issues
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  code_assets: ^1.2.1
+  crypto: ^3.0.7
+  ffi: ^2.1.4
+  # Flutter 3.41 pins meta 1.17; hooks >=2.1 requires meta >=1.19.
+  hooks: '>=2.0.2 <2.1.0'
+
+publish_to: none

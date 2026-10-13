@@ -224,6 +224,29 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
+        _SwitchSetting(
+          title: 'Page margin'.tl,
+          subtitle:
+              'Continuous mode keeps pages connected; margins stay beside the reading area.'
+                  .tl,
+          settingKey: 'readerPageMarginEnabled',
+          onChanged: () {
+            setState(() {});
+            widget.onChanged?.call('readerPageMarginEnabled');
+          },
+          comicId: isEnabledSpecificSettings ? widget.comicId : null,
+          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+          useDeviceSettings: useDeviceSpecificSettings,
+        ).toSliver(),
+        SliverAnimatedVisibility(
+          visible: readerSetting('readerPageMarginEnabled') == true,
+          child: _ReaderPageMarginSetting(
+            comicId: isEnabledSpecificSettings ? widget.comicId : null,
+            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+            useDeviceSettings: useDeviceSpecificSettings,
+            onChanged: () => widget.onChanged?.call('readerPageMarginPercent'),
+          ),
+        ),
         SelectSetting(
           title: 'Night mode'.tl,
           settingKey: 'readerNightMode',
@@ -591,6 +614,131 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ReaderPageMarginSetting extends StatefulWidget {
+  const _ReaderPageMarginSetting({
+    this.comicId,
+    this.comicSource,
+    required this.useDeviceSettings,
+    required this.onChanged,
+  });
+
+  final String? comicId;
+  final String? comicSource;
+  final bool useDeviceSettings;
+  final VoidCallback onChanged;
+
+  @override
+  State<_ReaderPageMarginSetting> createState() =>
+      _ReaderPageMarginSettingState();
+}
+
+class _ReaderPageMarginSettingState extends State<_ReaderPageMarginSetting> {
+  static const settingKey = 'readerPageMarginPercent';
+
+  double get value {
+    final stored = widget.comicId != null
+        ? appdata.settings.getReaderSetting(
+            widget.comicId!,
+            widget.comicSource!,
+            settingKey,
+          )
+        : widget.useDeviceSettings
+        ? appdata.settings.getDeviceReaderSetting(settingKey)
+        : appdata.settings[settingKey];
+    return stored is num && stored.isFinite
+        ? stored.toDouble().clamp(0, 40)
+        : 19.3;
+  }
+
+  void change(double value) {
+    // Store tenths of a percent without slider floating-point noise.
+    value = (value * 10).round() / 10;
+    setState(() {
+      if (widget.comicId != null) {
+        appdata.settings.setReaderSetting(
+          widget.comicId!,
+          widget.comicSource!,
+          settingKey,
+          value,
+        );
+      } else if (widget.useDeviceSettings) {
+        appdata.settings.setDeviceReaderSetting(settingKey, value);
+      } else {
+        appdata.settings[settingKey] = value;
+      }
+    });
+    widget.onChanged();
+  }
+
+  Future<void> edit() async {
+    var input = value.toStringAsFixed(1);
+    String? error;
+    final result = await showDialog<double>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, updateDialog) {
+          void submit() {
+            final parsed = double.tryParse(input.replaceAll(',', '.'));
+            if (parsed == null ||
+                !parsed.isFinite ||
+                parsed < 0 ||
+                parsed > 40) {
+              updateDialog(() => error = 'Enter a percentage from 0 to 40.'.tl);
+              return;
+            }
+            Navigator.pop(context, parsed);
+          }
+
+          return AlertDialog(
+            title: Text('Page margin size'.tl),
+            content: TextFormField(
+              initialValue: input,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: InputDecoration(suffixText: '%', errorText: error),
+              onChanged: (value) => input = value,
+              onFieldSubmitted: (_) => submit(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel'.tl),
+              ),
+              TextButton(onPressed: submit, child: Text('Confirm'.tl)),
+            ],
+          );
+        },
+      ),
+    );
+    if (result != null && mounted) {
+      change(result);
+      await appdata.saveData();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      title: Text('Page margin size'.tl),
+      trailing: TextButton(
+        onPressed: edit,
+        child: Text('${value.toStringAsFixed(1)}%'),
+      ),
+      subtitle: Slider(
+        value: value,
+        min: 0,
+        max: 40,
+        divisions: 400,
+        label: '${value.toStringAsFixed(1)}%',
+        onChanged: change,
+        onChangeEnd: (_) => appdata.saveData(),
+      ),
     );
   }
 }

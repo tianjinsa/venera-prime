@@ -1,12 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:venera/components/components.dart';
+import 'package:venera/components/background_tasks.dart';
+import 'package:venera/foundation/background_tasks.dart';
+import 'package:venera/foundation/source_update_service.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
+import 'package:venera/foundation/comic_source/availability.dart';
+import 'package:venera/foundation/image_provider/reader_image.dart';
 import 'package:venera/foundation/comic_source/source_library.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/network/app_dio.dart';
@@ -18,6 +24,8 @@ import 'package:venera/utils/io.dart';
 import 'package:venera/utils/atomic_file.dart';
 import 'package:venera/utils/translations.dart';
 
+part 'source_check.dart';
+
 typedef _CatalogSource = ({String version, String? url, String? fileName});
 
 class ComicSourcePage extends StatelessWidget {
@@ -27,37 +35,84 @@ class ComicSourcePage extends StatelessWidget {
     ComicSource source, [
     bool showLoading = true,
     String? candidateUrl,
+    bool Function()? canApply,
   ]) async {
+    if (!showLoading) {
+      return _updateSource(
+        source,
+        candidateUrl: candidateUrl,
+        canApply: canApply,
+      );
+    }
+    final key = 'source-update:${source.key}';
+    final future = BackgroundTasks.instance.run<bool>(
+      key,
+      '${"Update".tl}: ${source.name}',
+      (task) async {
+        if (task.cancelRequested) return false;
+        task.update(total: 1, message: source.name);
+        try {
+          final updated = await _updateSource(
+            source,
+            candidateUrl: candidateUrl,
+            task: task,
+            canApply: canApply,
+          );
+          if (!updated && !task.cancelRequested) {
+            task.addError("Update was not applied".tl);
+          }
+          task.update(
+            completed: updated ? 1 : 0,
+            message: updated ? "Updated".tl : "Update was not applied".tl,
+          );
+          return updated;
+        } finally {
+          task.onCancel = null;
+          App.forceRebuild();
+        }
+      },
+      cancellable: true,
+    );
+    unawaited(
+      showBackgroundTask(
+        App.rootContext,
+        BackgroundTasks.instance.latest(key)!,
+      ),
+    );
+    try {
+      return await future;
+    } catch (_) {
+      // The task retains the failure even when its dialog has been minimized.
+      return false;
+    }
+  }
+
+  static Future<bool> _updateSource(
+    ComicSource source, {
+    String? candidateUrl,
+    BackgroundTask? task,
+    bool Function()? canApply,
+  }) async {
+    if (task?.cancelRequested == true) return false;
     final manager = ComicSourceManager();
     if (!manager.tryStartUpdate(source.key)) {
       Log.info("ComicSource", "Update already running: ${source.key}");
       return false;
     }
+    // Only attach cancellation after acquiring this source's update lock.
+    // A second job must not cancel a source owned by another update.
+    if (task != null) {
+      task.onCancel = () => manager.cancelUpdate(source.key);
+    }
     final downloadUrl =
         candidateUrl ?? manager.updateUrlFor(source.key) ?? source.url;
+    final initialProvenance = manager.provenanceFor(source.key);
     if (!isHttpSourceUrl(downloadUrl)) {
-      if (showLoading) {
-        App.rootContext.showMessage(message: "Invalid url config");
-        manager.finishUpdate(source.key);
-        return false;
-      } else {
-        manager.finishUpdate(source.key);
-        throw Exception("Invalid url config");
-      }
+      if (task != null) task.onCancel = null;
+      manager.finishUpdate(source.key);
+      throw Exception("Invalid url config");
     }
-    bool cancel = false;
     ComicSourceParser? parser;
-    LoadingDialogController? controller;
-    if (showLoading) {
-      controller = showLoadingDialog(
-        App.rootContext,
-        onCancel: () {
-          cancel = true;
-          manager.cancelUpdate(source.key);
-        },
-        barrierDismissible: false,
-      );
-    }
     try {
       manager.setUpdateState(source.key, ComicSourceUpdateState.downloading);
       Log.info(
@@ -108,7 +163,8 @@ class ComicSourcePage extends StatelessWidget {
           res.data!.trim().isEmpty) {
         throw Exception('Source download failed with status ${res.statusCode}');
       }
-      if (cancel || manager.isUpdateCancelled(source.key)) {
+      if (task?.cancelRequested == true ||
+          manager.isUpdateCancelled(source.key)) {
         manager.setUpdateState(source.key, ComicSourceUpdateState.canceled);
         return false;
       }
@@ -125,7 +181,8 @@ class ComicSourcePage extends StatelessWidget {
         allowExistingKey: true,
         registerSource: false,
       );
-      if (cancel || manager.isUpdateCancelled(source.key)) {
+      if (task?.cancelRequested == true ||
+          manager.isUpdateCancelled(source.key)) {
         manager.setUpdateState(source.key, ComicSourceUpdateState.canceled);
         return false;
       }
@@ -137,9 +194,18 @@ class ComicSourcePage extends StatelessWidget {
       Log.info("ComicSource", "Writing ${source.key}: ${source.filePath}");
       manager.setUpdateState(source.key, ComicSourceUpdateState.writing);
       await temp.writeAsString(res.data!, flush: true);
-      if (cancel || manager.isUpdateCancelled(source.key)) {
+      if (task?.cancelRequested == true ||
+          manager.isUpdateCancelled(source.key)) {
         manager.setUpdateState(source.key, ComicSourceUpdateState.canceled);
         return false;
+      }
+      final currentProvenance = manager.provenanceFor(source.key);
+      if (canApply?.call() == false ||
+          !identical(ComicSource.find(source.key), source) ||
+          currentProvenance?.originId != initialProvenance?.originId ||
+          currentProvenance?.sourceFileName !=
+              initialProvenance?.sourceFileName) {
+        throw StateError('Source or library binding changed while updating');
       }
       await atomicReplaceWithBackup(
         target: target,
@@ -148,6 +214,7 @@ class ComicSourcePage extends StatelessWidget {
       );
       currentParser.registerParsedSource();
       manager.replace(candidate);
+      unawaited(SourceCheckManager.instance.check(candidate));
       manager.setUpdateUrl(source.key, downloadUrl);
       manager.removeAvailableUpdate(source.key);
       manager.setUpdateState(source.key, ComicSourceUpdateState.success);
@@ -155,33 +222,50 @@ class ComicSourcePage extends StatelessWidget {
       return true;
     } catch (e) {
       Log.error("ComicSource", "Update failed: ${source.key}\n$e");
-      if (cancel || manager.isUpdateCancelled(source.key)) {
+      if (task?.cancelRequested == true ||
+          manager.isUpdateCancelled(source.key)) {
         manager.setUpdateState(source.key, ComicSourceUpdateState.canceled);
         return false;
       }
       manager.setUpdateState(source.key, ComicSourceUpdateState.failed);
-      if (showLoading) {
-        App.rootContext.showMessage(message: e.toString());
-      } else {
-        rethrow;
-      }
+      rethrow;
     } finally {
-      controller?.close();
+      if (task != null) task.onCancel = null;
       parser?.discardParsedSource();
       await io.File('${source.filePath}.update.tmp').deleteIgnoreError();
       manager.finishUpdate(source.key);
     }
-    if (showLoading) {
-      App.forceRebuild();
-    }
-    return false;
   }
 
-  static Future<int> checkComicSourceUpdate() async {
+  static Future<int> checkComicSourceUpdate({
+    Future<List<dynamic>> Function(ComicSourceLibrary library)? loadCatalog,
+  }) => BackgroundTasks.instance.run<int>(
+    'source-check',
+    "Check source libraries".tl,
+    (task) async {
+      final count = await _checkComicSourceUpdate(
+        task,
+        loadCatalog: loadCatalog,
+      );
+      task.update(
+        message: count < 0
+            ? "Network error".tl
+            : '@n source updates available'.tlParams({'n': count}),
+      );
+      if (count > 0) {
+        final updates = ComicSourceManager().availableUpdates;
+        task.resultLabel = "Updates".tl;
+        task.onOpenResult = () => showSourceUpdateDialog(updates);
+      }
+      return count;
+    },
+  );
+
+  static Future<int> _checkComicSourceUpdate(
+    BackgroundTask task, {
+    Future<List<dynamic>> Function(ComicSourceLibrary library)? loadCatalog,
+  }) async {
     ComicSourceManager().clearUpdateCandidates();
-    if (ComicSource.all().isEmpty) {
-      return 0;
-    }
     ComicSourceLibraryManager.migrateLegacy();
     final libraries = ComicSourceLibraryManager.enabled();
     if (libraries.isEmpty) return 0;
@@ -189,20 +273,43 @@ class ComicSourcePage extends StatelessWidget {
     final catalogs = <String, Map<String, List<_CatalogSource>>>{};
     final offeredBy = <String, List<String>>{};
     final succeeded = <String>{};
+    bool isCurrentLibrary(ComicSourceLibrary library) {
+      final current = ComicSourceLibraryManager.find(library.id);
+      return current?.enabled == true && current?.url == library.url;
+    }
+
+    task.update(total: libraries.length);
+    var checked = 0;
     for (final library in libraries) {
+      task.update(message: library.name);
       try {
         Log.info(
           "ComicSource",
           "Checking source library ${library.name}: "
               "${MyLogInterceptor.safeUrl(library.url)}",
         );
-        final response = await AppDio().get<String>(
-          library.url,
-          options: Options(headers: {"cache-time": "no"}),
-        );
-        if (response.statusCode != 200 || response.data == null) continue;
-        final raw = jsonDecode(response.data!);
-        if (raw is! List) continue;
+        final List<dynamic> raw;
+        if (loadCatalog != null) {
+          raw = await loadCatalog(library);
+        } else {
+          final response = await AppDio().get<String>(
+            library.url,
+            options: Options(headers: {"cache-time": "no"}),
+          );
+          if (response.statusCode != 200 || response.data == null) {
+            throw StateError(
+              'Source catalog request failed: ${response.statusCode}',
+            );
+          }
+          final decoded = jsonDecode(response.data!);
+          if (decoded is! List) {
+            throw const FormatException('Invalid source catalog');
+          }
+          raw = decoded;
+        }
+        if (!isCurrentLibrary(library)) {
+          throw StateError('Source library settings changed while checking');
+        }
         final catalog = <String, List<_CatalogSource>>{};
         for (final entry in raw.whereType<Map>()) {
           final key = entry['key']?.toString();
@@ -229,7 +336,21 @@ class ComicSourcePage extends StatelessWidget {
         ComicSourceLibraryManager.markChecked(library.id);
       } catch (e, s) {
         Log.error("ComicSource", "${library.name}: $e", s);
+        task.addError('${library.name}: $e');
+      } finally {
+        task.update(completed: ++checked);
       }
+    }
+    for (final library in libraries) {
+      if (succeeded.contains(library.id) && !isCurrentLibrary(library)) {
+        succeeded.remove(library.id);
+        task.addError(
+          '${library.name}: Source library settings changed while checking',
+        );
+      }
+    }
+    for (final providers in offeredBy.values) {
+      providers.removeWhere((id) => !succeeded.contains(id));
     }
     if (succeeded.isEmpty) return -1;
 
@@ -311,6 +432,7 @@ class ComicSourcePage extends StatelessWidget {
           }
         } catch (e) {
           Log.warning("ComicSource", "Invalid version for ${source.key}: $e");
+          task.addError('${source.name}: $e');
         }
       }
     }
@@ -318,6 +440,92 @@ class ComicSourcePage extends StatelessWidget {
     manager.setAvailableUpdates(updates);
     Log.info("ComicSource", "Source check complete: ${updates.length} updates");
     return updates.length;
+  }
+
+  /// Startup checks share the same jobs as the manual controls.
+  static Future<void> runStartupUpdates() async {
+    try {
+      await checkComicSourceUpdate();
+      if (appdata.settings['autoUpdateComicSources'] == true &&
+          automaticUpdateKeys().isNotEmpty) {
+        await updateAll(automatic: true);
+      }
+    } catch (error, stack) {
+      Log.error(
+        'ComicSource',
+        'Background source update failed: $error',
+        stack,
+      );
+    }
+  }
+
+  static List<String> automaticUpdateKeys() {
+    final manager = ComicSourceManager();
+    return manager.availableUpdates.keys.where((key) {
+      final provenance = manager.provenanceFor(key);
+      final origin = provenance?.originId;
+      return origin != null &&
+          provenance!.updateLibraryId == origin &&
+          ComicSourceLibraryManager.find(origin)?.enabled == true;
+    }).toList();
+  }
+
+  static Future<SourceUpdateResult> updateAll({bool automatic = false}) {
+    final manager = ComicSourceManager();
+    final keys = automatic
+        ? automaticUpdateKeys()
+        : manager.availableUpdates.keys.toList();
+    final urls = {for (final key in keys) key: manager.updateUrlFor(key)};
+    return runSourceUpdates(
+      keys: keys,
+      name: (key) => ComicSource.find(key)?.name ?? key,
+      // The installer attaches cancellation once it owns the source lock.
+      cancel: (_) {},
+      update: (key) async {
+        // Re-evaluate bindings because catalogs/settings may change while a
+        // previous script is downloading. Auto-update never adopts a library.
+        if (automatic &&
+            (appdata.settings['autoUpdateComicSources'] != true ||
+                !automaticUpdateKeys().contains(key))) {
+          return false;
+        }
+        if (!manager.availableUpdates.containsKey(key) ||
+            manager.updateUrlFor(key) != urls[key]) {
+          throw StateError('Source update candidates changed; check again');
+        }
+        final source = ComicSource.find(key);
+        if (source == null) throw StateError('Source is no longer available');
+        return _updateSource(
+          source,
+          task: BackgroundTasks.instance.latest('source-update-all'),
+          canApply: () {
+            return manager.updateUrlFor(key) == urls[key] &&
+                (!automatic ||
+                    (appdata.settings['autoUpdateComicSources'] == true &&
+                        automaticUpdateKeys().contains(key)));
+          },
+        );
+      },
+      onFinished: (result) async {
+        final history = appdata.implicitData['comicSourceUpdateHistory'] is List
+            ? List<dynamic>.from(
+                appdata.implicitData['comicSourceUpdateHistory'],
+              )
+            : <dynamic>[];
+        history.insert(0, {
+          'time': DateTime.now().millisecondsSinceEpoch,
+          'total': result.total,
+          'success': result.succeeded,
+          'failed': result.errors.length,
+          'canceled': result.cancelled,
+          'errors': result.errors,
+        });
+        if (history.length > 20) history.removeRange(20, history.length);
+        appdata.implicitData['comicSourceUpdateHistory'] = history;
+        appdata.writeImplicitData();
+        App.forceRebuild();
+      },
+    );
   }
 
   @override
@@ -447,6 +655,7 @@ class _BodyState extends State<_Body> {
         var file = File(source.filePath);
         file.delete();
         ComicSourceManager().remove(source.key);
+        SourceCheckManager.instance.clear(source.key);
         _validatePages();
         App.forceRebuild();
       },
@@ -540,7 +749,13 @@ class _BodyState extends State<_Body> {
                   label: Text("Help".tl),
                   onPressed: help,
                 ),
-                _CheckUpdatesButton(),
+                const _CheckUpdatesButton(),
+                if (ComicSourceManager().availableUpdates.isNotEmpty)
+                  FilledButton.tonalIcon(
+                    icon: const Icon(Icons.system_update_alt),
+                    label: Text("Update all".tl),
+                    onPressed: showSourceUpdateDialog,
+                  ),
                 ListenableBuilder(
                   listenable: Listenable.merge([
                     appdata.settings,
@@ -561,6 +776,25 @@ class _BodyState extends State<_Body> {
                 ),
               ],
             ).paddingHorizontal(12).paddingVertical(8),
+            const TaskStatusText(taskKey: 'source-check').paddingHorizontal(16),
+            const TaskStatusText(
+              taskKey: 'source-update-all',
+            ).paddingHorizontal(16),
+            ListenableBuilder(
+              listenable: appdata.settings,
+              builder: (context, _) => SwitchListTile(
+                title: Text("Automatically update comic sources".tl),
+                subtitle: Text(
+                  "Only update sources from their bound libraries".tl,
+                ),
+                value: appdata.settings['autoUpdateComicSources'] == true,
+                onChanged: (value) {
+                  appdata.settings['autoUpdateComicSources'] = value;
+                  unawaited(appdata.saveData());
+                  if (value) unawaited(ComicSourcePage.runStartupUpdates());
+                },
+              ),
+            ),
             const SizedBox(height: 8),
           ],
         ),
@@ -600,6 +834,8 @@ class _BodyState extends State<_Body> {
       App.rootContext,
       onCancel: () => cancel = true,
       barrierDismissible: false,
+      allowBackground: true,
+      message: "Add comic source".tl,
     );
     try {
       var res = await AppDio().get<String>(
@@ -610,12 +846,14 @@ class _BodyState extends State<_Body> {
         ),
       );
       if (cancel) return;
-      controller.close();
       await addSource(res.data!, fileName, originLibraryId: originLibraryId);
     } catch (e, s) {
       if (cancel) return;
-      context.showMessage(message: e.toString());
+      controller.fail(e);
+      App.rootContext.showMessage(message: e.toString());
       Log.error("Add comic source", "$e\n$s");
+    } finally {
+      controller.close();
     }
   }
 
@@ -631,7 +869,8 @@ class _BodyState extends State<_Body> {
       sourceFileName: fileName,
     );
     _addAllPagesWithComicSource(comicSource);
-    appdata.saveData();
+    unawaited(SourceCheckManager.instance.check(comicSource));
+    await appdata.saveData();
     App.forceRebuild();
   }
 }
@@ -640,6 +879,8 @@ Future<void> _installSourceFromLibrary(String url, String libraryId) async {
   final controller = showLoadingDialog(
     App.rootContext,
     barrierDismissible: false,
+    allowBackground: true,
+    message: "Add comic source".tl,
   );
   try {
     final response = await AppDio().get<String>(
@@ -668,9 +909,11 @@ Future<void> _installSourceFromLibrary(String url, String libraryId) async {
       sourceFileName: fileName,
     );
     _addAllPagesWithComicSource(source);
+    unawaited(SourceCheckManager.instance.check(source));
     await appdata.saveData();
     App.forceRebuild();
   } catch (e, s) {
+    controller.fail(e);
     Log.error("Install comic source", "$e\n$s");
     App.rootContext.showMessage(message: e.toString());
   } finally {
@@ -708,7 +951,12 @@ Future<void> _switchSourceLibrary({
   if (confirmed != true) return;
 
   final manager = ComicSourceManager();
-  if (!await ComicSourcePage.update(source, true, url)) return;
+  if (!await ComicSourcePage.update(source, true, url, () {
+    final current = ComicSourceLibraryManager.find(library.id);
+    return current != null && current.url == library.url;
+  })) {
+    return;
+  }
 
   final provenance = manager.provenanceFor(source.key) ?? SourceProvenance();
   if (!provenance.libraryIds.contains(library.id)) {
@@ -730,6 +978,22 @@ class SourceLibrariesPage extends StatefulWidget {
 
 class _SourceLibrariesPageState extends State<SourceLibrariesPage> {
   List<ComicSourceLibrary> get libraries => ComicSourceLibraryManager.all();
+
+  @override
+  void initState() {
+    super.initState();
+    appdata.settings.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    appdata.settings.removeListener(_changed);
+    super.dispose();
+  }
 
   void _addLibrary() {
     _editLibrary();
@@ -815,6 +1079,7 @@ class _SourceLibrariesPageState extends State<SourceLibrariesPage> {
       appBar: AppBar(
         title: Text("Source libraries".tl),
         actions: [
+          const _CheckUpdatesButton(),
           IconButton(
             tooltip: "Add library".tl,
             icon: const Icon(Icons.add),
@@ -841,7 +1106,21 @@ class _SourceLibrariesPageState extends State<SourceLibrariesPage> {
                     child: const Icon(Icons.drag_handle),
                   ),
                   title: Text(library.name),
-                  subtitle: Text(library.url),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(library.url),
+                      Text(
+                        library.lastChecked == null
+                            ? "Never checked".tl
+                            : 'Last checked: @time'.tlParams({
+                                'time': DateTime.fromMillisecondsSinceEpoch(
+                                  library.lastChecked!,
+                                ).toLocal().toString().split('.').first,
+                              }),
+                      ),
+                    ],
+                  ),
                   onTap: () =>
                       context.to(() => _LibraryCatalogPage(library: library)),
                   trailing: PopupMenuButton<String>(
@@ -876,10 +1155,48 @@ class _SourceLibrariesPageState extends State<SourceLibrariesPage> {
   }
 }
 
+Future<List<Map<String, dynamic>>> loadSourceLibraryCatalog(
+  ComicSourceLibrary library,
+) {
+  return BackgroundTasks.instance.run<List<Map<String, dynamic>>>(
+    'source-catalog:${library.id}',
+    library.name,
+    (task) async {
+      final response = await AppDio().get<String>(
+        library.url,
+        options: Options(headers: {"cache-time": "no"}),
+      );
+      if (response.statusCode != 200 || response.data == null) {
+        throw StateError(
+          'Source catalog request failed: ${response.statusCode}',
+        );
+      }
+      final raw = jsonDecode(response.data!);
+      if (raw is! List) throw const FormatException('Invalid source catalog');
+      final entries = raw
+          .whereType<Map>()
+          .map(Map<String, dynamic>.from)
+          .toList();
+      final current = ComicSourceLibraryManager.find(library.id);
+      if (current == null || current.url != library.url) {
+        throw StateError('Source library settings changed while checking');
+      }
+      ComicSourceLibraryManager.markChecked(library.id);
+      task.update(message: '@n sources'.tlParams({'n': entries.length}));
+      task.resultLabel = "View source catalog".tl;
+      task.onOpenResult = () => App.rootContext.to(
+        () => _LibraryCatalogPage(library: library, initialEntries: entries),
+      );
+      return entries;
+    },
+  );
+}
+
 class _LibraryCatalogPage extends StatefulWidget {
-  const _LibraryCatalogPage({required this.library});
+  const _LibraryCatalogPage({required this.library, this.initialEntries});
 
   final ComicSourceLibrary library;
+  final List<Map<String, dynamic>>? initialEntries;
 
   @override
   State<_LibraryCatalogPage> createState() => _LibraryCatalogPageState();
@@ -892,26 +1209,17 @@ class _LibraryCatalogPageState extends State<_LibraryCatalogPage> {
   @override
   void initState() {
     super.initState();
-    _load();
+    entries = widget.initialEntries;
+    loading = entries == null;
+    if (loading) _load();
   }
 
   Future<void> _load() async {
     try {
-      final response = await AppDio().get<String>(
-        widget.library.url,
-        options: Options(headers: {"cache-time": "no"}),
-      );
-      if (response.statusCode != 200 || response.data == null) {
-        throw Exception('Network error');
-      }
-      final raw = jsonDecode(response.data!);
-      if (raw is! List) throw Exception('Invalid source catalog');
+      final result = await loadSourceLibraryCatalog(widget.library);
       if (mounted) {
         setState(() {
-          entries = raw
-              .whereType<Map>()
-              .map(Map<String, dynamic>.from)
-              .toList();
+          entries = result;
           loading = false;
         });
       }
@@ -929,7 +1237,21 @@ class _LibraryCatalogPageState extends State<_LibraryCatalogPage> {
   @override
   Widget build(BuildContext context) {
     if (loading) {
-      return Scaffold(body: const Center(child: CircularProgressIndicator()));
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.library.name)),
+        body: Center(
+          child: TextButton.icon(
+            icon: const CircularProgressIndicator(),
+            label: Text("View task".tl),
+            onPressed: () => showBackgroundTask(
+              context,
+              BackgroundTasks.instance.latest(
+                'source-catalog:${widget.library.id}',
+              )!,
+            ),
+          ),
+        ),
+      );
     }
     final installed = ComicSource.all().map((source) => source.key).toSet();
     return Scaffold(
@@ -1127,145 +1449,81 @@ class __EditFilePageState extends State<_EditFilePage> {
   }
 }
 
-class _CheckUpdatesButton extends StatefulWidget {
+void showSourceUpdateDialog([Map<String, String>? checkedUpdates]) {
+  final current = ComicSourceManager().availableUpdates;
+  final updates = checkedUpdates ?? current;
+  final stillCurrent =
+      updates.length == current.length &&
+      updates.entries.every((entry) => current[entry.key] == entry.value);
+  final text = updates.entries
+      .map(
+        (entry) =>
+            '${ComicSource.find(entry.key)?.name ?? entry.key}: ${entry.value}',
+      )
+      .join('\n');
+  showDialog<void>(
+    context: App.rootContext,
+    builder: (context) => ContentDialog(
+      title: "Updates".tl,
+      content: Text(
+        text.isEmpty ? "No updates".tl : text,
+      ).paddingHorizontal(16),
+      actions: [
+        if (updates.isNotEmpty && stillCurrent)
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              final future = ComicSourcePage.updateAll();
+              unawaited(
+                future.catchError((Object error, StackTrace stack) {
+                  Log.error('ComicSource', error, stack);
+                  return SourceUpdateResult(0, 0, [error.toString()], false);
+                }),
+              );
+              unawaited(
+                showBackgroundTask(
+                  App.rootContext,
+                  BackgroundTasks.instance.latest('source-update-all')!,
+                ),
+              );
+            },
+            child: Text("Update all".tl),
+          ),
+      ],
+    ),
+  );
+}
+
+class _CheckUpdatesButton extends StatelessWidget {
   const _CheckUpdatesButton();
 
   @override
-  State<_CheckUpdatesButton> createState() => _CheckUpdatesButtonState();
-}
-
-class _CheckUpdatesButtonState extends State<_CheckUpdatesButton> {
-  bool isLoading = false;
-
-  void check() async {
-    setState(() {
-      isLoading = true;
-    });
-    try {
-      var count = await ComicSourcePage.checkComicSourceUpdate();
-      if (count == -1) {
-        context.showMessage(message: "Network error".tl);
-      } else if (count == 0) {
-        context.showMessage(message: "No updates".tl);
-      } else {
-        showUpdateDialog();
-      }
-    } catch (e) {
-      Log.error("ComicSource", "Source check failed\n$e");
-      context.showMessage(message: e.toString());
-    } finally {
-      if (mounted) {
-        setState(() {
-          isLoading = false;
-        });
-      }
-    }
-  }
-
-  void showUpdateDialog() async {
-    var text = ComicSourceManager().availableUpdates.entries
-        .map((e) {
-          return "${ComicSource.find(e.key)!.name}: ${e.value}";
-        })
-        .join("\n");
-    bool doUpdate = false;
-    await showDialog(
-      context: App.rootContext,
-      builder: (context) {
-        return ContentDialog(
-          title: "Updates".tl,
-          content: Text(text).paddingHorizontal(16),
-          actions: [
-            FilledButton(
-              onPressed: () {
-                doUpdate = true;
-                context.pop();
-              },
-              child: Text("Update".tl),
-            ),
-          ],
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: BackgroundTasks.instance,
+      builder: (context, _) {
+        final running =
+            BackgroundTasks.instance.latest('source-check')?.isRunning == true;
+        return FilledButton.tonalIcon(
+          icon: const Icon(Icons.update),
+          label: Text(running ? "Checking".tl : "Check updates".tl),
+          onPressed: () {
+            final future = ComicSourcePage.checkComicSourceUpdate();
+            unawaited(
+              future.catchError((Object error, StackTrace stack) {
+                Log.error('ComicSource', error, stack);
+                return -1;
+              }),
+            );
+            unawaited(
+              showBackgroundTask(
+                context,
+                BackgroundTasks.instance.latest('source-check')!,
+              ),
+            );
+          },
         );
       },
-    );
-    if (doUpdate) {
-      bool canceled = false;
-      String? activeKey;
-      var loadingController = showLoadingDialog(
-        context,
-        message: "Updating".tl,
-        withProgress: true,
-        onCancel: () {
-          canceled = true;
-          final key = activeKey;
-          if (key != null) {
-            ComicSourceManager().cancelUpdate(key);
-          }
-        },
-      );
-      int current = 0;
-      int total = ComicSourceManager().availableUpdates.length;
-      var failures = <String>[];
-      int successCount = 0;
-      try {
-        var shouldUpdate = ComicSourceManager().availableUpdates.keys.toList();
-        for (var key in shouldUpdate) {
-          if (canceled) break;
-          activeKey = key;
-          var source = ComicSource.find(key);
-          if (source == null) {
-            failures.add('$key: source is no longer available');
-            ComicSourceManager().clearUpdateState(key);
-          } else {
-            try {
-              if (await ComicSourcePage.update(source, false)) {
-                successCount++;
-              }
-            } catch (e) {
-              failures.add('$key: $e');
-            }
-          }
-          activeKey = null;
-          current++;
-          loadingController.setProgress(current / total);
-        }
-      } finally {
-        loadingController.close();
-        final history = appdata.implicitData['comicSourceUpdateHistory'] is List
-            ? List<dynamic>.from(
-                appdata.implicitData['comicSourceUpdateHistory'],
-              )
-            : <dynamic>[];
-        history.insert(0, {
-          'time': DateTime.now().millisecondsSinceEpoch,
-          'total': total,
-          'success': successCount,
-          'failed': failures.length,
-          'canceled': canceled,
-          'errors': failures,
-        });
-        if (history.length > 20) history.removeRange(20, history.length);
-        appdata.implicitData['comicSourceUpdateHistory'] = history;
-        appdata.writeImplicitData();
-        App.forceRebuild();
-      }
-      if (failures.isNotEmpty) {
-        context.showMessage(message: failures.join('\n'));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FilledButton.tonalIcon(
-      icon: isLoading
-          ? SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(Icons.update),
-      label: Text("Check updates".tl),
-      onPressed: check,
     );
   }
 }
@@ -1456,7 +1714,9 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
                 Tooltip(
                   message: "Edit".tl,
                   child: IconButton(
-                    onPressed: () => widget.edit(source),
+                    onPressed: updateState == null
+                        ? () => widget.edit(source)
+                        : null,
                     icon: const Icon(Icons.edit_note),
                   ),
                 ),
@@ -1470,7 +1730,9 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
                 Tooltip(
                   message: "Delete".tl,
                   child: IconButton(
-                    onPressed: () => widget.delete(source),
+                    onPressed: updateState == null
+                        ? () => widget.delete(source)
+                        : null,
                     icon: const Icon(Icons.delete),
                   ),
                 ),
@@ -1494,6 +1756,7 @@ class _SliverComicSourceState extends State<_SliverComicSource> {
         SliverToBoxAdapter(
           child: Column(children: buildSourceSettings().toList()),
         ),
+        SliverToBoxAdapter(child: _SourceCheckTile(source: source)),
         SliverToBoxAdapter(child: Column(children: _buildAccount().toList())),
       ],
     );

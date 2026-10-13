@@ -77,6 +77,9 @@ void main() {
   Future<void> mount(
     WidgetTester tester, {
     bool filterBlockedComics = true,
+    List<Comic>? items,
+    Map<Comic, bool>? selections,
+    Widget Function(Comic comic, Widget child)? itemWrapper,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -85,8 +88,10 @@ void main() {
           body: CustomScrollView(
             slivers: [
               SliverGridComics(
-                comics: comics,
+                comics: items ?? comics,
                 filterBlockedComics: filterBlockedComics,
+                selections: selections,
+                itemWrapper: itemWrapper,
               ),
             ],
           ),
@@ -132,6 +137,50 @@ void main() {
     expect(visibleIds(tester), ['visible']);
     expect(tester.takeException(), isNull);
   });
+
+  for (final selecting in [false, true]) {
+    testWidgets(
+      'swipe tiles preserve state when reordered, selection=$selecting',
+      (tester) async {
+        addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
+        Widget wrap(Comic comic, Widget child) => Dismissible(
+          key: ValueKey(('swipe', comic.id)),
+          confirmDismiss: (_) async => false,
+          child: child,
+        );
+        final selections = selecting ? {comics.first: true} : null;
+        await mount(
+          tester,
+          filterBlockedComics: false,
+          selections: selections,
+          itemWrapper: wrap,
+        );
+        final states = {
+          for (final comic in comics)
+            comic.id: tester.state<State<Dismissible>>(
+              find.byKey(ValueKey(('swipe', comic.id))),
+            ),
+        };
+        await mount(
+          tester,
+          filterBlockedComics: false,
+          items: comics.reversed.toList(),
+          selections: selections,
+          itemWrapper: wrap,
+        );
+        expect(visibleIds(tester), comics.reversed.map((comic) => comic.id));
+        for (final comic in comics) {
+          expect(
+            tester.state<State<Dismissible>>(
+              find.byKey(ValueKey(('swipe', comic.id))),
+            ),
+            same(states[comic.id]),
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
 
   for (final mode in ['paging', 'continuous']) {
     testWidgets('saved ComicList bypasses both rules in $mode mode', (

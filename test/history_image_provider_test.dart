@@ -41,6 +41,10 @@ class _CoverCache implements CacheManager {
   }
 
   @override
+  Future<Uint8List?> readCache(String key) async =>
+      (await findCache(key))?.readAsBytes();
+
+  @override
   Future<void> delete(String key) async => files.remove(key);
 
   @override

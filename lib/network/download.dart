@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart' show ChangeNotifier;
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/local.dart';
@@ -20,6 +21,72 @@ import 'file_downloader.dart';
 import 'download_page.dart';
 
 abstract class DownloadTask with ChangeNotifier {
+  BackgroundTask? _backgroundTask;
+
+  String get backgroundTaskKey => 'download:${comicType.value}:$id';
+
+  int get completedUnits => 0;
+  int? get totalUnits => null;
+
+  /// Queue restoration and direct resume calls share the same task record.
+  void trackBackgroundTask({bool queued = false}) {
+    if (_backgroundTask?.isRunning != true) {
+      _backgroundTask = BackgroundTasks.instance.start(
+        backgroundTaskKey,
+        'Download: $title',
+        cancellable: true,
+      )..onCancel = cancel;
+    }
+    _updateBackgroundTask(queued: queued);
+  }
+
+  void _updateBackgroundTask({bool queued = false}) {
+    final task = _backgroundTask;
+    if (task == null || !task.isRunning) return;
+    task.update(
+      completed: completedUnits,
+      total: totalUnits,
+      message: task.cancelRequested
+          ? 'Cancelling...'
+          : queued
+          ? 'Queued'
+          : message,
+    );
+    if (isError && !task.cancelRequested) {
+      task.onCancel = null;
+      task.fail(message);
+    }
+  }
+
+  void completeBackgroundTask() {
+    _updateBackgroundTask();
+    _backgroundTask?.onCancel = null;
+    _backgroundTask?.finish(message: 'Download completed');
+  }
+
+  void failBackgroundTask(Object error) {
+    _backgroundTask?.onCancel = null;
+    _backgroundTask?.fail(error);
+  }
+
+  void _requestBackgroundCancellation() {
+    final task = _backgroundTask;
+    if (task == null || !task.isRunning) return;
+    task.cancelRequested = true;
+    task.update(message: 'Cancelling...');
+  }
+
+  void _finishBackgroundCancellation() {
+    _backgroundTask?.onCancel = null;
+    _backgroundTask?.finish(message: 'Cancelled');
+  }
+
+  @override
+  void notifyListeners() {
+    _updateBackgroundTask();
+    super.notifyListeners();
+  }
+
   /// 0-1
   double get progress;
 
@@ -124,6 +191,7 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   @override
   void cancel() {
+    _requestBackgroundCancellation();
     _isRunning = false;
     stopRecorder();
     LocalManager().removeTask(this);
@@ -131,43 +199,52 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
     var local = LocalManager().find(id, comicType);
     unawaited(
       Future.sync(() async {
-        await _cancelPendingDownloads();
-        if (downloadPath == null) {
-          return;
-        }
-        if (local == null &&
-            _createdDownloadDirectory &&
-            LocalManager().isManagedPath(downloadPath)) {
-          try {
-            await Directory(downloadPath).delete(recursive: true);
-          } catch (e, s) {
-            Log.error("Download", "Failed to delete directory: $e", s);
-          }
-        } else if (local != null && local.managedByApp && chapters != null) {
-          for (var c in chapters!) {
-            var dir = Directory(
-              FilePath.join(
-                downloadPath,
-                LocalManager.getChapterDirectoryName(c),
-              ),
-            );
-            try {
-              if (await dir.exists() &&
-                  LocalManager().isManagedPath(dir.path)) {
-                await dir.delete(recursive: true);
-              }
-            } catch (e, s) {
-              Log.error(
-                "Download",
-                "Failed to delete chapter directory ${dir.path}: $e",
-                s,
-              );
+            await _cancelPendingDownloads();
+            if (downloadPath == null) {
+              return;
             }
-          }
-        }
-      }).catchError((e, s) {
-        Log.error("Download", "Failed to cancel download cleanup: $e", s);
-      }),
+            if (local == null &&
+                _createdDownloadDirectory &&
+                LocalManager().isManagedPath(downloadPath)) {
+              try {
+                await Directory(downloadPath).delete(recursive: true);
+              } catch (e, s) {
+                _backgroundTask?.addError('Failed to delete directory: $e');
+                Log.error("Download", "Failed to delete directory: $e", s);
+              }
+            } else if (local != null &&
+                local.managedByApp &&
+                chapters != null) {
+              for (var c in chapters!) {
+                var dir = Directory(
+                  FilePath.join(
+                    downloadPath,
+                    LocalManager.getChapterDirectoryName(c),
+                  ),
+                );
+                try {
+                  if (await dir.exists() &&
+                      LocalManager().isManagedPath(dir.path)) {
+                    await dir.delete(recursive: true);
+                  }
+                } catch (e, s) {
+                  _backgroundTask?.addError(
+                    'Failed to delete chapter directory: $e',
+                  );
+                  Log.error(
+                    "Download",
+                    "Failed to delete chapter directory ${dir.path}: $e",
+                    s,
+                  );
+                }
+              }
+            }
+          })
+          .catchError((e, s) {
+            _backgroundTask?.addError('Failed to cancel download cleanup: $e');
+            Log.error("Download", "Failed to cancel download cleanup: $e", s);
+          })
+          .whenComplete(_finishBackgroundCancellation),
     );
   }
 
@@ -211,6 +288,11 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
 
   @override
   double get progress => _totalCount == 0 ? 0 : _downloadedCount / _totalCount;
+
+  @override
+  int get completedUnits => _downloadedCount;
+  @override
+  int? get totalUnits => _totalCount > 0 ? _totalCount : null;
 
   bool _isRunning = false;
 
@@ -593,11 +675,21 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
   }
 
   @override
-  void resume() async {
+  void resume() {
+    unawaited(
+      _resume().catchError((Object error, StackTrace stack) {
+        _setError('Error: $error');
+        Log.error('Download', error, stack);
+      }),
+    );
+  }
+
+  Future<void> _resume() async {
     if (_isRunning) return;
     _isError = false;
     _message = "Resuming...";
     _isRunning = true;
+    trackBackgroundTask();
     await _cancelPendingDownloads();
     if (!_isRunning) return;
     tasks.clear();
@@ -795,12 +887,16 @@ class ImagesDownloadTask extends DownloadTask with _TransferSpeedMixin {
           return;
         }
         if (task.skippedError != null) {
+          _backgroundTask?.addError(
+            'Page ${task.index + 1}: ${task.skippedError}',
+          );
           Log.error("Download", "Skipped image: ${task.skippedError}");
         }
         _index++;
         _downloadedCount++;
         downloadedPages.add(task.index);
         _message = _formatDownloadProgressMessage();
+        _updateBackgroundTask();
         LocalManager().scheduleCurrentDownloadingTasksSave();
       }
       _index = 0;
@@ -1175,26 +1271,34 @@ class ArchiveDownloadTask extends DownloadTask {
 
   @override
   void cancel() async {
+    _requestBackgroundCancellation();
     _isRunning = false;
-    await _downloader?.stop();
     try {
-      await _extracting;
-    } catch (_) {
-      // The extraction task reports its own error; cancellation still owns
-      // the cleanup that follows.
+      await _downloader?.stop();
+      try {
+        await _extracting;
+      } catch (_) {
+        // The extraction task reports its own error; cancellation still owns
+        // the cleanup that follows.
+      }
+      if (_createdDownloadDirectory &&
+          path != null &&
+          LocalManager().isManagedPath(path!)) {
+        await Directory(path!).deleteIgnoreError(recursive: true);
+      }
+      await _archiveFile.deleteIgnoreError();
+      await _archiveStatusFile.deleteIgnoreError();
+      await Directory(
+        FilePath.join(App.cachePath, 'archive_staging_$_taskKey'),
+      ).deleteIgnoreError(recursive: true);
+      path = null;
+      LocalManager().removeTask(this);
+    } catch (error) {
+      _backgroundTask?.addError(error.toString());
+      rethrow;
+    } finally {
+      _finishBackgroundCancellation();
     }
-    if (_createdDownloadDirectory &&
-        path != null &&
-        LocalManager().isManagedPath(path!)) {
-      await Directory(path!).deleteIgnoreError(recursive: true);
-    }
-    await _archiveFile.deleteIgnoreError();
-    await _archiveStatusFile.deleteIgnoreError();
-    await Directory(
-      FilePath.join(App.cachePath, 'archive_staging_$_taskKey'),
-    ).deleteIgnoreError(recursive: true);
-    path = null;
-    LocalManager().removeTask(this);
   }
 
   @override
@@ -1234,14 +1338,29 @@ class ArchiveDownloadTask extends DownloadTask {
       _expectedBytes == 0 ? 0 : _currentBytes / _expectedBytes;
 
   @override
-  void resume() async {
+  int get completedUnits => _currentBytes;
+  @override
+  int? get totalUnits => _expectedBytes > 0 ? _expectedBytes : null;
+
+  @override
+  void resume() {
+    unawaited(
+      _resume().catchError((Object error, StackTrace stack) {
+        _setError('Error: $error');
+        Log.error('Download', error, stack);
+      }),
+    );
+  }
+
+  Future<void> _resume() async {
     if (_isRunning) {
       return;
     }
     _isError = false;
     _isRunning = true;
-    notifyListeners();
     _message = "Downloading...";
+    trackBackgroundTask();
+    notifyListeners();
 
     if (path == null) {
       var dir = await LocalManager().findValidDirectory(
@@ -1302,6 +1421,8 @@ class ArchiveDownloadTask extends DownloadTask {
     }
 
     try {
+      _message = 'Extracting archive...';
+      notifyListeners();
       final extracting = _extractArchive(archiveFile.path, path!, _taskKey);
       _extracting = extracting;
       await extracting;

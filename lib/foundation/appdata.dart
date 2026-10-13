@@ -441,6 +441,8 @@ class Settings with ChangeNotifier {
     'autoPageTurningInterval': 5, // in seconds
     'readerMode': 'galleryLeftToRight', // values of [ReaderMode]
     'readerTwoPageSpread': false,
+    'readerPageMarginEnabled': false,
+    'readerPageMarginPercent': 19.3,
     'readerScreenPicNumberForLandscape': 1, // 1 - 5
     'readerScreenPicNumberForPortrait': 1, // 1 - 5
     'enableTapToTurnPages': true,
@@ -450,6 +452,9 @@ class Settings with ChangeNotifier {
     'convertTraditionalToSimplified': false,
     'language': 'system', // system, zh-CN, zh-TW, en-US
     'cacheSize': 2048, // in MB
+    'cacheRetentionDays': 7,
+    'showBackgroundTaskButton': true,
+    'autoUpdateComicSources': false,
     'downloadThreads': 5,
     'enableLongPressToZoom': true,
     'longPressZoomPosition': "press", // press, center

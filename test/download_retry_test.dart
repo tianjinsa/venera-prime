@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/foundation/app.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/local.dart';
 import 'package:venera/network/download.dart';
@@ -122,6 +123,11 @@ void main() {
             }, _ListingOverrides(pages.path));
             expect(task.isError, isFalse);
             expect(task.progress, 1);
+            await Future<void>.delayed(Duration.zero);
+            expect(
+              BackgroundTasks.instance.latest(task.backgroundTaskKey)!.status,
+              BackgroundTaskStatus.completed,
+            );
             expect(
               manager.find('comic', task.comicType)!.downloadedChapters,
               withChapters ? ['1'] : isEmpty,
@@ -200,8 +206,6 @@ void main() {
       expect(manager.isManagedPath(directory.path), isFalse);
       expect(manager.isManagedPath('${local.path}-outside/comic'), isFalse);
       expect(manager.isManagedPath('${local.path}/comic'), isTrue);
-      final link = Link('${local.path}/escape')..createSync(directory.path);
-      expect(manager.isManagedPath('${link.path}/comic'), isFalse);
       ComicSourceManager().add(_Source());
       final comic = Directory('${local.path}/comic')..createSync();
       final chapter = Directory('${comic.path}/1')..createSync();
@@ -261,4 +265,30 @@ void main() {
       await directory.delete(recursive: true);
     },
   );
+
+  test('managed downloads reject paths through symbolic links', () async {
+    final directory = await Directory.systemTemp.createTemp('prime-links-');
+    final local = Directory('${directory.path}/local')..createSync();
+    App.dataPath = directory.path;
+    File('${directory.path}/local_path').writeAsStringSync(local.path);
+    final manager = LocalManager();
+    manager.close();
+    await manager.init();
+    try {
+      final link = Link('${local.path}/escape');
+      try {
+        await link.create(directory.path);
+      } on FileSystemException catch (error) {
+        if (Platform.isWindows && error.osError?.errorCode == 1314) {
+          markTestSkipped('Windows symbolic link privilege is unavailable.');
+          return;
+        }
+        rethrow;
+      }
+      expect(manager.isManagedPath('${link.path}/comic'), isFalse);
+    } finally {
+      manager.close();
+      await directory.delete(recursive: true);
+    }
+  });
 }

@@ -337,7 +337,9 @@ class _AppScrollBarState extends State<AppScrollBar> {
     }
 
     if (hasChanged && mounted) {
-      if (_isDragging) {
+      // Labels may depend on the visible items after layout. Without a label,
+      // the immediate update is sufficient to move the thumb.
+      if (_isDragging && widget.dragLabelBuilder != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted && _isDragging) setState(() {});
         });

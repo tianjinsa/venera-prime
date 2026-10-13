@@ -725,148 +725,159 @@ class HistoryManager with ChangeNotifier {
   /// Refresh history info from comic source.
   /// Fetches the latest cover, title and subtitle from the source.
   /// Keeps the reading progress (ep, page, etc.).
-  Future<bool> refreshHistoryInfo(History history) async {
-    if (history.sourceKey == 'local') {
-      // Local comics don't need refresh
-      return false;
-    }
-
-    return await _refreshSingleHistory(history);
+  Future<bool> refreshHistoryInfo(
+    History history, {
+    bool Function()? isCancelled,
+    void Function(String reason)? onError,
+  }) async {
+    if (history.type == ComicType.local) return false;
+    return _refreshSingleHistory(
+      history,
+      isCancelled: isCancelled,
+      onError: onError,
+    );
   }
 
-  /// Internal method to refresh a single history
-  /// Retries up to 3 times on failure with 2 second delay between retries
-  Future<bool> _refreshSingleHistory(History history) async {
-    var comicSource = ComicSource.find(history.sourceKey);
-    if (comicSource == null || comicSource.loadComicInfo == null) {
+  Future<bool> _refreshSingleHistory(
+    History history, {
+    bool Function()? isCancelled,
+    void Function(String reason)? onError,
+  }) async {
+    if (isCancelled?.call() == true) return false;
+    final source = history.type.comicSource;
+    if (source?.loadComicInfo == null) {
+      onError?.call('Comic source is unavailable');
       return false;
     }
-
-    int retries = 3;
-    while (true) {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (isCancelled?.call() == true) return false;
       try {
-        var res = await comicSource.loadComicInfo!(history.id);
-        if (res.error) {
-          await Future.delayed(const Duration(seconds: 2));
-          retries--;
-          if (retries == 0) {
-            return false;
-          }
-          continue;
-        }
-
-        var comicDetails = res.data;
-        // Update history info while keeping reading progress
-        var updatedHistory = History.fromMap({
-          'type': history.type.value,
-          'time': history.time.millisecondsSinceEpoch,
-          'title': comicDetails.title,
-          'subtitle': comicDetails.subTitle ?? '',
-          'cover': comicDetails.cover,
-          'ep': history.ep,
-          'page': history.page,
-          'id': history.id,
-          'readEpisode': history.readEpisode.toList(),
-          'max_page': history.maxPage,
+        final details = (await source!.loadComicInfo!(history.id)).data;
+        if (isCancelled?.call() == true) return false;
+        // Keep reading progress changed while this background request was
+        // running, and never recreate a history the user has just removed.
+        final current = find(history.id, history.type);
+        if (current == null) return true;
+        final updated = History.fromMap({
+          'type': current.type.value,
+          'time': current.time.millisecondsSinceEpoch,
+          'title': details.title,
+          'subtitle': details.subTitle ?? '',
+          'cover': details.cover,
+          'ep': current.ep,
+          'page': current.page,
+          'id': current.id,
+          'readEpisode': current.readEpisode.toList(),
+          'max_page': current.maxPage,
         });
-        updatedHistory.group = history.group;
-
-        addHistory(updatedHistory);
+        updated.group = current.group;
+        addHistory(updated);
         return true;
-      } catch (e, s) {
-        Log.error("History", "Exception while refreshing history info: $e\n$s");
-        await Future.delayed(const Duration(seconds: 2));
-        retries--;
-        if (retries == 0) {
+      } catch (error, stack) {
+        if (isCancelled?.call() == true) return false;
+        Log.error(
+          'History',
+          'Exception while refreshing history info: $error',
+          stack,
+        );
+        if (attempt == 2) {
+          onError?.call(error.toString());
           return false;
         }
+        await Future<void>.delayed(const Duration(seconds: 2));
       }
     }
+    return false;
   }
 
-  /// Refresh all histories from comic sources.
-  /// Returns a stream with progress updates.
-  /// From e0ea449c.
-  Stream<RefreshProgress> refreshAllHistoriesStream() {
-    var controller = StreamController<RefreshProgress>();
-    _refreshAllHistoriesBase(controller);
+  /// The producer and its workers observe cancellation, independently of the
+  /// view displaying progress. Cancelling the stream also stops new requests.
+  Stream<RefreshProgress> refreshAllHistoriesStream({
+    bool Function()? isCancelled,
+    void Function(History history, String reason)? onError,
+  }) {
+    var subscriptionCancelled = false;
+    final controller = StreamController<RefreshProgress>(
+      onCancel: () => subscriptionCancelled = true,
+    );
+    bool cancelled() => subscriptionCancelled || isCancelled?.call() == true;
+    _refreshAllHistoriesBase(controller, cancelled, onError).then(
+      (_) {
+        controller.close();
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!subscriptionCancelled) controller.addError(error, stack);
+        controller.close();
+      },
+    );
     return controller.stream;
   }
 
-  void _refreshAllHistoriesBase(
+  Future<void> _refreshAllHistoriesBase(
     StreamController<RefreshProgress> controller,
+    bool Function() isCancelled,
+    void Function(History history, String reason)? onError,
   ) async {
-    var histories = getAll();
-    int total = histories.length;
-    int current = 0;
-    int success = 0;
-    int failed = 0;
-    int skipped = 0;
-
-    controller.add(RefreshProgress(total, current, success, failed, skipped));
-
-    var historiesToRefresh = <History>[];
-    for (var history in histories) {
-      if (history.sourceKey == 'local') {
-        skipped++;
-        current++;
+    final histories = getAll();
+    final remote = histories.where((h) => h.type != ComicType.local).toList();
+    final skipped = histories.length - remote.length;
+    var current = 0;
+    var success = 0;
+    var failed = 0;
+    void report() {
+      if (!isCancelled()) {
         controller.add(
-          RefreshProgress(total, current, success, failed, skipped),
+          RefreshProgress(remote.length, current, success, failed, skipped),
         );
-        continue;
       }
-      historiesToRefresh.add(history);
     }
 
-    total = historiesToRefresh.length;
-    current = 0;
-    controller.add(RefreshProgress(total, current, success, failed, skipped));
-
-    var channel = Channel<History>(10);
-
-    () async {
-      var c = 0;
-      for (var history in historiesToRefresh) {
-        await channel.push(history);
-        c++;
-        if (c % 5 == 0) {
-          var delay = c % 100 + 1;
-          if (delay > 10) {
-            delay = 10;
+    report();
+    final channel = Channel<History>(10);
+    final producer = () async {
+      try {
+        var count = 0;
+        for (final history in remote) {
+          if (isCancelled()) break;
+          await channel.push(history);
+          count++;
+          if (count % 5 == 0 && count < remote.length && !isCancelled()) {
+            // Retain the existing source rate limit: five submissions at a
+            // time, then a delay capped at ten seconds.
+            final delay = (count % 100 + 1).clamp(1, 10);
+            await Future<void>.delayed(Duration(seconds: delay));
           }
-          await Future.delayed(Duration(seconds: delay));
         }
+      } finally {
+        channel.close();
       }
-      channel.close();
     }();
-
-    var updateFutures = <Future>[];
-    for (var i = 0; i < 5; i++) {
-      var f = () async {
+    await Future.wait(
+      List.generate(5, (_) async {
         while (true) {
-          var history = await channel.pop();
-          if (history == null) {
-            break;
-          }
-          var result = await _refreshSingleHistory(history);
+          final history = await channel.pop();
+          if (history == null) break;
+          // Drain the bounded queue when cancelled so the producer cannot stay
+          // blocked in push() after all workers stop making requests.
+          if (isCancelled()) continue;
+          final ok = await _refreshSingleHistory(
+            history,
+            isCancelled: isCancelled,
+            onError: (reason) => onError?.call(history, reason),
+          );
+          if (isCancelled()) continue;
           current++;
-          if (result) {
+          if (ok) {
             success++;
           } else {
             failed++;
           }
-          controller.add(
-            RefreshProgress(total, current, success, failed, skipped),
-          );
+          report();
         }
-      }();
-      updateFutures.add(f);
-    }
-
-    await Future.wait(updateFutures);
-
+      }),
+    );
+    await producer;
     notifyListeners();
-    controller.close();
   }
 }
 

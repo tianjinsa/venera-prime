@@ -9,6 +9,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:venera/components/window_frame.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/utils/data_sync.dart';
 
@@ -180,6 +181,10 @@ void registerDataSyncTransportTests({bool device = false}) {
               sync.uploadData(force: true).timeout(const Duration(seconds: 15)),
         );
         expect(failed!.error, isTrue);
+        expect(
+          BackgroundTasks.instance.latest('webdav-upload')!.status,
+          BackgroundTaskStatus.failed,
+        );
         expect(remote.keys, unorderedEquals([oldName, newName]));
         expect(operations.where((op) => op.startsWith('DELETE')), isEmpty);
         expect(sync.isUploading, isFalse);
@@ -190,6 +195,10 @@ void registerDataSyncTransportTests({bool device = false}) {
               sync.uploadData(force: true).timeout(const Duration(seconds: 15)),
         );
         expect(uploaded!.error, isFalse);
+        expect(
+          BackgroundTasks.instance.latest('webdav-upload')!.status,
+          BackgroundTaskStatus.completed,
+        );
         expect(remote.keys, [newName]);
         expect(remote[newName]!.take(2), [0x50, 0x4b]);
         expect(
@@ -199,6 +208,21 @@ void registerDataSyncTransportTests({bool device = false}) {
         expect(operations, isNot(contains('DELETE $newName')));
         expect(sync.isUploading, isFalse);
         expect(sync.lastError, isNull);
+        // Source requests repeatedly persist the same cookie/token. With auto
+        // sync enabled those no-op saves must never start a backup or queue one.
+        operations.clear();
+        appdata.implicitData['webdavAutoSync'] = true;
+        final versionBeforeNoOp = appdata.settings['dataVersion'];
+        await tester.runAsync(() async {
+          await Future.wait(List.generate(30, (_) => source.saveData()));
+          await source.loadData();
+          await source.saveData();
+        });
+        expect(operations, isEmpty);
+        expect(appdata.settings['dataVersion'], versionBeforeNoOp);
+        expect(sync.isUploading, isFalse);
+        expect(sync.uploadQueued, isFalse);
+
         // Hold the network transfer so overlapping saves are deterministic.
         Future<void> uploadBurst({
           required bool disable,
@@ -212,6 +236,10 @@ void registerDataSyncTransportTests({bool device = false}) {
           putStarted = Completer<void>();
           final first = sync.uploadData();
           await putStarted!.future.timeout(const Duration(seconds: 15));
+          expect(
+            BackgroundTasks.instance.latest('webdav-upload')!.isRunning,
+            isTrue,
+          );
           final waiting = List.generate(30, (_) => sync.uploadData());
           expect(sync.uploadQueued, isTrue);
           if (disable) appdata.implicitData['webdavAutoSync'] = false;
@@ -246,6 +274,10 @@ void registerDataSyncTransportTests({bool device = false}) {
           readStarted = Completer<void>();
           final downloading = sync.downloadData();
           await readStarted!.future.timeout(const Duration(seconds: 15));
+          expect(
+            BackgroundTasks.instance.latest('webdav-download')!.isRunning,
+            isTrue,
+          );
           if (manual) {
             await sync.uploadData();
             expect(sync.uploadQueued, isFalse);
@@ -256,6 +288,10 @@ void registerDataSyncTransportTests({bool device = false}) {
           expect(operations.where((op) => op.startsWith('PUT ')), isEmpty);
           release.complete();
           expect((await downloading).success, isTrue);
+          expect(
+            BackgroundTasks.instance.latest('webdav-download')!.status,
+            BackgroundTaskStatus.completed,
+          );
           expect(
             (await uploading.timeout(const Duration(seconds: 15))).success,
             isTrue,

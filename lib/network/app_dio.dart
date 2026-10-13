@@ -347,10 +347,28 @@ class AppDio with DioMixin {
 }
 
 class RHttpAdapter implements HttpClientAdapter {
-  Future<rhttp.ClientSettings> get settings async {
-    var proxy = await getProxy();
+  static String? _clientSettingsKey;
+  static Future<rhttp.RhttpClient>? _sharedClient;
 
-    return rhttp.ClientSettings(
+  /// Read the same preferences for transports with independent request policies,
+  /// such as the Agent's cancellation and redirect handling.
+  Future<rhttp.ClientSettings> get settings async =>
+      (await _readConfiguration()).settings;
+
+  Future<({String key, rhttp.ClientSettings settings})>
+  _readConfiguration() async {
+    final proxy = await getProxy();
+    final overrides = _getOverrides();
+    final hosts = overrides.keys.toList()..sort();
+    final sni = appdata.settings['sni'] != false;
+    final verifyCertificates = appdata.settings['ignoreBadCertificate'] != true;
+    final key = jsonEncode([
+      proxy,
+      sni,
+      verifyCertificates,
+      {for (final host in hosts) host: overrides[host]},
+    ]);
+    final settings = rhttp.ClientSettings(
       proxySettings: proxy == null
           ? const rhttp.ProxySettings.noProxy()
           : rhttp.ProxySettings.proxy(proxy),
@@ -361,12 +379,36 @@ class RHttpAdapter implements HttpClientAdapter {
         keepAlivePing: Duration(seconds: 30),
       ),
       throwOnStatusCode: false,
-      dnsSettings: rhttp.DnsSettings.static(overrides: _getOverrides()),
+      dnsSettings: rhttp.DnsSettings.static(overrides: overrides),
       tlsSettings: rhttp.TlsSettings(
-        sni: appdata.settings['sni'] != false,
-        verifyCertificates: appdata.settings['ignoreBadCertificate'] != true,
+        sni: sni,
+        verifyCertificates: verifyCertificates,
       ),
     );
+    return (key: key, settings: settings);
+  }
+
+  Future<rhttp.RhttpClient> _getClient() async {
+    final configuration = await _readConfiguration();
+    if (_clientSettingsKey == configuration.key && _sharedClient != null) {
+      return _sharedClient!;
+    }
+    final client = rhttp.RhttpClient.create(settings: configuration.settings);
+    _clientSettingsKey = configuration.key;
+    _sharedClient = client;
+    // A source/image request creates its own AppDio. Share the native client
+    // so those requests can reuse TCP/TLS connections. Dropping the old client
+    // on a settings change lets rhttp release it when no request retains it;
+    // disposing it here could interrupt an in-flight response stream.
+    try {
+      return await client;
+    } catch (_) {
+      if (identical(_sharedClient, client)) {
+        _sharedClient = null;
+        _clientSettingsKey = null;
+      }
+      rethrow;
+    }
   }
 
   static Map<String, List<String>> _getOverrides() {
@@ -400,10 +442,10 @@ class RHttpAdapter implements HttpClientAdapter {
       options.headers['User-Agent'] = "venera/v${App.version}";
     }
 
-    var res = await rhttp.Rhttp.request(
+    final client = await _getClient();
+    var res = await client.request(
       method: rhttp.HttpMethod(options.method),
       url: options.uri.toString(),
-      settings: await settings,
       expectBody: rhttp.HttpExpectBody.stream,
       body: requestStream == null ? null : rhttp.HttpBody.stream(requestStream),
       headers: rhttp.HttpHeaders.rawMap(

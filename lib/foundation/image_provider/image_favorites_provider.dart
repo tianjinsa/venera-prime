@@ -100,25 +100,32 @@ class ImageFavoritesProvider
   }
 
   Future<Uint8List?> getImageFromLocal() async {
-    var localComic =
-        LocalManager().find(sourceKey, ComicType.fromKey(sourceKey));
+    var localComic = LocalManager().find(cid, ComicType.fromKey(sourceKey));
     if (localComic == null) {
       return null;
     }
-    var epIndex = localComic.chapters?.ids.toList().indexOf(eid) ?? -1;
-    if (epIndex == -1 && localComic.hasChapters) {
+    if (localComic.hasChapters &&
+        (!localComic.chapters!.ids.contains(eid) ||
+            !localComic.downloadedChapters.contains(eid))) {
       return null;
     }
-    var images = await LocalManager().getImages(
-      sourceKey,
-      ComicType.fromKey(sourceKey),
-      epIndex,
-    );
-    if (page < 1 || page > images.length) {
+    try {
+      var images = await LocalManager().getImages(
+        cid,
+        ComicType.fromKey(sourceKey),
+        eid,
+      );
+      if (page < 1 || page > images.length) {
+        return null;
+      }
+      return await File(
+        images[page - 1].replaceFirst('file://', ''),
+      ).readAsBytes();
+    } on FileSystemException {
+      // Downloads can be moved or removed outside the app. Keep the usual
+      // cache/network fallback available when the recorded file is missing.
       return null;
     }
-    var data = await File(images[page - 1].replaceFirst('file://', '')).readAsBytes();
-    return data;
   }
 
   Future<Uint8List> getImageFromNetwork(
