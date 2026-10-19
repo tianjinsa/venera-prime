@@ -126,6 +126,38 @@ class _FavoritesOverviewState extends State<_FavoritesOverview> {
                 );
               }),
             ),
+            MenuButton(
+              key: const Key('favorites-overview-menu'),
+              entries: [
+                MenuEntry(
+                  icon: Icons.create_new_folder_outlined,
+                  text: 'Create Folder'.tl,
+                  onClick: () => newFolder(),
+                ),
+                MenuEntry(
+                  icon: Icons.file_open_outlined,
+                  text: 'Import from file'.tl,
+                  onClick: () => importFavoriteFolder(),
+                ),
+                if (localFolders.isNotEmpty) ...[
+                  MenuEntry(
+                    icon: Icons.upload_file,
+                    text: 'Export'.tl,
+                    onClick: () => exportFavoriteFolder(),
+                  ),
+                  MenuEntry(
+                    icon: Icons.reorder,
+                    text: 'Sort'.tl,
+                    onClick: () => sortFolders(),
+                  ),
+                  MenuEntry(
+                    icon: Icons.update,
+                    text: 'Update Comics Info'.tl,
+                    onClick: () => updateAllComicsInfo(),
+                  ),
+                ],
+              ],
+            ),
           ],
         ),
         SliverPadding(

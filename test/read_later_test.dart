@@ -8,6 +8,130 @@ import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/read_later.dart';
 
 void main() {
+  test('unsupported schema fails without replacing a healthy database', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'read-later-unknown-',
+    );
+    App.dataPath = directory.path;
+    final manager = ReadLaterManager();
+    manager.close();
+    addTearDown(() async {
+      manager.close();
+      await directory.delete(recursive: true);
+    });
+    final path = '${directory.path}/read_later.db';
+    final db = sqlite3.open(path);
+    db.execute(
+      "CREATE TABLE read_later (id TEXT); INSERT INTO read_later VALUES ('keep');",
+    );
+    db.dispose();
+    await expectLater(manager.init(), throwsFormatException);
+    expect(manager.isInitialized, isFalse);
+    final preserved = sqlite3.open(path);
+    try {
+      expect(preserved.select('SELECT id FROM read_later;').single[0], 'keep');
+    } finally {
+      preserved.dispose();
+    }
+    expect(
+      directory.listSync().where((file) => file.path.contains('.corrupt.')),
+      isEmpty,
+    );
+  });
+
+  for (final populated in [false, true]) {
+    test('migrates legacy backup schema (populated=$populated)', () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'read-later-old-',
+      );
+      App.dataPath = directory.path;
+      final manager = ReadLaterManager();
+      manager.close();
+      addTearDown(() async {
+        manager.close();
+        await directory.delete(recursive: true);
+      });
+      final path = '${directory.path}/read_later.db';
+      final db = sqlite3.open(path);
+      db.execute('''
+        CREATE TABLE read_later (
+          id TEXT NOT NULL,
+          type INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          subtitle TEXT,
+          cover TEXT NOT NULL,
+          source_key TEXT NOT NULL,
+          added_time INTEGER NOT NULL,
+          PRIMARY KEY (id, type)
+        );
+      ''');
+      if (populated) {
+        for (final timestamp in [10, 20]) {
+          db.execute('INSERT INTO read_later VALUES (?, ?, ?, ?, ?, ?, ?);', [
+            '$timestamp',
+            ComicType.local.value,
+            'Legacy $timestamp',
+            null,
+            'cover',
+            'local',
+            timestamp,
+          ]);
+        }
+      }
+      db.dispose();
+
+      await manager.init();
+      expect(
+        manager.getAll().map((comic) => comic.id),
+        populated ? ['20', '10'] : isEmpty,
+      );
+      if (populated) {
+        final comic = manager.getAll(keyword: 'Legacy').first;
+        expect(comic.type, ComicType.local);
+        expect(comic.subtitle, isEmpty);
+        expect(comic.description, isEmpty);
+        expect(comic.tags, isEmpty);
+        expect(comic.sourceKey, 'local');
+      }
+      final migrated = sqlite3.open(path);
+      try {
+        expect(migrated.select('PRAGMA integrity_check;').single[0], 'ok');
+        expect(
+          migrated
+              .select('SELECT added_at FROM read_later ORDER BY added_at;')
+              .map((row) => row[0]),
+          populated ? [10, 20] : isEmpty,
+        );
+      } finally {
+        migrated.dispose();
+      }
+      final original = manager.getAll();
+      const added = Comic(
+        'New',
+        'cover',
+        'new',
+        '',
+        [],
+        '',
+        'local',
+        null,
+        null,
+      );
+      expect(manager.add(added), isTrue);
+      expect(manager.add(added), isFalse);
+      expect(manager.getAll().first.id, 'new');
+      expect(manager.removeComic(added), isTrue);
+      manager.restore(original);
+      manager.close();
+      await manager.init();
+      expect(manager.getAll(), hasLength(populated ? 2 : 0));
+      expect(
+        directory.listSync().where((file) => file.path.contains('.corrupt.')),
+        isEmpty,
+      );
+    });
+  }
+
   test('read later keeps source identity and rejects duplicates', () async {
     final directory = await Directory.systemTemp.createTemp(
       'venera-read-later-',

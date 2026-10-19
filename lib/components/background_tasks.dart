@@ -26,7 +26,10 @@ String _status(BackgroundTask task) => switch (task.status) {
         : task.message == 'Paused'
         ? 'Paused'.tl
         : 'Running in background'.tl,
-  BackgroundTaskStatus.completed => 'Finished'.tl,
+  BackgroundTaskStatus.completed =>
+    task.onOpenResult != null
+        ? (task.resultLabel ?? 'View result').tl
+        : 'Finished'.tl,
   BackgroundTaskStatus.failed => 'Finished with errors'.tl,
   BackgroundTaskStatus.cancelled => 'Cancelled'.tl,
 };
@@ -63,91 +66,136 @@ class TaskStatusText extends StatelessWidget {
 
 Future<void> showBackgroundTask(
   BuildContext context,
-  BackgroundTask task,
-) => showDialog<void>(
-  context: _navigationContext(context),
-  builder: (context) => AnimatedBuilder(
-    animation: task,
-    builder: (context, _) => AlertDialog(
-      title: Text(_title(task), maxLines: 2, overflow: TextOverflow.ellipsis),
-      scrollable: true,
-      content: SizedBox(
-        width: 520,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(_status(task)),
-              const SizedBox(height: 12),
-              if (task.isRunning) LinearProgressIndicator(value: task.progress),
-              if (task.total != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text('${task.completed}/${task.total}'),
-                ),
-              if (task.message.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: SelectableText(task.message.tl),
-                ),
-              if (task.errors.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Text('Errors: @count'.tlParams({'count': task.errors.length})),
-                TextButton.icon(
-                  key: const Key('background-task-copy-errors'),
-                  onPressed: () => Clipboard.setData(
-                    ClipboardData(text: task.errors.join('\n\n')),
-                  ),
-                  icon: const Icon(Icons.copy),
-                  label: Text('Copy all errors'.tl),
-                ),
-                for (var i = 0; i < task.errors.length; i++)
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: SelectableText(task.errors[i])),
-                      IconButton(
-                        tooltip: 'Copy'.tl,
-                        icon: const Icon(Icons.copy, size: 18),
-                        onPressed: () => Clipboard.setData(
-                          ClipboardData(text: task.errors[i]),
-                        ),
+  BackgroundTask task, {
+  bool openResultOnCompletion = false,
+}) {
+  var resultOpened = false;
+  return showDialog<void>(
+    context: _navigationContext(context),
+    builder: (context) => AnimatedBuilder(
+      animation: task,
+      builder: (context, _) {
+        if (openResultOnCompletion &&
+            !resultOpened &&
+            task.status == BackgroundTaskStatus.completed &&
+            task.onOpenResult != null) {
+          resultOpened = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            // A dismissed/backgrounded check must not pop another route.
+            if (!context.mounted || ModalRoute.of(context)?.isCurrent != true) {
+              return;
+            }
+            Navigator.of(context).pop();
+            task.onOpenResult?.call();
+          });
+        }
+        return AlertDialog(
+          title: Text(
+            _title(task),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          scrollable: true,
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_status(task)),
+                  const SizedBox(height: 12),
+                  if (task.isRunning)
+                    LinearProgressIndicator(value: task.progress),
+                  if (task.total != null && task.total! > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text('${task.completed}/${task.total}'),
+                    ),
+                  if (task.message.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: SelectableText(task.message.tl),
+                    ),
+                  if (task.errors.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Errors: @count'.tlParams({'count': task.errors.length}),
+                    ),
+                    TextButton.icon(
+                      key: const Key('background-task-copy-errors'),
+                      onPressed: () => Clipboard.setData(
+                        ClipboardData(text: task.errors.join('\n\n')),
                       ),
-                    ],
-                  ),
-              ],
-            ],
+                      icon: const Icon(Icons.copy),
+                      label: Text('Copy all errors'.tl),
+                    ),
+                    for (var i = 0; i < task.errors.length; i++)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: SelectableText(task.errors[i])),
+                          IconButton(
+                            tooltip: 'Copy'.tl,
+                            icon: const Icon(Icons.copy, size: 18),
+                            onPressed: () => Clipboard.setData(
+                              ClipboardData(text: task.errors[i]),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
-      actions: [
-        if (task.isRunning && task.cancellable)
-          TextButton(
-            onPressed: task.cancelRequested ? null : task.requestCancel,
-            child: Text('Cancel'.tl),
-          ),
-        if (!task.isRunning && task.onOpenResult != null)
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              task.onOpenResult?.call();
-            },
-            child: Text((task.resultLabel ?? 'View result').tl),
-          ),
-        FilledButton(
-          key: const Key('background-task-continue'),
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(
-            task.isRunning ? 'Continue in background'.tl : 'Close'.tl,
-          ),
-        ),
-      ],
+          actions: [
+            if (task.isRunning && task.cancellable)
+              TextButton(
+                onPressed: task.cancelRequested ? null : task.requestCancel,
+                child: Text('Cancel'.tl),
+              ),
+            if (!task.isRunning && task.onOpenResult != null) ...[
+              TextButton(
+                key: const Key('background-task-continue'),
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('Close'.tl),
+              ),
+              FilledButton(
+                key: const Key('background-task-open-result'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  task.onOpenResult?.call();
+                },
+                child: Text((task.resultLabel ?? 'View result').tl),
+              ),
+            ] else
+              FilledButton(
+                key: const Key('background-task-continue'),
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text(
+                  task.isRunning ? 'Continue in background'.tl : 'Close'.tl,
+                ),
+              ),
+          ],
+        );
+      },
     ),
-  ),
-);
+  );
+}
 
-Future<void> showBackgroundTasks(
+final _backgroundTaskPanels = Expando<Future<void>>();
+
+Future<void> showBackgroundTasks(BuildContext context) {
+  final navigationContext = _navigationContext(context);
+  final navigator = Navigator.of(navigationContext, rootNavigator: true);
+  return _backgroundTaskPanels[navigator] ??=
+      _showBackgroundTasks(navigationContext).whenComplete(() {
+        _backgroundTaskPanels[navigator] = null;
+      });
+}
+
+Future<void> _showBackgroundTasks(
   BuildContext context,
 ) => showModalBottomSheet<void>(
   context: _navigationContext(context),
@@ -202,7 +250,7 @@ Future<void> showBackgroundTasks(
                               Text(
                                 openResult
                                     ? (task.resultLabel ?? 'View result').tl
-                                    : '${_status(task)}${task.total == null ? '' : '  ${task.completed}/${task.total}'}',
+                                    : '${_status(task)}${task.total == null || task.total! <= 0 ? '' : '  ${task.completed}/${task.total}'}',
                               ),
                               if (task.isRunning)
                                 LinearProgressIndicator(value: task.progress),
@@ -361,7 +409,7 @@ class _BackgroundTaskOverlayState extends State<BackgroundTaskOverlay> {
         );
         final x = _drag != null
             ? _drag!.dx.clamp(minX, maxX)
-            : (_right ? maxX + 18 : minX - 18);
+            : (_right ? maxX : minX);
         _updateExclusion(
           context,
           widget.enabled

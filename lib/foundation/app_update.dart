@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:venera/foundation/app.dart';
+import 'package:venera/foundation/log.dart';
 import 'package:venera/network/app_dio.dart';
 
 class ReleaseAsset {
@@ -142,19 +143,35 @@ class AppUpdateDownloader {
     final target = File(p.join(directory.path, asset.name));
     final partial = File('${target.path}.part');
     try {
-      await _dio.download(
+      var receivedBytes = 0;
+      final response = await _dio.download(
         asset.url,
         partial.path,
         cancelToken: cancelToken,
-        onReceiveProgress: onProgress,
+        onReceiveProgress: (received, total) {
+          receivedBytes = received;
+          onProgress?.call(received, total);
+        },
         options: Options(
           headers: {'cache-time': 'no'},
           receiveTimeout: const Duration(minutes: 2),
         ),
       );
       if (cancelToken.isCancelled) throw cancelToken.cancelError!;
-      if (await partial.length() != asset.size) {
-        throw const FormatException('Update download is incomplete');
+      final actualSize = await partial.length();
+      if (actualSize != asset.size) {
+        Log.error(
+          'App update',
+          'Incomplete APK: expected=${asset.size}, actual=$actualSize, '
+              'received=$receivedBytes, status=${response.statusCode}, '
+              'content-length=${response.headers.value('content-length')}, '
+              'content-range=${response.headers.value('content-range')}, '
+              'content-encoding=${response.headers.value('content-encoding')}',
+        );
+        throw FormatException(
+          'Update download is incomplete '
+          '(expected ${asset.size} bytes, received $actualSize bytes)',
+        );
       }
       if (asset.digest != null && asset.digest!.isNotEmpty) {
         final expected = asset.digest!;

@@ -11,12 +11,21 @@ import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
+import 'package:venera/foundation/js_engine.dart';
+import 'package:venera/foundation/history.dart';
+import 'package:venera/foundation/favorites.dart';
+import 'package:venera/foundation/read_later.dart';
+import 'package:venera/foundation/reading_statistics.dart';
+import 'package:venera/utils/data.dart';
 import 'package:venera/utils/data_sync.dart';
+import 'package:venera/pages/settings/settings_page.dart';
+import 'test_translations.dart';
 
 void registerDataSyncTransportTests({bool device = false}) {
   testWidgets(
     'WebDAV upload failure retains backups; success prunes only old files',
     (tester) async {
+      await ensureTestTranslations();
       final root = (await tester.runAsync(
         () => Directory.systemTemp.createTemp('prime-webdav-'),
       ))!;
@@ -30,20 +39,31 @@ void registerDataSyncTransportTests({bool device = false}) {
         const MethodChannel('window_manager'),
         (call) async => call.method == 'isMaximized' ? false : null,
       );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/path_provider'),
+        (call) async => root.path,
+      );
       await tester.pumpWidget(
         MaterialApp(
           navigatorKey: App.rootNavigatorKey,
           builder: (context, child) => WindowFrame(child!),
-          home: const SizedBox(),
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showWebdavSettings(context),
+              child: const Text('Configure backup'),
+            ),
+          ),
         ),
       );
       final day = DateTime.now().millisecondsSinceEpoch ~/ 86400000;
       final oldName = '$day-1.venera';
-      final newName = '$day-102.venera';
+      final existingName = '$day-102.venera';
       final remote = <String, List<int>>{
         oldName: utf8.encode('old backup'),
-        newName: utf8.encode('existing same-name backup'),
+        existingName: utf8.encode('existing backup'),
       };
+      final etags = <String, int>{};
+      var provideEtags = true;
       final operations = <String>[];
       var rejectUpload = true;
       Completer<void>? putStarted;
@@ -81,7 +101,7 @@ void registerDataSyncTransportTests({bool device = false}) {
               final entries = [
                 '<d:response><d:href>/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>',
                 for (final entry in remote.entries)
-                  '<d:response><d:href>/${entry.key}</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>${entry.value.length}</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>',
+                  '<d:response><d:href>/${entry.key}</d:href><d:propstat><d:prop><d:resourcetype/>${provideEtags ? '<d:getetag>"${etags[entry.key] ?? 0}"</d:getetag>' : ''}<d:getcontentlength>${entry.value.length}</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>',
               ];
               request.response.write(
                 '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">${entries.join()}</d:multistatus>',
@@ -97,8 +117,13 @@ void registerDataSyncTransportTests({bool device = false}) {
                 request.response.statusCode = 507;
               } else {
                 remote[name] = body;
+                etags[name] = (etags[name] ?? 0) + 1;
                 request.response.statusCode = 201;
               }
+            case 'GET':
+              final bytes = remote[name];
+              request.response.statusCode = bytes == null ? 404 : 200;
+              if (bytes != null) request.response.add(bytes);
             case 'DELETE':
               remote.remove(name);
               request.response.statusCode = 204;
@@ -176,16 +201,36 @@ void registerDataSyncTransportTests({bool device = false}) {
           )['popunder_state'],
           11,
         );
-        final failed = await tester.runAsync(
-          () =>
-              sync.uploadData(force: true).timeout(const Duration(seconds: 15)),
-        );
-        expect(failed!.error, isTrue);
+        // The settings action must transfer even when automatic sync is off.
+        await tester.tap(find.text('Configure backup'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Continue'));
+        await tester.pumpAndSettle();
+        await tester.runAsync(() => tester.tap(find.text('Continue')));
+        for (var i = 0; i < 300 && sync.isUploading; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 50)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        expect(operations.any((op) => op.startsWith('PUT ')), isTrue);
+        expect(appdata.implicitData['webdavAutoSync'], isFalse);
+        App.rootPop();
+        await tester.pumpAndSettle();
+        // Settings rollback persists on the widget clock. Drain its writes
+        // before starting the next transfer on the real network clock.
+        for (var i = 0; i < 10; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+        }
         expect(
           BackgroundTasks.instance.latest('webdav-upload')!.status,
           BackgroundTaskStatus.failed,
         );
-        expect(remote.keys, unorderedEquals([oldName, newName]));
+        expect(remote.keys, unorderedEquals([oldName, existingName]));
+        expect(appdata.settings['dataVersion'], 100);
         expect(operations.where((op) => op.startsWith('DELETE')), isEmpty);
         expect(sync.isUploading, isFalse);
         rejectUpload = false;
@@ -199,7 +244,9 @@ void registerDataSyncTransportTests({bool device = false}) {
           BackgroundTasks.instance.latest('webdav-upload')!.status,
           BackgroundTaskStatus.completed,
         );
-        expect(remote.keys, [newName]);
+        final newName = remote.keys.single;
+        expect(newName, startsWith('$day-103-'));
+        expect(appdata.settings['dataVersion'], 103);
         expect(remote[newName]!.take(2), [0x50, 0x4b]);
         expect(
           operations.indexOf('PUT $newName'),
@@ -312,13 +359,169 @@ void registerDataSyncTransportTests({bool device = false}) {
         await tester.runAsync(
           () => downloadThenUpload(disable: true, manual: true),
         );
+
+        // Two devices start from the user's version 3687. The second upload
+        // must advance past the remote revision, even with an older local one.
+        await tester.runAsync(() async {
+          remote.clear();
+          appdata.implicitData['webdavAutoSync'] = false;
+          appdata.settings['dataVersion'] = 3687;
+          appdata.searchHistory = ['device-a'];
+          expect((await sync.uploadData(force: true)).success, isTrue);
+          final deviceAMarker = Map<String, dynamic>.from(
+            appdata.implicitData['webdavLastBackup'],
+          );
+          expect(appdata.settings['dataVersion'], 3688);
+          appdata.settings['dataVersion'] = 3687;
+          appdata.searchHistory = ['device-b'];
+          appdata.implicitData.remove('webdavLastBackup');
+          expect((await sync.uploadData(force: true)).success, isTrue);
+          expect(appdata.settings['dataVersion'], 3689);
+          final deviceBBytes = List<int>.from(remote.values.single);
+
+          // Download into A while its independent local counter is higher.
+          // Importing database notifications must not queue another upload.
+          appdata.settings['dataVersion'] = 9999;
+          appdata.searchHistory = ['device-a'];
+          appdata.implicitData['webdavLastBackup'] = deviceAMarker;
+          appdata.implicitData['webdavAutoSync'] = true;
+          operations.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(appdata.searchHistory, ['device-b']);
+          expect(appdata.settings['dataVersion'], 3689);
+          expect(sync.uploadQueued, isFalse);
+          expect(operations.where((op) => op.startsWith('PUT ')), isEmpty);
+          operations.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(operations.where((op) => op.startsWith('GET ')), isEmpty);
+
+          // Legacy clients can overwrite the same name at the same version.
+          // An ETag change must restore it instead of treating 3689 == 3689
+          // as proof that its contents are already present locally.
+          remote.clear();
+          final legacyName = '$day-3689.venera';
+          remote[legacyName] = deviceBBytes;
+          etags[legacyName] = 1;
+          appdata.implicitData.remove('webdavLastBackup');
+          expect((await sync.downloadData()).success, isTrue);
+          appdata.searchHistory = ['device-c'];
+          final deviceCBackup = await exportAppData(true);
+          final deviceCBytes = await deviceCBackup.readAsBytes();
+          remote[legacyName] = deviceCBytes;
+          await deviceCBackup.delete();
+          etags[legacyName] = 2;
+          appdata.searchHistory = ['device-b'];
+          operations.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(appdata.searchHistory, ['device-c']);
+          expect(operations, contains('GET $legacyName'));
+          expect(sync.uploadQueued, isFalse);
+
+          // Without metadata, an unchanged name and size are insufficient to
+          // skip a legacy snapshot: fetch it rather than silently freezing it.
+          provideEtags = false;
+          expect((await sync.downloadData()).success, isTrue);
+          remote[legacyName] = deviceBBytes;
+          operations.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(appdata.searchHistory, ['device-b']);
+          expect(operations, contains('GET $legacyName'));
+          provideEtags = true;
+
+          // Simultaneous devices can still allocate the same counter. Their
+          // unique filenames retain both snapshots and allow the later one
+          // to be restored even though the numeric versions are equal.
+          remote.clear();
+          final concurrentA =
+              '$day-3689-00000000000000000001-'
+              '${'a' * 32}.venera';
+          final concurrentB =
+              '$day-3689-00000000000000000002-'
+              '${'b' * 32}.venera';
+          remote[concurrentA] = deviceBBytes;
+          remote[concurrentB] = deviceCBytes;
+          final last = appdata.implicitData['webdavLastBackup'] as Map;
+          appdata.implicitData['webdavLastBackup'] = {
+            ...last,
+            'name': concurrentA,
+            'identity': jsonEncode([concurrentA]),
+          };
+          expect((await sync.downloadData()).success, isTrue);
+          expect(appdata.settings['dataVersion'], 3689);
+          expect(appdata.searchHistory, ['device-c']);
+          operations.clear();
+          expect((await sync.downloadData()).success, isTrue);
+          expect(operations.where((op) => op.startsWith('GET ')), isEmpty);
+
+          // The last-snapshot marker is scoped to a particular WebDAV target.
+          appdata.settings['webdav'] = [
+            'http://127.0.0.1:${server.port}',
+            'fixture-other-user',
+            'fixture-password',
+          ];
+          appdata.searchHistory = ['other-device'];
+          expect((await sync.downloadData()).success, isTrue);
+          expect(appdata.searchHistory, ['device-c']);
+          expect(appdata.settings['webdav'][1], 'fixture-other-user');
+          expect(sync.uploadQueued, isFalse);
+        });
+        operations.clear();
+        appdata.implicitData['webdavAutoSync'] = false;
+        await tester.tap(find.text('Configure backup'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byType(RadioGroup<bool>));
+        await tester.tap(
+          find.byWidgetPredicate(
+            (widget) => widget is Radio<bool> && widget.value == false,
+          ),
+        );
+        await tester.ensureVisible(find.text('Continue'));
+        await tester.runAsync(() => tester.tap(find.text('Continue')));
+        for (var i = 0; i < 300 && sync.isDownloading; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 50)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        await tester.pumpAndSettle();
+        expect(operations.any((op) => op.startsWith('PROPFIND ')), isTrue);
+        expect(operations.any((op) => op.startsWith('PUT ')), isFalse);
+        expect(appdata.implicitData['webdavAutoSync'], isFalse);
+        expect(find.text('Continue'), findsNothing);
+
+        operations.clear();
+        await tester.tap(find.text('Configure backup'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byType(Switch));
+        await tester.tap(find.byType(Switch));
+        expect(appdata.implicitData['webdavAutoSync'], isFalse);
+        await tester.ensureVisible(find.text('Save'));
+        await tester.runAsync(() => tester.tap(find.text('Save')));
+        for (
+          var i = 0;
+          i < 100 && find.text('Save').evaluate().isNotEmpty;
+          i++
+        ) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 30)),
+          );
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        await tester.pumpAndSettle();
+        expect(appdata.implicitData['webdavAutoSync'], isTrue);
+        expect(operations, isEmpty);
         print(
-          'WEBDAV_GATE_PASS: disabled writes=0 PUT; manual upload works; bursts merged; queued gate rechecked; manual after download works',
+          'WEBDAV_GATE_PASS: disabled writes=0 PUT; manual upload works; bursts merged; queued gate rechecked; multiple devices and legacy snapshots sync without reupload',
         );
         await tester.pump(const Duration(seconds: 2));
         expect(tester.takeException(), isNull);
       } finally {
         await tester.runAsync(() async {
+          JsEngine().dispose();
+          HistoryManager().close();
+          LocalFavoritesManager().close();
+          ReadLaterManager().close();
+          ReadingStatisticsManager().close();
           await server.close(force: true);
           await listener.cancel();
           await root.delete(recursive: true);

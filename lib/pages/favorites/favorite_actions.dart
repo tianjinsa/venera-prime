@@ -1,5 +1,45 @@
 part of 'favorites_page.dart';
 
+Future<bool> importFavoriteFolder() async {
+  try {
+    final file = await selectFile(ext: ['json']);
+    if (file == null) return false;
+    LocalFavoritesManager().fromJson(utf8.decode(await file.readAsBytes()));
+    return true;
+  } catch (error, stack) {
+    Log.error('Import favorites', error, stack);
+    App.rootContext.showMessage(message: 'Failed to import'.tl);
+    return false;
+  }
+}
+
+Future<void> exportFavoriteFolder([String? folder]) async {
+  folder ??= await showDialog<String>(
+    context: App.rootContext,
+    builder: (context) => SimpleDialog(
+      title: Text('Select a folder'.tl),
+      children: [
+        for (final name in LocalFavoritesManager().folderNames)
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(context).pop(name),
+            child: Text(name),
+          ),
+      ],
+    ),
+  );
+  if (folder == null) return;
+  try {
+    final json = LocalFavoritesManager().folderToJson(folder);
+    await saveFile(
+      data: utf8.encode(json),
+      filename: '${folder.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')}.json',
+    );
+  } catch (error, stack) {
+    Log.error('Export favorites', error, stack);
+    App.rootContext.showMessage(message: 'Failed to export'.tl);
+  }
+}
+
 /// Open a dialog to create a new favorite folder.
 Future<void> newFolder() async {
   return showDialog(
@@ -33,16 +73,9 @@ Future<void> newFolder() async {
               TextButton(
                 child: Text("Import from file".tl),
                 onPressed: () async {
-                  var file = await selectFile(ext: ['json']);
-                  if (file == null) return;
-                  var data = await file.readAsBytes();
-                  try {
-                    LocalFavoritesManager().fromJson(utf8.decode(data));
-                  } catch (e) {
-                    context.showMessage(message: "Failed to import".tl);
-                    return;
+                  if (await importFavoriteFolder() && context.mounted) {
+                    context.pop();
                   }
-                  context.pop();
                 },
               ).paddingRight(4),
               FilledButton(

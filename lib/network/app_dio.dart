@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/services.dart';
 import 'package:rhttp/rhttp.dart' as rhttp;
 import 'package:venera/foundation/appdata.dart';
@@ -211,16 +212,15 @@ class MyLogInterceptor implements Interceptor {
           "headers:\n${_safeHeaders(options.headers, extraMasks)}\n"
           "data:\n${options.extra["maskDataInLog"] == true ? dataMask : _safeValue(options.data)}",
     );
-    options.connectTimeout = const Duration(seconds: 15);
-    options.receiveTimeout = const Duration(seconds: 15);
-    options.sendTimeout = const Duration(seconds: 15);
+    options.connectTimeout ??= const Duration(seconds: 15);
+    options.receiveTimeout ??= const Duration(seconds: 15);
+    options.sendTimeout ??= const Duration(seconds: 15);
     handler.next(options);
   }
 }
 
-class AppDio with DioMixin {
-  AppDio([BaseOptions? options]) {
-    this.options = options ?? BaseOptions();
+class AppDio extends DioForNative {
+  AppDio([super.baseOptions]) {
     httpClientAdapter = RHttpAdapter();
     if (App.isInitialized) {
       final cookieJar = SingleInstanceCookieJar.instance;

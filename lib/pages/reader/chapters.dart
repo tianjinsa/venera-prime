@@ -10,8 +10,6 @@ class _ChaptersView extends StatefulWidget {
 }
 
 class _ChaptersViewState extends State<_ChaptersView> {
-  bool desc = false;
-
   late final ScrollController _scrollController;
 
   var downloaded = <String>[];
@@ -19,7 +17,15 @@ class _ChaptersViewState extends State<_ChaptersView> {
   @override
   void initState() {
     super.initState();
-    int epIndex = widget.reader.chapter - 2;
+    final chapters = widget.reader.widget.chapters!;
+    final ordered = widget.reader.chapterOrder.apply(
+      ChapterVisibility.flat(
+        chapters,
+        hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
+      ),
+      chapters.titles,
+    );
+    int epIndex = ordered.indexOf(widget.reader.chapter - 1) - 1;
     _scrollController = ScrollController(
       initialScrollOffset: (epIndex * 48.0 + 52).clamp(0, double.infinity),
     );
@@ -32,9 +38,12 @@ class _ChaptersViewState extends State<_ChaptersView> {
   @override
   Widget build(BuildContext context) {
     var chapters = widget.reader.widget.chapters!;
-    final visible = ChapterVisibility.flat(
-      chapters,
-      hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
+    final visible = widget.reader.chapterOrder.apply(
+      ChapterVisibility.flat(
+        chapters,
+        hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
+      ),
+      chapters.titles,
     );
     var current = widget.reader.chapter - 1;
     return Scaffold(
@@ -45,28 +54,26 @@ class _ChaptersViewState extends State<_ChaptersView> {
             style: AppbarStyle.shadow,
             title: Text("Chapters".tl),
             actions: [
-              Tooltip(
-                message: "Click to change the order".tl,
-                child: TextButton.icon(
-                  icon: Icon(
-                    !desc ? Icons.arrow_upward : Icons.arrow_downward,
-                    size: 18,
-                  ),
-                  label: Text(!desc ? "Ascending".tl : "Descending".tl),
-                  onPressed: () {
-                    setState(() {
-                      desc = !desc;
-                    });
-                  },
-                ),
+              ChapterReadingOrderButton(
+                comicId: widget.reader.cid,
+                sourceKey: widget.reader.type.sourceKey,
+                onChanged: () {
+                  setState(() {});
+                  widget.reader.update();
+                },
+              ),
+              ChapterOrderButton(
+                comicId: widget.reader.cid,
+                sourceKey: widget.reader.type.sourceKey,
+                onChanged: () {
+                  setState(() {});
+                  widget.reader.update();
+                },
               ),
             ],
           ),
           SliverList(
             delegate: SliverChildBuilderDelegate((context, index) {
-              if (desc) {
-                index = visible.length - 1 - index;
-              }
               final rawIndex = visible[index];
               var chapter = chapters.titles.elementAt(rawIndex);
               return _ChapterListTile(
@@ -128,8 +135,19 @@ class _GroupedChaptersViewState extends State<_GroupedChaptersView>
     for (var i = 0; i < index - 1; i++) {
       epIndexAtGroup -= chapters.getGroupByIndex(i).length;
     }
+    final group = chapters.getGroupByIndex(index - 1);
+    final ordered = widget.reader.chapterOrder.apply(
+      ChapterVisibility.grouped(
+        chapters,
+        hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
+      )[index - 1],
+      group.values,
+    );
     _scrollController = ScrollController(
-      initialScrollOffset: (epIndexAtGroup * 48.0).clamp(0, double.infinity),
+      initialScrollOffset: (ordered.indexOf(epIndexAtGroup) * 48.0).clamp(
+        0,
+        double.infinity,
+      ),
     );
     var local = LocalManager().find(widget.reader.cid, widget.reader.type);
     if (local != null) {
@@ -141,7 +159,27 @@ class _GroupedChaptersViewState extends State<_GroupedChaptersView>
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Appbar(title: Text("Chapters".tl)),
+        Appbar(
+          title: Text("Chapters".tl),
+          actions: [
+            ChapterReadingOrderButton(
+              comicId: widget.reader.cid,
+              sourceKey: widget.reader.type.sourceKey,
+              onChanged: () {
+                setState(() {});
+                widget.reader.update();
+              },
+            ),
+            ChapterOrderButton(
+              comicId: widget.reader.cid,
+              sourceKey: widget.reader.type.sourceKey,
+              onChanged: () {
+                setState(() {});
+                widget.reader.update();
+              },
+            ),
+          ],
+        ),
         AppTabBar(
           controller: tabController,
           tabs: chapters.groups.map((e) => Tab(text: e.displayText)).toList(),
@@ -159,10 +197,13 @@ class _GroupedChaptersViewState extends State<_GroupedChaptersView>
   Widget buildGroup(String groupName) {
     var group = chapters.getGroup(groupName);
     final groupIndex = chapters.groups.toList().indexOf(groupName);
-    final visible = ChapterVisibility.grouped(
-      chapters,
-      hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
-    )[groupIndex];
+    final visible = widget.reader.chapterOrder.apply(
+      ChapterVisibility.grouped(
+        chapters,
+        hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
+      )[groupIndex],
+      group.values,
+    );
     return SmoothCustomScrollView(
       controller: initialGroupName == groupName ? _scrollController : null,
       slivers: [

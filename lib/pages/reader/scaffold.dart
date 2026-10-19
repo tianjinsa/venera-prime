@@ -11,6 +11,9 @@ class _ReaderScaffold extends StatefulWidget {
 
 class _ReaderScaffoldState extends State<_ReaderScaffold> {
   bool _isOpen = false;
+  bool _showPageMargin = false;
+
+  double get bottomBarHeight => kBottomBarHeight + (_showPageMargin ? 56 : 0);
 
   static const kTopBarHeight = 56.0;
 
@@ -241,7 +244,7 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
           duration: const Duration(milliseconds: 180),
           bottom: _isOpen
               ? 0
-              : -(kBottomBarHeight + MediaQuery.of(context).padding.bottom),
+              : -(bottomBarHeight + MediaQuery.of(context).padding.bottom),
           left: 0,
           right: 0,
           child: buildBottom(),
@@ -472,6 +475,48 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     }
 
     final buttons = [
+      IconButton(
+        key: const Key('reader-page-margin-toggle'),
+        tooltip: 'Page margin'.tl,
+        isSelected: _showPageMargin,
+        icon: const Icon(Icons.horizontal_distribute),
+        onPressed: () => setState(() => _showPageMargin = !_showPageMargin),
+      ),
+      if (context.reader.imagesPerPage > 1) ...[
+        IconButton(
+          key: const Key('reader-previous-image'),
+          tooltip: 'Previous image'.tl,
+          icon: Icon(
+            context.reader.mode == ReaderMode.galleryTopToBottom
+                ? Icons.arrow_upward
+                : isReversed
+                ? Icons.arrow_forward
+                : Icons.arrow_back,
+          ),
+          onPressed:
+              context.reader.canShiftImages &&
+                  context.reader.imageLayout.range(context.reader.page).$1 > 0
+              ? () => context.reader.shiftImage(-1)
+              : null,
+        ),
+        IconButton(
+          key: const Key('reader-next-image'),
+          tooltip: 'Next image'.tl,
+          icon: Icon(
+            context.reader.mode == ReaderMode.galleryTopToBottom
+                ? Icons.arrow_downward
+                : isReversed
+                ? Icons.arrow_back
+                : Icons.arrow_forward,
+          ),
+          onPressed:
+              context.reader.canShiftImages &&
+                  context.reader.imageLayout.range(context.reader.page).$1 <
+                      context.reader.images!.length - 1
+              ? () => context.reader.shiftImage(1)
+              : null,
+        ),
+      ],
       Tooltip(
         message: "Collect the image".tl,
         child: IconButton(
@@ -558,19 +603,20 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     ];
 
     Widget child = SizedBox(
-      height: kBottomBarHeight,
+      height: bottomBarHeight,
       child: Column(
         children: [
+          if (_showPageMargin) buildPageMargin(),
           const SizedBox(height: 8),
           Row(
             children: [
               const SizedBox(width: 8),
               IconButton.filledTonal(
                 onPressed: () => !isReversed
-                    ? context.reader.chapter > 1
+                    ? !context.reader.isFirstChapterOfGroup
                           ? context.reader.toPrevChapter()
                           : context.reader.toPage(1)
-                    : context.reader.chapter < context.reader.maxChapter
+                    : !context.reader.isLastChapterOfGroup
                     ? context.reader.toNextChapter()
                     : context.reader.toPage(context.reader.maxPage),
                 icon: const Icon(Icons.first_page),
@@ -586,10 +632,10 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
               Expanded(child: buildSlider()),
               IconButton.filledTonal(
                 onPressed: () => !isReversed
-                    ? context.reader.chapter < context.reader.maxChapter
+                    ? !context.reader.isLastChapterOfGroup
                           ? context.reader.toNextChapter()
                           : context.reader.toPage(context.reader.maxPage)
-                    : context.reader.chapter > 1
+                    : !context.reader.isFirstChapterOfGroup
                     ? context.reader.toPrevChapter()
                     : context.reader.toPage(1),
                 icon: const Icon(Icons.last_page),
@@ -600,7 +646,8 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
           LayoutBuilder(
             builder: (context, constrains) {
               final small = (constrains.maxWidth - buttons.length * 50) < 120;
-              return Row(
+              final row = Row(
+                mainAxisSize: small ? MainAxisSize.min : MainAxisSize.max,
                 children: [
                   if (!small)
                     Container(
@@ -612,17 +659,18 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
                       ),
                       child: Center(child: Text(text)),
                     ).paddingLeft(16),
-                  const Spacer(),
+                  if (!small) const Spacer(),
                   for (var button in buttons)
-                    if (!small)
-                      button.paddingHorizontal(4)
-                    else ...[
-                      button,
-                      const Spacer(),
-                    ],
+                    if (!small) button.paddingHorizontal(4) else button,
                   if (!small) const SizedBox(width: 4),
                 ],
               );
+              return small
+                  ? SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: row,
+                    )
+                  : row;
             },
           ),
         ],
@@ -648,13 +696,85 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
             left: context.padding.left,
             right: context.padding.right,
           ),
-          child: child,
+          child: Material(type: MaterialType.transparency, child: child),
         ),
       ),
     );
   }
 
   var sliderFocus = FocusNode();
+
+  void setAppearanceSetting(String key, dynamic value) {
+    final reader = context.reader;
+    if (appdata.settings.isComicSpecificSettingsEnabled(
+      reader.cid,
+      reader.type.sourceKey,
+    )) {
+      appdata.settings.setReaderSetting(
+        reader.cid,
+        reader.type.sourceKey,
+        key,
+        value,
+      );
+    } else if (appdata.settings.isDeviceSpecificSettingsEnabled()) {
+      appdata.settings.setDeviceReaderSetting(key, value);
+    } else {
+      appdata.settings[key] = value;
+    }
+  }
+
+  Widget buildPageMargin() {
+    final reader = context.reader;
+    final specific = appdata.settings.isComicSpecificSettingsEnabled(
+      reader.cid,
+      reader.type.sourceKey,
+    );
+    final enabled =
+        appdata.settings.getReaderSetting(
+          reader.cid,
+          reader.type.sourceKey,
+          'readerPageMarginEnabled',
+        ) ==
+        true;
+    return SizedBox(
+      key: const Key('reader-page-margin-controls'),
+      height: 56,
+      child: Row(
+        children: [
+          const SizedBox(width: 16),
+          Tooltip(
+            message: 'Page margin'.tl,
+            child: Switch(
+              value: enabled,
+              onChanged: (value) {
+                setAppearanceSetting('readerPageMarginEnabled', value);
+                reader.update();
+                update();
+                unawaited(appdata.saveData());
+              },
+            ),
+          ),
+          Expanded(
+            child: ReaderPageMarginSetting(
+              comicId: specific ? reader.cid : null,
+              comicSource: specific ? reader.type.sourceKey : null,
+              useDeviceSettings:
+                  !specific &&
+                  appdata.settings.isDeviceSpecificSettingsEnabled(),
+              compact: true,
+              onChanged: () {
+                if (!enabled) {
+                  setAppearanceSetting('readerPageMarginEnabled', true);
+                }
+                reader.update();
+                update();
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget buildSlider() {
     // Clamp page to maxPage (excluding chapter comments page)

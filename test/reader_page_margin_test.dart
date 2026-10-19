@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:photo_view/photo_view_gallery.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:venera/components/window_frame.dart';
 import 'package:venera/foundation/app.dart';
@@ -13,12 +14,22 @@ import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/local.dart';
+import 'package:venera/foundation/res.dart';
 import 'package:venera/pages/reader/reader.dart';
 import 'package:venera/pages/settings/settings_page.dart';
 import 'package:venera/utils/reader_appearance.dart';
+import 'package:venera/utils/data_sync.dart';
 import 'package:venera/utils/translations.dart';
 
 import 'support/test_translations.dart';
+
+class _NoDataSync extends Fake implements DataSync {
+  @override
+  void onDataChanged() {}
+
+  @override
+  Future<Res<bool>> uploadData({bool force = false}) async => const Res(true);
+}
 
 Future<void> settle(WidgetTester tester) async {
   for (var i = 0; i < 6; i++) {
@@ -68,6 +79,10 @@ Future<dynamic> openReader(WidgetTester tester, String mode) async {
     'enableTurnPageByVolumeKey': false,
     'recordReadingStatistics': false,
     'removeReadLaterOnComplete': false,
+    'enableLongPressToZoom': true,
+    'comicSpecificSettings': <String, dynamic>{},
+    'deviceSpecificSettings': <String, dynamic>{},
+    'deviceId': 'reader-margin-device',
     'webdav': <String>[],
   };
   final previous = {for (final key in values.keys) key: appdata.settings[key]};
@@ -115,6 +130,9 @@ Future<dynamic> openReader(WidgetTester tester, String mode) async {
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 2));
+    // Drain queued saves in both the fake clock and the real filesystem before
+    // removing the fixture directory.
+    await settle(tester);
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       local.close();
@@ -176,6 +194,206 @@ Future<void> pinch(WidgetTester tester, Offset center) async {
 }
 
 void main() {
+  late DataSync? previousSync;
+  setUp(() {
+    previousSync = DataSync.instance;
+    DataSync.instance = _NoDataSync();
+  });
+  tearDown(() => DataSync.instance = previousSync);
+
+  testWidgets(
+    'toolbar previews page margins during a drag on a narrow reader',
+    (tester) async {
+      final dynamic state = await openReader(tester, 'continuousTopToBottom');
+      tester.view.physicalSize = const Size(360, 800);
+      await settle(tester);
+      await tester.tapAt(tester.getRect(find.byType(Reader)).center);
+      await settle(tester);
+      await tester.tap(find.byKey(const Key('reader-page-margin-toggle')));
+      await settle(tester);
+      final controls = find.byKey(const Key('reader-page-margin-controls'));
+      final slider = find.descendant(
+        of: controls,
+        matching: find.byType(Slider),
+      );
+      final image = find.byKey(const ValueKey('reader-continuous-image-10'));
+      final before = tester.getSize(image).width;
+      final rect = tester.getRect(slider);
+      final gesture = await tester.startGesture(
+        Offset(rect.left + rect.width * .45, rect.center.dy),
+      );
+      await gesture.moveTo(
+        Offset(rect.left + rect.width * .75, rect.center.dy),
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(tester.widget<Slider>(slider).divisions, isNull);
+      expect(tester.getSize(image).width, lessThan(before));
+      expect(state.page, 10);
+      expect(
+        tester.widget<Slider>(slider).value,
+        appdata.settings['readerPageMarginPercent'],
+      );
+      await gesture.up();
+      await settle(tester);
+      await tester.tap(
+        find.descendant(of: controls, matching: find.byType(Switch)),
+      );
+      await settle(tester);
+      expect(readerPageMargin(state.cid, state.type.sourceKey), 0);
+      appdata.settings.setEnabledDeviceSpecificSettings(true);
+      state.update();
+      await settle(tester);
+      await tester.drag(slider, const Offset(-35, 0));
+      await settle(tester);
+      expect(appdata.settings['readerPageMarginEnabled'], false);
+      expect(
+        appdata.settings.getDeviceReaderSetting('readerPageMarginEnabled'),
+        true,
+      );
+      final deviceMargin = appdata.settings.getDeviceReaderSetting(
+        'readerPageMarginPercent',
+      );
+      appdata.settings.setEnabledComicSpecificSettings(
+        state.cid,
+        state.type.sourceKey,
+        true,
+      );
+      state.update();
+      await settle(tester);
+      final scopedControl = tester.widget<ReaderPageMarginSetting>(
+        find.descendant(
+          of: controls,
+          matching: find.byType(ReaderPageMarginSetting),
+        ),
+      );
+      expect(scopedControl.comicId, state.cid);
+      // Slider drags begin at an absolute track position. Repeating the same
+      // drag selects the same percentage even when a different scope is active.
+      await tester.drag(slider, const Offset(-55, 0));
+      await settle(tester);
+      expect(
+        appdata.settings.getDeviceReaderSetting('readerPageMarginPercent'),
+        deviceMargin,
+      );
+      expect(
+        appdata.settings.getReaderSetting(
+          state.cid,
+          state.type.sourceKey,
+          'readerPageMarginPercent',
+        ),
+        isNot(deviceMargin),
+      );
+      await tester.tap(find.byKey(const Key('reader-page-margin-toggle')));
+      await settle(tester);
+      expect(controls, findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 2));
+      await settle(tester);
+    },
+  );
+
+  testWidgets(
+    'single image actions shift spreads and multi-image screens in reading order',
+    (tester) async {
+      final dynamic state = await openReader(tester, 'galleryLeftToRight');
+      appdata.settings['readerTwoPageSpread'] = true;
+      state.update();
+      await settle(tester);
+      await tester.tapAt(tester.getRect(find.byType(Reader)).center);
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (8, 10));
+      await tester.tap(find.byKey(const Key('reader-next-image')));
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (9, 11));
+      expect(state.history.page, 10);
+      await tester.tap(find.byKey(const Key('reader-previous-image')));
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (8, 10));
+      await tester.tap(find.byKey(const Key('reader-previous-image')));
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (7, 9));
+      state.toNextPage();
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (9, 11));
+      state.mode = ReaderMode.galleryRightToLeft;
+      state.update();
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (9, 11));
+      expect(
+        tester
+            .getRect(find.byKey(const ValueKey('reader-spread-image-11')))
+            .right,
+        closeTo(
+          tester
+              .getRect(find.byKey(const ValueKey('reader-spread-image-10')))
+              .left,
+          .1,
+        ),
+      );
+      tester.view.physicalSize = const Size(600, 1000);
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (9, 11));
+      state.toPage(1, animate: false);
+      await settle(tester);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('reader-previous-image')))
+            .onPressed,
+        isNull,
+      );
+      state.toPage(state.maxPage, animate: false);
+      await settle(tester);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const Key('reader-next-image')))
+            .onPressed,
+        isNull,
+      );
+      appdata.settings['readerTwoPageSpread'] = false;
+      appdata.settings['readerScreenPicNumberForLandscape'] = 4;
+      appdata.settings['readerScreenPicNumberForPortrait'] = 4;
+      state.update();
+      await settle(tester);
+      state.toPage(3, animate: false);
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (8, 12));
+      state.shiftImage(1);
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (9, 13));
+      state.toNextPage();
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (13, 17));
+      state.mode = ReaderMode.galleryTopToBottom;
+      state.update();
+      await settle(tester);
+      state.shiftImage(-1);
+      await settle(tester);
+      expect(state.imageLayout.range(state.page), (12, 16));
+      appdata.settings['showSingleImageOnFirstPage'] = true;
+      state.update();
+      await settle(tester);
+      state.toPage(2, animate: false);
+      await settle(tester);
+      state.shiftImage(-1);
+      await settle(tester);
+      expect(state.page, 1);
+      expect(state.imageLayout.range(state.page), (0, 1));
+      expect(
+        tester
+            .widget<PhotoViewGallery>(find.byType(PhotoViewGallery))
+            .pageController!
+            .page,
+        1,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 2));
+      await settle(tester);
+    },
+  );
+
   testWidgets(
     'margin controls accept precise values and reject invalid percentages',
     (tester) async {
@@ -213,14 +431,9 @@ void main() {
       await tester.tap(
         find.descendant(of: tile, matching: find.byType(Switch)),
       );
+      // The dependent UI must be notified before asynchronous disk writes finish.
+      expect(changes, contains('readerPageMarginEnabled'));
       await settle(tester);
-      for (
-        var i = 0;
-        i < 20 && !changes.contains('readerPageMarginEnabled');
-        i++
-      ) {
-        await settle(tester);
-      }
       expect(appdata.settings['readerPageMarginEnabled'], false);
       expect(changes, contains('readerPageMarginEnabled'));
       expect(tester.takeException(), isNull);
@@ -325,8 +538,34 @@ void main() {
         tester.getSize(raw).width,
         closeTo(viewport.size.shortestSide * .614, 1),
       );
+      appdata.settings['readerPageMarginPercent'] = 30.0;
+      state.update();
+      await settle(tester);
+      expect(
+        tester.getSize(raw).width,
+        closeTo(viewport.size.shortestSide * .4, 1),
+      );
+      appdata.settings['readerPageMarginPercent'] = 19.3;
+      state.update();
+      await settle(tester);
       await pinch(tester, const Offset(500, 300));
       expect(tester.getSize(raw).width, greaterThan(400));
+      final zoomedWidth = tester.getSize(raw).width;
+      appdata.settings['readerPageMarginPercent'] = 30.0;
+      state.update();
+      await settle(tester);
+      expect(tester.getSize(raw).width, closeTo(zoomedWidth * .4 / .614, 1));
+      expect(state.page, 10);
+      final longPress = await tester.startGesture(const Offset(500, 300));
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(seconds: 1));
+      await longPress.up();
+      await settle(tester);
+      expect(
+        tester.getSize(raw).width,
+        closeTo(viewport.size.shortestSide * .4, 1),
+      );
+      appdata.settings['readerPageMarginPercent'] = 19.3;
       appdata.settings['readerTwoPageSpread'] = true;
       state.update();
       await settle(tester);

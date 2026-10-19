@@ -27,8 +27,6 @@ class _NormalComicChapters extends StatefulWidget {
 class _NormalComicChaptersState extends State<_NormalComicChapters> {
   late _ComicPageState state;
 
-  late bool reverse;
-
   bool showAll = false;
 
   late History? history;
@@ -38,7 +36,6 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
   @override
   void initState() {
     super.initState();
-    reverse = appdata.settings["reverseChapterOrder"] ?? false;
     history = widget.history;
   }
 
@@ -61,10 +58,18 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
   Widget build(BuildContext context) {
     return SliverLayoutBuilder(
       builder: (context, constrains) {
-        final visible = ChapterVisibility.flat(
-          chapters,
-          hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
-        );
+        final visible =
+            ChapterOrder.forComic(
+              state.widget.id,
+              state.widget.sourceKey,
+            ).apply(
+              ChapterVisibility.flat(
+                chapters,
+                hideDuplicates:
+                    appdata.settings['hideDuplicateChapters'] == true,
+              ),
+              chapters.titles,
+            );
         int length = visible.length;
         bool canShowAll = showAll;
         if (!showAll) {
@@ -84,20 +89,20 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
             SliverToBoxAdapter(
               child: ListTile(
                 title: Text("Chapters".tl),
-                trailing: Tooltip(
-                  message: "Order".tl,
-                  child: IconButton(
-                    icon: Icon(
-                      reverse
-                          ? Icons.vertical_align_top
-                          : Icons.vertical_align_bottom_outlined,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ChapterReadingOrderButton(
+                      comicId: state.widget.id,
+                      sourceKey: state.widget.sourceKey,
+                      onChanged: () => setState(() {}),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        reverse = !reverse;
-                      });
-                    },
-                  ),
+                    ChapterOrderButton(
+                      comicId: state.widget.id,
+                      sourceKey: state.widget.sourceKey,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -106,9 +111,6 @@ class _NormalComicChaptersState extends State<_NormalComicChapters> {
                 context,
                 i,
               ) {
-                if (reverse) {
-                  i = visible.length - i - 1;
-                }
                 final rawIndex = visible[i];
                 var key = chapters.ids.elementAt(rawIndex);
                 var value = chapters[key]!;
@@ -184,8 +186,6 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     with SingleTickerProviderStateMixin {
   late _ComicPageState state;
 
-  late bool reverse;
-
   bool showAll = false;
 
   late History? history;
@@ -199,7 +199,6 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
   @override
   void initState() {
     super.initState();
-    reverse = appdata.settings["reverseChapterOrder"] ?? false;
     history = widget.history;
     if (history?.group != null) {
       index = history!.group! - 1;
@@ -242,10 +241,18 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
     return SliverLayoutBuilder(
       builder: (context, constrains) {
         var group = chapters.getGroupByIndex(index);
-        final visible = ChapterVisibility.grouped(
-          chapters,
-          hideDuplicates: appdata.settings['hideDuplicateChapters'] == true,
-        )[index];
+        final visible =
+            ChapterOrder.forComic(
+              state.widget.id,
+              state.widget.sourceKey,
+            ).apply(
+              ChapterVisibility.grouped(
+                chapters,
+                hideDuplicates:
+                    appdata.settings['hideDuplicateChapters'] == true,
+              )[index],
+              group.values,
+            );
         int length = visible.length;
         bool canShowAll = showAll;
         if (!showAll) {
@@ -265,20 +272,20 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
             SliverToBoxAdapter(
               child: ListTile(
                 title: Text("Chapters".tl),
-                trailing: Tooltip(
-                  message: "Order".tl,
-                  child: IconButton(
-                    icon: Icon(
-                      reverse
-                          ? Icons.vertical_align_top
-                          : Icons.vertical_align_bottom_outlined,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ChapterReadingOrderButton(
+                      comicId: state.widget.id,
+                      sourceKey: state.widget.sourceKey,
+                      onChanged: () => setState(() {}),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        reverse = !reverse;
-                      });
-                    },
-                  ),
+                    ChapterOrderButton(
+                      comicId: state.widget.id,
+                      sourceKey: state.widget.sourceKey,
+                      onChanged: () => setState(() {}),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -297,9 +304,6 @@ class _GroupedComicChaptersState extends State<_GroupedComicChapters>
                 context,
                 i,
               ) {
-                if (reverse) {
-                  i = visible.length - i - 1;
-                }
                 final rawLocalIndex = visible[i];
                 var key = group.keys.elementAt(rawLocalIndex);
                 var value = group[key]!;

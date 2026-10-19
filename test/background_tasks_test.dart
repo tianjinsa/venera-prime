@@ -146,6 +146,67 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('completed results are primary and close remains secondary', (
+    tester,
+  ) async {
+    final tasks = BackgroundTasks();
+    addTearDown(tasks.dispose);
+    var opened = 0;
+    final task = tasks.start('app-update-check', 'Check for updates')
+      ..resultLabel = 'View update'
+      ..onOpenResult = () {
+        opened++;
+      }
+      ..finish();
+    await tester.pumpWidget(const MaterialApp(home: Scaffold()));
+    showBackgroundTask(tester.element(find.byType(Scaffold)), task);
+    await tester.pumpAndSettle();
+    final result = find.byKey(const Key('background-task-open-result'));
+    final close = find.byKey(const Key('background-task-continue'));
+    expect(tester.widget(result), isA<FilledButton>());
+    expect(tester.widget(close), isA<TextButton>());
+    expect(find.text('Finished'.tl), findsNothing);
+    await tester.tap(result);
+    await tester.pumpAndSettle();
+    expect(opened, 1);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final dismiss in [false, true]) {
+    testWidgets(
+      'manual update result opens only while progress dialog is visible: dismiss=$dismiss',
+      (tester) async {
+        final tasks = BackgroundTasks();
+        addTearDown(tasks.dispose);
+        var opened = 0;
+        final task = tasks.start('app-update-check', 'Check for updates');
+        await tester.pumpWidget(const MaterialApp(home: Scaffold()));
+        showBackgroundTask(
+          tester.element(find.byType(Scaffold)),
+          task,
+          openResultOnCompletion: true,
+        );
+        await tester.pump();
+        if (dismiss) {
+          await tester.tap(find.byKey(const Key('background-task-continue')));
+          // Complete while the dismissed route is still animating out.
+        }
+        task
+          ..resultLabel = 'View update'
+          ..onOpenResult = () {
+            opened++;
+          }
+          ..finish();
+        await tester.pumpAndSettle();
+        expect(opened, dismiss ? 0 : 1);
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(Scaffold), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   test('partial errors and thrown failures persist failed outcomes', () async {
     final tasks = BackgroundTasks();
     final partial = await tasks.run<String>('partial', 'Partial', (task) async {

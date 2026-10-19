@@ -422,7 +422,19 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
               ),
               if (isAllFolder)
                 MenuButton(
+                  key: const Key('favorites-all-menu'),
                   entries: [
+                    MenuEntry(
+                      icon: Icons.file_open_outlined,
+                      text: 'Import from file'.tl,
+                      onClick: () => importFavoriteFolder(),
+                    ),
+                    if (manager.folderNames.isNotEmpty)
+                      MenuEntry(
+                        icon: Icons.upload_file,
+                        text: 'Export'.tl,
+                        onClick: () => exportFavoriteFolder(),
+                      ),
                     MenuEntry(
                       icon: Icons.update,
                       text: "Update Comics Info".tl,
@@ -435,6 +447,7 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
                 ),
               if (!isAllFolder)
                 MenuButton(
+                  key: const Key('favorites-folder-menu'),
                   entries: [
                     MenuEntry(
                       icon: Icons.edit_outlined,
@@ -485,15 +498,7 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
                     MenuEntry(
                       icon: Icons.upload_file,
                       text: "Export".tl,
-                      onClick: () {
-                        var json = LocalFavoritesManager().folderToJson(
-                          widget.folder,
-                        );
-                        saveFile(
-                          data: utf8.encode(json),
-                          filename: "${widget.folder}.json",
-                        );
-                      },
+                      onClick: () => exportFavoriteFolder(widget.folder),
                     ),
                     MenuEntry(
                       icon: Icons.update,
@@ -672,14 +677,6 @@ class _LocalFavoritesPageState extends State<_LocalFavoritesPage> {
               },
             ).paddingBottom(8).paddingRight(8),
           ),
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: TaskStatusText(
-              taskKey: favoriteInfoTaskKey(isAllFolder ? null : widget.folder),
-            ),
-          ),
-        ),
         if (isLoading)
           SliverToBoxAdapter(
             child: SizedBox(

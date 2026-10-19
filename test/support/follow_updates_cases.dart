@@ -391,6 +391,90 @@ void registerFollowUpdatesTests() {
   });
 
   testWidgets(
+    'automatic recheck retains completed progress for recent comics',
+    (tester) async {
+      await setup(tester);
+      try {
+        await check(tester);
+        final calls = source.calls;
+        final progress = (await tester.runAsync(
+          () => updateFolder(folder, false).toList(),
+        ))!;
+        expect(source.calls, calls);
+        expect(progress.every((item) => item.total == 1), isTrue);
+        expect(progress.last.current, 1);
+        final task = BackgroundTasks.instance.latest('follow-updates:$folder')!;
+        expect(task.status, BackgroundTaskStatus.completed);
+        expect(task.completed, 1);
+        expect(task.total, 1);
+        expect(task.message, 'Update check completed: checked 0, skipped 1');
+      } finally {
+        await cleanup(tester);
+      }
+    },
+  );
+
+  testWidgets('automatic recheck counts skipped and due comics together', (
+    tester,
+  ) async {
+    await setup(tester);
+    try {
+      await check(tester);
+      manager.addComic(
+        folder,
+        FavoriteItem(
+          id: '2',
+          name: 'Due comic',
+          coverPath: source.cover,
+          author: '',
+          type: ComicType.fromKey(source.key),
+          tags: [],
+        ),
+        null,
+        '2026-10-6',
+      );
+      final calls = source.calls;
+      final progress = (await tester.runAsync(
+        () => updateFolder(folder, false).toList(),
+      ))!;
+      expect(source.calls, calls + 1);
+      expect(progress.every((item) => item.total == 2), isTrue);
+      for (var i = 1; i < progress.length; i++) {
+        expect(
+          progress[i].current,
+          greaterThanOrEqualTo(progress[i - 1].current),
+        );
+      }
+      expect(progress.last.current, 2);
+      final task = BackgroundTasks.instance.latest('follow-updates:$folder')!;
+      expect(task.completed, 2);
+      expect(task.total, 2);
+      expect(task.message, 'Update check completed: checked 1, skipped 1');
+    } finally {
+      await cleanup(tester);
+    }
+  });
+
+  testWidgets('empty automatic check explains there are no comics', (
+    tester,
+  ) async {
+    await setup(tester);
+    try {
+      const emptyFolder = 'Empty follow folder';
+      manager.createFolder(emptyFolder);
+      manager.prepareTableForFollowUpdates(emptyFolder, false);
+      await tester.runAsync(() => updateFolder(emptyFolder, false).toList());
+      final task = BackgroundTasks.instance.latest(
+        'follow-updates:$emptyFolder',
+      )!;
+      expect(task.status, BackgroundTaskStatus.completed);
+      expect(task.message, 'No comics to check');
+    } finally {
+      await cleanup(tester);
+    }
+  });
+
+  testWidgets(
     '429 attempts persist without consuming the first successful baseline',
     (tester) async {
       await setup(tester);
@@ -409,7 +493,8 @@ void registerFollowUpdatesTests() {
         final skipped = (await tester.runAsync(
           () => updateFolder(folder, false).toList(),
         ))!.last;
-        expect(skipped.total, 0);
+        expect(skipped.total, 1);
+        expect(skipped.current, 1);
         expect(source.calls, 1);
         // A forced retry remains possible and still establishes a silent baseline.
         source.errorMessage = null;

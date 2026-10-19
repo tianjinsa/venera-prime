@@ -59,8 +59,8 @@
 
 1. **提交身份**：默认使用 `Anonymous <anonymous@users.noreply.github.com>`，同时检查 author 和 committer，不引入个人身份。现有检查也允许 `github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>`。遵循 `tool/check_release_identity.py`，不为了绕过检查修改规则。
 2. **机器人发布**：通过 `.github/workflows/main.yml`（Build ALL）的机器人流程发布，使 Release 发布者保持 `github-actions[bot]`。默认由机器人触发；仅用户明确同意时才启用 `allow_personal_trigger`，且 Release 仍由机器人发布。不要用个人身份直接创建 Release 替代该流程。
-3. **六平台全量构建**：正式发布必须完整构建 Android、iOS、macOS、Windows、Linux x64、Linux ARM64。手动触发时所有 `build_*` 输入均为 `true`，指定实际 `release_tag` 和 `publish_release=true`。逐项确认六个任务成功，不能把 skipped 视为成功，也不能仅凭 Release 任务绿色认定完整。
-4. **附件清单**：发布后读取线上 Release 的附件，核对当前标准共 **14 个上传附件**（GitHub 自动提供的源码压缩包不计入），且版本、架构、文件名、非零大小、上传状态和下载可用性正确。数量正确仍须核对种类，避免重复文件抵消缺失文件。核对下载文件与构建产物的 SHA-256，提供 GitHub digest 时也须一致。
+3. **六平台全量构建**：正式发布必须完整构建 Android、iOS、macOS、Windows、Linux x64、Linux ARM64。手动触发时所有 `build_*` 输入均为 `true`，指定实际 `release_tag` 和 `publish_release=true`。以这六个构建任务及机器人 Release 任务全部成功作为发布完成条件；skipped 不视为成功。
+4. **标准附件范围**：现有工作流按以下清单生成 **14 个上传附件**（GitHub 自动提供的源码压缩包不计入）。默认不再单独读取、下载或核验线上附件，也不下载 Actions 构建副本比对 SHA-256。仅在用户明确要求或处理具体发布故障时，执行相关检查；数量与签名等未经核验时，不宣称已核验。
 
 | 平台 | 当前标准附件 | 数量 |
 | --- | --- | --- |
@@ -71,8 +71,8 @@
 | Linux x64 | DEB、AppImage、Arch 主包与 debug 包（`.pkg.tar.zst`） | 4 |
 | Linux ARM64 | DEB、AppImage | 2 |
 
-5. **Android signer**：对线上下载的每个 APK 执行 `apksigner verify --print-certs`，确认签名有效、各架构 signer 一致，并与可信的上一正式版签名证书 SHA-256 对照，保证原安装可升级。同时核对包名、版本号及递增的 versionCode。不能用文件 SHA-256 代替证书指纹，也不能只验证 CI keystore 可读取。签名不一致必须先处理，不得宣布升级包可用。
-6. **发布结果**：核对 Release 标签所指提交、正文、发布者和上述产物；记录实际验证证据及局限。六个平台或附件未齐、签名未通过时，不宣称全量发布完成。
-7. **完成后的 Actions 清理**：发布成功且附件、签名均核验完成后，按已授权的清理范围删除已完成的 Actions **run 记录**。先核对 run ID、所属仓库／工作流和完成状态；不删除运行中的任务。保留所需验证结果后再清理，不删除 workflow 文件、GitHub Release、标签或发布附件。删除 run 不会抹除 GitHub 审计记录或通知。
+5. **Android 签名检查按需执行**：正常发布沿用现有 CI 签名配置，不默认下载 APK 或与上一版复核证书。用户要求检查、或出现实际签名／升级故障时，再用 `apksigner verify --print-certs` 检查相关 APK 的签名证书、包名、版本号及 versionCode；文件 SHA-256 不能代替证书指纹。发现签名不一致时必须如实说明并处理，不宣称升级兼容。
+6. **发布结果**：依据工作流实际结果报告发布状态，保留发布提交、版本、工作流链接及已有验证记录。六个平台和 Release 任务全部成功后即可报告发布完成，无须额外产物核验；未执行的测试、附件检查或真机升级验证不得写成通过。用户明确要求停止核验时，停止后续检查，不因旧流程再次要求确认。
+7. **完成后的 Actions 清理**：六平台构建及机器人发布成功后，按已授权的清理范围删除已完成的 Actions **run 记录**，不以附件、哈希或签名复核作为前置条件。根据本轮记录确认 run ID、所属仓库／工作流和完成状态；不删除运行中的任务。保留所需构建结果后再清理，不删除 workflow 文件、GitHub Release、标签或发布附件。删除 run 不会抹除 GitHub 审计记录或通知。
 
-若用户明确调整平台或附件范围，应同步核对并说明新的清单；未经要求维持六平台、14 个附件的标准。发布授权和清理授权按当前会话已有指示判断，无须重复询问已经明确授权的操作。
+若用户明确调整平台或附件范围，应同步说明新的清单；未经要求维持六平台、14 个附件的标准。发布授权、触发方式和清理授权沿用当前会话已有明确指示，无须重复询问已经明确授权的操作。

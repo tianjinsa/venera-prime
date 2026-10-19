@@ -498,7 +498,7 @@ class _SyncDataWidgetState extends State<_SyncDataWidget>
   @override
   Widget build(BuildContext context) {
     Widget child;
-    if (!DataSync().isEnabled) {
+    if (!DataSync().isConfigured) {
       child = const SliverPadding(padding: EdgeInsets.zero);
     } else if (DataSync().isUploading || DataSync().isDownloading) {
       child = SliverToBoxAdapter(
@@ -572,12 +572,14 @@ class _SyncDataWidgetState extends State<_SyncDataWidget>
                     ),
                   ).paddingRight(4),
                 IconButton(
+                  tooltip: 'Upload'.tl,
                   icon: const Icon(Icons.cloud_upload_outlined),
                   onPressed: () async {
                     DataSync().uploadData(force: true);
                   },
                 ),
                 IconButton(
+                  tooltip: 'Download'.tl,
                   icon: const Icon(Icons.cloud_download_outlined),
                   onPressed: () async {
                     DataSync().downloadData();

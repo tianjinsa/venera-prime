@@ -402,6 +402,15 @@ Future<void> saveFile({
 }
 
 final class _IOOverrides extends IOOverrides {
+  // Dart's base IOOverrides omits the native path terminator for type checks.
+  @override
+  Future<FileSystemEntityType> fseGetType(String path, bool followLinks) =>
+      super.fseGetType('$path\x00', followLinks);
+
+  @override
+  FileSystemEntityType fseGetTypeSync(String path, bool followLinks) =>
+      super.fseGetTypeSync('$path\x00', followLinks);
+
   @override
   Directory createDirectory(String path) {
     if (App.isAndroid) {

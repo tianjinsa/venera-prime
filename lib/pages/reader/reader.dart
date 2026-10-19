@@ -45,7 +45,11 @@ import 'package:venera/utils/opencc.dart';
 import 'package:venera/utils/tags_translation.dart';
 import 'package:venera/utils/translations.dart';
 import 'package:venera/utils/chapter_visibility.dart';
+import 'package:venera/utils/chapter_order.dart';
+import 'package:venera/utils/chapter_navigation.dart';
+import 'package:venera/components/chapter_order_button.dart';
 import 'package:venera/utils/reader_appearance.dart';
+import 'package:venera/utils/reader_page_layout.dart';
 import 'package:venera/utils/volume.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:battery_plus/battery_plus.dart';
@@ -157,10 +161,29 @@ class _ReaderState extends State<Reader>
   /// This is used for display purposes and history recording.
   @override
   int get maxPage {
-    if (images == null) return 1;
-    return !showSingleImageOnFirstPage()
-        ? (images!.length / imagesPerPage).ceil()
-        : 1 + ((images!.length - 1) / imagesPerPage).ceil();
+    return imageLayout.pageCount;
+  }
+
+  bool get canShiftImages =>
+      !isLoading &&
+      !isPageAnimating &&
+      !isOnChapterCommentsPage &&
+      imagesPerPage > 1 &&
+      images?.isNotEmpty == true;
+
+  void shiftImage(int delta) {
+    if (!canShiftImages) return;
+    final start = imageLayout.range(page).$1;
+    final target = (start + delta).clamp(0, images!.length - 1);
+    if (target == start) return;
+    final previousOffset = imageGroupingOffset;
+    imageGroupingOffset = imageLayout.offsetForStart(target);
+    if (previousOffset == imageGroupingOffset) {
+      toPage(imageLayout.pageForImage(target + 1), animate: false);
+      return;
+    }
+    page = imageLayout.pageForImage(target + 1);
+    update();
   }
 
   /// Total pages including chapter comments page (used for internal page control).
@@ -369,7 +392,7 @@ class _ReaderState extends State<Reader>
         images == null ||
         images!.isEmpty ||
         page < maxPage ||
-        chapter < maxChapter) {
+        chapter != chapterSequence.lastChapter(widget.chapters)) {
       return;
     }
     _markedComplete = true;
@@ -482,15 +505,7 @@ class _ReaderState extends State<Reader>
         history!.page = images?.length ?? 1;
       } else {
         /// Record the first image of the page
-        if (!showSingleImageOnFirstPage() || imagesPerPage == 1) {
-          history!.page = (page - 1) * imagesPerPage + 1;
-        } else {
-          if (page == 1) {
-            history!.page = 1;
-          } else {
-            history!.page = (page - 2) * imagesPerPage + 2;
-          }
-        }
+        history!.page = imageLayout.range(page).$1 + 1;
       }
       history!.maxPage = images?.length ?? 1;
       if (widget.chapters?.isGrouped ?? false) {
@@ -513,38 +528,70 @@ class _ReaderState extends State<Reader>
     }
   }
 
-  bool get isFirstChapterOfGroup {
-    if (widget.chapters?.isGrouped ?? false) {
-      int c = chapter - 1;
-      int g = 1;
-      while (c > 0) {
-        c -= widget.chapters!.getGroupByIndex(g - 1).length;
-        g++;
-      }
-      if (c == 0) {
-        return true;
-      } else {
-        return false;
-      }
-    }
-    return chapter == 1;
+  ChapterOrder get chapterOrder => ChapterOrder.forComic(cid, type.sourceKey);
+
+  ChapterNavigation? _chapterNavigation;
+  int? _chapterNavigationIndex;
+
+  ChapterReadingOrder get chapterReadingOrder =>
+      ChapterReadingOrder.forComic(cid, type.sourceKey);
+
+  String get _chapterGroupKey {
+    final chapters = widget.chapters;
+    final first = chapters == null
+        ? 1
+        : ChapterNavigation.groupRange(chapters, chapter).$1;
+    return '$cid@${type.sourceKey}@$first';
   }
 
-  bool get isLastChapterOfGroup {
-    if (widget.chapters?.isGrouped ?? false) {
-      int c = chapter;
-      int g = 1;
-      while (c > 0) {
-        c -= widget.chapters!.getGroupByIndex(g - 1).length;
-        g++;
-      }
-      if (c == 0) {
-        return true;
-      } else {
-        return false;
-      }
+  ChapterSequence get chapterSequence {
+    final order = chapterReadingOrder;
+    final learned = appdata.settings['detectedChapterReadingOrder'];
+    return ChapterSequence(
+      descending:
+          order == ChapterReadingOrder.reverse ||
+          order == ChapterReadingOrder.automatic &&
+              learned is Map &&
+              learned[_chapterGroupKey] == true,
+    );
+  }
+
+  void resolveChapterNavigation() {
+    _chapterNavigationIndex = chapter;
+    _chapterNavigation = ChapterNavigation.fromCache(widget.chapters, chapter);
+    final descending = _chapterNavigation?.descendingFrom(chapter);
+    if (descending == null) return;
+    final saved = appdata.settings['detectedChapterReadingOrder'];
+    if (saved is Map && saved[_chapterGroupKey] == descending) return;
+    appdata.settings['detectedChapterReadingOrder'] = <String, dynamic>{
+      if (saved is Map) ...Map<String, dynamic>.from(saved),
+      _chapterGroupKey: descending,
+    };
+    appdata.saveData();
+  }
+
+  int? adjacentChapter({required bool forward}) {
+    if (chapterReadingOrder == ChapterReadingOrder.automatic &&
+        _chapterNavigationIndex == chapter &&
+        _chapterNavigation != null) {
+      return forward ? _chapterNavigation!.next : _chapterNavigation!.previous;
     }
-    return chapter == maxChapter;
+    return chapterSequence.adjacent(widget.chapters, chapter, forward: forward);
+  }
+
+  bool get isFirstChapterOfGroup => adjacentChapter(forward: false) == null;
+  bool get isLastChapterOfGroup => adjacentChapter(forward: true) == null;
+
+  @override
+  bool toNextChapter() {
+    final target = adjacentChapter(forward: true);
+    return target != null && toChapter(target);
+  }
+
+  @override
+  bool toPrevChapter({bool toLastPage = false}) {
+    final target = adjacentChapter(forward: false);
+    return target != null && toChapter(target, toLastPage: toLastPage);
   }
 
   /// Get the size of the reader.
@@ -556,6 +603,16 @@ class _ReaderState extends State<Reader>
 }
 
 abstract mixin class _ImagePerPageHandler {
+  int imageGroupingOffset = 0;
+
+  void resetImageGrouping() => imageGroupingOffset = 0;
+
+  ReaderPageLayout get imageLayout => ReaderPageLayout(
+    imageCount: images?.length ?? 0,
+    imagesPerPage: imagesPerPage,
+    singleCover: showSingleImageOnFirstPage(),
+    offset: imageGroupingOffset,
+  );
   late int _lastImagesPerPage;
 
   late bool _lastOrientation;
@@ -639,10 +696,12 @@ abstract mixin class _ImagePerPageHandler {
 
   /// Calculate maxPage with a specific imagesPerPage value
   int _calcMaxPage(int imagesPerPageValue, bool singleImageOnFirstPage) {
-    if (images == null) return 1;
-    return !singleImageOnFirstPage
-        ? (images!.length / imagesPerPageValue).ceil()
-        : 1 + ((images!.length - 1) / imagesPerPageValue).ceil();
+    return ReaderPageLayout(
+      imageCount: images?.length ?? 0,
+      imagesPerPage: imagesPerPageValue,
+      singleCover: singleImageOnFirstPage,
+      offset: imageGroupingOffset,
+    ).pageCount;
   }
 
   /// Check if the number of images per page has changed
@@ -676,27 +735,19 @@ abstract mixin class _ImagePerPageHandler {
     int oldImagesPerPage,
     int newImagesPerPage,
   ) {
-    int previousImageIndex = 1;
-    if (!_lastSingleImageOnFirstPage || oldImagesPerPage == 1) {
-      previousImageIndex = (page - 1) * oldImagesPerPage + 1;
-    } else {
-      if (page == 1) {
-        previousImageIndex = 1;
-      } else {
-        previousImageIndex = (page - 2) * oldImagesPerPage + 2;
-      }
+    final previousImageIndex =
+        ReaderPageLayout(
+          imageCount: images?.length ?? 0,
+          imagesPerPage: oldImagesPerPage,
+          singleCover: _lastSingleImageOnFirstPage,
+          offset: imageGroupingOffset,
+        ).range(page).$1 +
+        1;
+    if (oldImagesPerPage != newImagesPerPage ||
+        _lastSingleImageOnFirstPage != showSingleImageOnFirstPage()) {
+      resetImageGrouping();
     }
-
-    int newPage;
-    if (newImagesPerPage != 1) {
-      if (showSingleImageOnFirstPage()) {
-        newPage = ((previousImageIndex - 1) / newImagesPerPage).ceil() + 1;
-      } else {
-        newPage = (previousImageIndex / newImagesPerPage).ceil();
-      }
-    } else {
-      newPage = previousImageIndex;
-    }
+    int newPage = imageLayout.pageForImage(previousImageIndex);
 
     // Clamp to valid range (1 to maxPage)
     newPage = newPage.clamp(1, maxPage);
@@ -743,11 +794,13 @@ abstract mixin class _VolumeListener {
 }
 
 abstract mixin class _ReaderLocation {
+  void resetImageGrouping();
   int _page = 1;
   int? _pendingPage;
 
   /// Flag to indicate that the page should jump to the last page after images are loaded.
   bool _jumpToLastPageOnLoad = false;
+  bool _alignContinuousChapterEnd = false;
 
   int get page => _page;
 
@@ -868,6 +921,7 @@ abstract mixin class _ReaderLocation {
   bool toChapter(int c, {bool toLastPage = false}) {
     if (_validateChapter(c) && !isLoading) {
       chapter = c;
+      resetImageGrouping();
       page = 1;
       _jumpToLastPageOnLoad = toLastPage;
       update();

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -239,13 +240,12 @@ void main() {
           await settle();
           state.toPage(2, animate: false);
           await settle();
+          final swipeDistance = mode.isContinuous ? 100.0 : 700.0;
           final forwardSwipe = vertical
-              ? const Offset(0, -700)
-              : Offset(rtl ? 700 : -700, 0);
-          for (var i = 0; i < 4 && state.chapter == 1; i++) {
-            await tester.dragFrom(rect.center, forwardSwipe);
-            await settle();
-          }
+              ? Offset(0, -swipeDistance)
+              : Offset(rtl ? swipeDistance : -swipeDistance, 0);
+          await tester.dragFrom(rect.center, forwardSwipe);
+          await settle();
           expect(
             state.chapter,
             2,
@@ -253,10 +253,8 @@ void main() {
           );
           state.toPage(1, animate: false);
           await settle();
-          for (var i = 0; i < 4 && state.chapter == 2; i++) {
-            await tester.dragFrom(rect.center, -forwardSwipe);
-            await settle();
-          }
+          await tester.dragFrom(rect.center, -forwardSwipe);
+          await settle();
           expect(
             state.chapter,
             1,
@@ -281,6 +279,205 @@ void main() {
             tester.view.physicalSize = const Size(1000, 1000);
             await settle();
           }
+          if (mode.isContinuous) {
+            // All images fit: there is no elastic scroll extent to trigger
+            // the old 160px overscroll chapter transition.
+            state.toChapter(1);
+            tester.view.physicalSize = vertical
+                ? const Size(1000, 3000)
+                : const Size(3000, 1000);
+            await settle();
+            final shortRect = tester.getRect(find.byType(Reader));
+            final list = find.byType(ScrollablePositionedList);
+            final position = tester
+                .state<ScrollableState>(
+                  find
+                      .descendant(of: list, matching: find.byType(Scrollable))
+                      .first,
+                )
+                .position;
+            expect(
+              position.maxScrollExtent - position.minScrollExtent,
+              closeTo(0, 1),
+            );
+            await tester.dragFrom(shortRect.center, forwardSwipe * .2);
+            await settle();
+            expect(
+              state.chapter,
+              1,
+              reason: 'small movements do not switch chapters',
+            );
+            final cancelled = await tester.startGesture(shortRect.center);
+            await cancelled.moveBy(forwardSwipe);
+            await cancelled.cancel();
+            await settle();
+            expect(
+              state.chapter,
+              1,
+              reason: 'cancelled swipes do not switch chapters',
+            );
+            final firstFinger = await tester.startGesture(
+              shortRect.center,
+              pointer: 10,
+            );
+            final secondFinger = await tester.startGesture(
+              shortRect.center + const Offset(80, 0),
+              pointer: 11,
+            );
+            await secondFinger.up();
+            await firstFinger.moveBy(forwardSwipe);
+            await firstFinger.up();
+            await settle();
+            expect(
+              state.chapter,
+              1,
+              reason: 'a multi-touch gesture does not switch chapters',
+            );
+            await tester.dragFrom(shortRect.center, forwardSwipe);
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'one ordinary swipe advances a short chapter',
+            );
+            await tester.dragFrom(shortRect.center, -forwardSwipe);
+            await settle();
+            expect(state.chapter, 1);
+
+            final nextKey = vertical
+                ? LogicalKeyboardKey.arrowDown
+                : rtl
+                ? LogicalKeyboardKey.arrowLeft
+                : LogicalKeyboardKey.arrowRight;
+            final prevKey = vertical
+                ? LogicalKeyboardKey.arrowUp
+                : rtl
+                ? LogicalKeyboardKey.arrowRight
+                : LogicalKeyboardKey.arrowLeft;
+            await tester.sendKeyEvent(nextKey);
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'keyboard continues to the next chapter',
+            );
+            await tester.sendKeyEvent(prevKey);
+            await settle();
+            expect(state.chapter, 1);
+
+            await tester.sendEventToBinding(
+              PointerScrollEvent(
+                position: shortRect.center,
+                scrollDelta: const Offset(0, 80),
+              ),
+            );
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'mouse wheel continues to the next chapter',
+            );
+            await tester.sendEventToBinding(
+              PointerScrollEvent(
+                position: shortRect.center,
+                scrollDelta: const Offset(0, -80),
+              ),
+            );
+            await settle();
+            expect(state.chapter, 1);
+
+            final trackpad = await tester.createGesture(
+              kind: PointerDeviceKind.trackpad,
+            );
+            await trackpad.panZoomStart(shortRect.center);
+            await trackpad.panZoomUpdate(shortRect.center, pan: forwardSwipe);
+            await trackpad.panZoomEnd();
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'trackpad follows the reading axis and direction',
+            );
+            final backTrackpad = await tester.createGesture(
+              kind: PointerDeviceKind.trackpad,
+            );
+            await backTrackpad.panZoomStart(shortRect.center);
+            await backTrackpad.panZoomUpdate(
+              shortRect.center,
+              pan: -forwardSwipe,
+            );
+            await backTrackpad.panZoomEnd();
+            await settle();
+            expect(state.chapter, 1);
+
+            final shortNext = vertical
+                ? Offset(
+                    shortRect.center.dx,
+                    shortRect.top + shortRect.height * (reversed ? .1 : .9),
+                  )
+                : Offset(
+                    shortRect.left + shortRect.width * (nextAtEnd ? .9 : .1),
+                    shortRect.center.dy,
+                  );
+            final shortPrev = vertical
+                ? Offset(
+                    shortRect.center.dx,
+                    shortRect.top + shortRect.height * (reversed ? .9 : .1),
+                  )
+                : Offset(
+                    shortRect.left + shortRect.width * (nextAtEnd ? .1 : .9),
+                    shortRect.center.dy,
+                  );
+            await tester.tapAt(shortNext);
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'edge tap advances a short chapter',
+            );
+            await tester.tapAt(shortPrev);
+            await settle();
+            expect(state.chapter, 1);
+            tester.view.physicalSize = const Size(1000, 1000);
+            await settle();
+          }
+          // Directory display order must never reverse chapter navigation.
+          for (final displayOrder in [
+            'source',
+            'reverse',
+            'titleAscending',
+            'titleDescending',
+          ]) {
+            appdata.settings['comicChapterOrder'] = {
+              'direction@local': displayOrder,
+            };
+            state.toChapter(1);
+            await settle();
+            expect(state.isFirstChapterOfGroup, isTrue);
+            state.toPage(2, animate: false);
+            await settle();
+            await tester.tapAt(next);
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'next ignores $displayOrder in ${mode.key}',
+            );
+            expect(state.page, 1);
+            expect(state.isLastChapterOfGroup, isTrue);
+            await tester.tapAt(prev);
+            await settle();
+            expect(state.chapter, 1);
+            expect(state.page, 2);
+            await tester.dragFrom(rect.center, forwardSwipe);
+            await settle();
+            expect(
+              state.chapter,
+              2,
+              reason: 'swipe ignores $displayOrder in ${mode.key}',
+            );
+          }
+          appdata.settings['comicChapterOrder'] = <String, dynamic>{};
           expect(
             tester.takeException(),
             isNull,

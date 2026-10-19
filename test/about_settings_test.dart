@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/appdata.dart';
+import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/pages/settings/settings_page.dart';
 import 'package:venera/utils/translations.dart';
 
@@ -9,6 +10,11 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   const description =
       'Venera Prime is a free and open-source app for comic reading.';
+  const telegramLabels = {
+    'zh-CN': 'Telegram群聊',
+    'zh-TW': 'Telegram群組聊天',
+    'en-US': 'Telegram group chat',
+  };
 
   setUpAll(AppTranslation.init);
 
@@ -24,6 +30,16 @@ void main() {
           final previousLanguage = appdata.settings['language'];
           addTearDown(() => appdata.settings['language'] = previousLanguage);
           appdata.settings['language'] = locale;
+          final tasks = BackgroundTasks.instance;
+          tasks.clearFinished();
+          var opened = 0;
+          tasks.start('app-update-check', 'Check for updates')
+            ..resultLabel = 'View update'
+            ..onOpenResult = () {
+              opened++;
+            }
+            ..finish();
+          addTearDown(tasks.clearFinished);
           await tester.pumpWidget(
             MaterialApp(
               navigatorKey: App.rootNavigatorKey,
@@ -45,6 +61,20 @@ void main() {
           final rect = tester.getRect(finder);
           expect(rect.left, greaterThanOrEqualTo(24));
           expect(width - rect.right, closeTo(rect.left, 0.01));
+          expect(tester.takeException(), isNull);
+          expect(find.text('New version available'.tl), findsOneWidget);
+          expect(find.text('Check'.tl), findsNothing);
+          await tester.tap(find.text('View update'.tl));
+          await tester.pump();
+          expect(opened, 1);
+          expect(tester.takeException(), isNull);
+          await tester.scrollUntilVisible(
+            find.text(telegramLabels[locale]!),
+            100,
+            scrollable: find.byType(Scrollable).first,
+          );
+          expect(find.text(telegramLabels[locale]!), findsOneWidget);
+          expect(find.text('Telegram'), findsNothing);
           expect(tester.takeException(), isNull);
         },
       );

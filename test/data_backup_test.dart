@@ -13,8 +13,6 @@ import 'package:venera/utils/archive_security.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/history.dart';
-import 'package:venera/foundation/favorites.dart';
-import 'package:venera/foundation/reading_statistics.dart';
 import 'package:venera/utils/data.dart';
 import 'package:zip_flutter/zip_flutter.dart' as native_zip;
 
@@ -64,6 +62,79 @@ List<int> _emptyDatabase(String path) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'exports committed rows from every live WAL database',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('prime-wal-');
+      App.dataPath = directory.path;
+      App.cachePath = '${directory.path}/cache';
+      Directory(App.cachePath).createSync();
+      final databases = <String, Database>{};
+      try {
+        for (final name in [
+          'history.db',
+          'local_favorite.db',
+          'read_later.db',
+          'reading_statistics.db',
+          'cookie.db',
+        ]) {
+          final db = sqlite3.open('${directory.path}/$name');
+          databases[name] = db;
+          db.execute('PRAGMA journal_mode = WAL;');
+          db.execute('PRAGMA wal_autocheckpoint = 0;');
+          db.execute('CREATE TABLE backup_probe (value TEXT);');
+          db.execute('PRAGMA wal_checkpoint(TRUNCATE);');
+          db.execute(
+            "INSERT INTO backup_probe VALUES ('latest-committed-row');",
+          );
+          expect(
+            File('${directory.path}/$name-wal').lengthSync(),
+            greaterThan(0),
+          );
+
+          // Prove that copying only the main file really loses the latest row.
+          final stale = File('${directory.path}/$name.stale');
+          stale.writeAsBytesSync(
+            File('${directory.path}/$name').readAsBytesSync(),
+          );
+          final mainOnly = sqlite3.open(stale.path);
+          try {
+            expect(mainOnly.select('SELECT * FROM backup_probe;'), isEmpty);
+          } finally {
+            mainOnly.dispose();
+          }
+        }
+        for (final sync in [true, false]) {
+          final backup = await exportAppData(sync);
+          final extracted = Directory('${App.cachePath}/snapshot-$sync');
+          await ArchiveSecurity.extract(backup, extracted);
+          for (final name in databases.keys) {
+            final snapshot = sqlite3.open('${extracted.path}/$name');
+            try {
+              expect(
+                snapshot.select('PRAGMA integrity_check;').single[0],
+                'ok',
+              );
+              expect(
+                snapshot.select('SELECT value FROM backup_probe;').single[0],
+                'latest-committed-row',
+                reason: '$name (sync=$sync)',
+              );
+            } finally {
+              snapshot.dispose();
+            }
+          }
+        }
+      } finally {
+        for (final db in databases.values) {
+          db.dispose();
+        }
+        await directory.delete(recursive: true);
+      }
+    },
+    skip: Platform.environment['PRIME_NATIVE_ZIP_TEST'] != '1',
+  );
+
   test(
     'imports read later entries and preserves them for old backups',
     () async {
@@ -223,6 +294,110 @@ void main() {
           );
           await exported.delete();
         }
+
+        const preservedScript = '''
+class BackupPreserved extends ComicSource {
+  name = 'Backup fixture';
+  key = 'backup_preserved';
+  version = '1.0.0';
+  minAppVersion = '1.0.0';
+  comic = {};
+  search = {};
+}
+''';
+        final backupFiles = <String, List<int>>{
+          'history.db': _emptyDatabase('${directory.path}/source-history.db'),
+          'local_favorite.db': _emptyDatabase(
+            '${directory.path}/source-favorites.db',
+          ),
+          'appdata.json': utf8.encode(
+            jsonEncode({
+              'settings': {'token': 'restored-with-warning'},
+              'searchHistory': [],
+            }),
+          ),
+          'comic_source/fixture.data': utf8.encode(
+            '{"account":["fixture-user","fixture-password"]}',
+          ),
+          'comic_source/preserved.js': [],
+          'comic_source/empty.js': [],
+          'comic_source/nested/blank.js': utf8.encode(' \n\t'),
+        };
+        for (final withManifest in [false, true]) {
+          final files = Map<String, List<int>>.from(backupFiles);
+          if (withManifest) {
+            files['manifest.json'] = utf8.encode(
+              jsonEncode({'format': 1, 'files': backupFiles.keys.toList()}),
+            );
+          }
+          final backup = await _archive(
+            '${directory.path}/empty-source-$withManifest.venera',
+            files,
+          );
+          final preserved = File('${sourceDir.path}/preserved.js')
+            ..writeAsStringSync(preservedScript);
+          final skipped = await importAppData(backup);
+          expect(
+            skipped,
+            unorderedEquals([
+              'comic_source/preserved.js',
+              'comic_source/empty.js',
+              'comic_source/nested/blank.js',
+            ]),
+          );
+          expect(preserved.readAsStringSync(), preservedScript);
+          expect(ComicSource.find('backup_preserved'), isNotNull);
+          expect(File('${sourceDir.path}/empty.js').existsSync(), isFalse);
+          expect(
+            File('${sourceDir.path}/nested/blank.js').existsSync(),
+            isFalse,
+          );
+          expect(
+            jsonDecode(sourceData.readAsStringSync())['account'][1],
+            'fixture-password',
+          );
+          expect(appdata.settings['token'], 'restored-with-warning');
+          expect(manager.getAll().single.id, 'backup-id');
+          expect(cookies.loadForRequest(uri).single.value, 'fixture-session');
+        }
+
+        // Skipping bad scripts cannot bypass manifest or credential validation.
+        final missingSource = await _archive(
+          '${directory.path}/missing-source.venera',
+          {
+            ...backupFiles,
+            'manifest.json': utf8.encode(
+              jsonEncode({
+                'format': 1,
+                'files': [...backupFiles.keys, 'comic_source/missing.js'],
+              }),
+            ),
+          },
+        );
+        await expectLater(importAppData(missingSource), throwsFormatException);
+        final invalidSourceData = await _archive(
+          '${directory.path}/invalid-source-data.venera',
+          {
+            ...backupFiles,
+            'comic_source/fixture.data': utf8.encode('not JSON'),
+          },
+        );
+        await expectLater(
+          importAppData(invalidSourceData),
+          throwsFormatException,
+        );
+        final invalidDatabase = await _archive(
+          '${directory.path}/invalid-source-database.venera',
+          {...backupFiles, 'history.db': utf8.encode('not SQLite')},
+        );
+        await expectLater(
+          importAppData(invalidDatabase),
+          throwsA(isA<SqliteException>()),
+        );
+        expect(appdata.settings['token'], 'restored-with-warning');
+        expect(ComicSource.find('backup_preserved'), isNotNull);
+        expect(manager.getAll().single.id, 'backup-id');
+        ComicSourceManager().remove('backup_preserved');
         await sourceDir.delete(recursive: true);
         JsEngine().dispose();
       }
@@ -238,6 +413,41 @@ void main() {
       });
       await importAppData(legacyBackup);
       expect(manager.getAll().single.id, 'backup-id');
+      expect(cookies.loadForRequest(uri).single.value, 'fixture-session');
+
+      final oldReadLater = sqlite3.open('${directory.path}/old-read-later.db');
+      oldReadLater.execute('''
+        CREATE TABLE read_later (
+          id TEXT NOT NULL, type INTEGER NOT NULL, title TEXT NOT NULL,
+          subtitle TEXT, cover TEXT NOT NULL, source_key TEXT NOT NULL,
+          added_time INTEGER NOT NULL, PRIMARY KEY (id, type)
+        );
+        INSERT INTO read_later VALUES
+          ('old-backup', 0, 'Old backup', NULL, 'cover', 'local', 123);
+      ''');
+      oldReadLater.dispose();
+      final legacySchemaBackup = await _archive(
+        '${directory.path}/legacy-schema.venera',
+        {
+          'history.db': _emptyDatabase('${directory.path}/legacy-history.db'),
+          'local_favorite.db': _emptyDatabase(
+            '${directory.path}/legacy-favorite.db',
+          ),
+          'appdata.json': utf8.encode(
+            jsonEncode({'settings': {}, 'searchHistory': []}),
+          ),
+          'read_later.db': File(
+            '${directory.path}/old-read-later.db',
+          ).readAsBytesSync(),
+        },
+      );
+      await importAppData(legacySchemaBackup);
+      expect(manager.getAll().single.id, 'old-backup');
+      App.closeComponents();
+      await App.initComponents();
+      expect(manager.getAll().single.id, 'old-backup');
+      expect(manager.add(_comic()), isTrue);
+      expect(manager.removeComic(_comic()), isTrue);
       expect(cookies.loadForRequest(uri).single.value, 'fixture-session');
 
       final invalidManifestBackup = await _archive(
@@ -260,10 +470,11 @@ void main() {
         throwsA(isA<FormatException>()),
       );
 
-      manager.close();
+      // Wait for isolate history reads before disposing the database, then
+      // close every component (this also closes App.local, created by the
+      // App.initComponents() call above).
       await HistoryManager().closeAfterReads();
-      LocalFavoritesManager().close();
-      ReadingStatisticsManager().close();
+      App.closeComponents();
       cookies.dispose();
       SingleInstanceCookieJar.instance = null;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

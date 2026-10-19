@@ -364,11 +364,20 @@ class NaviPaneState extends State<NaviPane>
         ),
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final topPadding = MediaQuery.of(context).padding.top;
+            final insets = MediaQuery.of(context);
+            final topPadding = math.max(
+              insets.padding.top,
+              insets.viewPadding.top,
+            );
+            final bottomPadding = math.max(
+              insets.padding.bottom,
+              insets.viewPadding.bottom,
+            );
             final minHeight =
                 32.0 +
                 topPadding +
-                46.0 * (widget.paneItems.length + widget.paneActions.length);
+                bottomPadding +
+                48.0 * (widget.paneItems.length + widget.paneActions.length);
             final needsScroll = constraints.maxHeight < minHeight;
             final children = <Widget>[
               const SizedBox(height: 16),
@@ -394,7 +403,7 @@ class NaviPaneState extends State<NaviPane>
                   key: ValueKey(index + widget.paneItems.length),
                 ),
               ),
-              const SizedBox(height: 16),
+              SizedBox(height: 16 + bottomPadding),
             ];
             final column = Column(
               mainAxisSize: needsScroll ? MainAxisSize.min : MainAxisSize.max,
@@ -435,7 +444,7 @@ class _SideNaviWidget extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        height: 38,
+        height: 48,
         decoration: BoxDecoration(
           color: enabled ? colorScheme.primaryContainer : null,
           borderRadius: BorderRadius.circular(12),
@@ -446,7 +455,7 @@ class _SideNaviWidget extends StatelessWidget {
               )
             : Align(alignment: Alignment.centerLeft, child: icon),
       ),
-    ).paddingVertical(4);
+    );
   }
 }
 
@@ -470,14 +479,14 @@ class _PaneActionWidget extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.symmetric(horizontal: 12),
-        height: 38,
+        height: 48,
         child: showTitle
             ? Row(
                 children: [icon, const SizedBox(width: 12), Text(entry.label)],
               )
             : Align(alignment: Alignment.centerLeft, child: icon),
       ),
-    ).paddingVertical(4);
+    );
   }
 }
 

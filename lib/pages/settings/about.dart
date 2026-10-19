@@ -45,21 +45,30 @@ class _AboutSettingsState extends State<AboutSettings> {
         ).paddingHorizontal(24).toSliver(),
         ListenableBuilder(
           listenable: BackgroundTasks.instance,
-          builder: (context, _) => ListTile(
-            title: Text("Check for updates".tl),
-            subtitle: const TaskStatusText(taskKey: 'app-update-check'),
-            trailing: Button.filled(
-              child: Text(
-                BackgroundTasks.instance
-                            .latest('app-update-check')
-                            ?.isRunning ==
-                        true
-                    ? "Checking".tl
-                    : "Check".tl,
-              ),
-              onPressed: () => checkUpdateUi(),
-            ).fixHeight(32),
-          ),
+          builder: (context, _) {
+            final task = BackgroundTasks.instance.latest('app-update-check');
+            final hasUpdate =
+                task?.status == BackgroundTaskStatus.completed &&
+                task?.onOpenResult != null;
+            return ListTile(
+              title: Text("Check for updates".tl),
+              subtitle: hasUpdate
+                  ? Text('New version available'.tl)
+                  : const TaskStatusText(taskKey: 'app-update-check'),
+              trailing: Button.filled(
+                child: Text(
+                  task?.isRunning == true
+                      ? "Checking".tl
+                      : hasUpdate
+                      ? "View update".tl
+                      : "Check".tl,
+                ),
+                onPressed: hasUpdate
+                    ? task!.onOpenResult!
+                    : () => checkUpdateUi(),
+              ).fixHeight(32),
+            );
+          },
         ).toSliver(),
         _SwitchSetting(
           title: "Check for updates on startup".tl,
@@ -73,10 +82,10 @@ class _AboutSettingsState extends State<AboutSettings> {
           },
         ).toSliver(),
         ListTile(
-          title: const Text("Telegram"),
+          title: Text("Telegram group chat".tl),
           trailing: const Icon(Icons.open_in_new),
           onTap: () {
-            launchUrlString("https://t.me/venera_release");
+            launchUrlString("https://t.me/+-Z0d_TB_Alk0YzU1");
           },
         ).toSliver(),
       ],
@@ -147,13 +156,14 @@ Future<void> checkUpdateUi([
       showBackgroundTask(
         App.rootContext,
         BackgroundTasks.instance.latest('app-update-check')!,
+        openResultOnCompletion: true,
       ),
     );
   }
   try {
     final release = await future;
-    // Preserve the startup new-release notification, while manual checks keep
-    // their result in the task dialog/center even when the page is closed.
+    // Startup notifies separately; manual checks open results only while their
+    // progress dialog is visible, keeping dismissed checks in the task center.
     if (!showMessageIfNoUpdate &&
         release != null &&
         isNewerAppVersion(release.version, App.version)) {

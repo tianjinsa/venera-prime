@@ -5,6 +5,7 @@ import 'package:venera/foundation/background_tasks.dart';
 import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/utils/channel.dart';
+import 'package:venera/utils/translations.dart';
 
 class ComicUpdateResult {
   final bool updated;
@@ -147,9 +148,10 @@ Future<void> updateFolderBase(
     stream.add(progress);
   }
 
+  var completionMessage = 'Update check completed';
   try {
     var comics = LocalFavoritesManager().getComicsWithUpdatesInfo(folder);
-    int total = comics.length;
+    final total = comics.length;
     int current = 0;
     int errors = 0;
     int updated = 0;
@@ -185,9 +187,11 @@ Future<void> updateFolderBase(
       comicsToUpdate.add(comic);
     }
 
-    total = comicsToUpdate.length;
-    current = 0;
-    report(UpdateProgress(total, current, errors, updated));
+    completionMessage = total == 0
+        ? 'No comics to check'
+        : 'Update check completed: checked @checked, skipped @skipped'.tlParams(
+            {'checked': comicsToUpdate.length, 'skipped': current},
+          );
 
     var channel = Channel<FavoriteItemWithUpdateInfo>(10);
 
@@ -285,7 +289,7 @@ Future<void> updateFolderBase(
     if (shouldCancel()) backgroundTask?.cancelRequested = true;
     backgroundTask?.onCancel = null;
     backgroundTask?.finish(
-      message: shouldCancel() ? 'Cancelled' : 'Update check completed',
+      message: shouldCancel() ? 'Cancelled' : completionMessage,
     );
     await stream.close();
   }

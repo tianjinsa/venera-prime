@@ -240,7 +240,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
         ).toSliver(),
         SliverAnimatedVisibility(
           visible: readerSetting('readerPageMarginEnabled') == true,
-          child: _ReaderPageMarginSetting(
+          child: ReaderPageMarginSetting(
             comicId: isEnabledSpecificSettings ? widget.comicId : null,
             comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
             useDeviceSettings: useDeviceSpecificSettings,
@@ -618,25 +618,28 @@ class _ReaderSettingsState extends State<ReaderSettings> {
   }
 }
 
-class _ReaderPageMarginSetting extends StatefulWidget {
-  const _ReaderPageMarginSetting({
+class ReaderPageMarginSetting extends StatefulWidget {
+  const ReaderPageMarginSetting({
+    super.key,
     this.comicId,
     this.comicSource,
     required this.useDeviceSettings,
     required this.onChanged,
+    this.compact = false,
   });
 
   final String? comicId;
   final String? comicSource;
   final bool useDeviceSettings;
   final VoidCallback onChanged;
+  final bool compact;
 
   @override
-  State<_ReaderPageMarginSetting> createState() =>
+  State<ReaderPageMarginSetting> createState() =>
       _ReaderPageMarginSettingState();
 }
 
-class _ReaderPageMarginSettingState extends State<_ReaderPageMarginSetting> {
+class _ReaderPageMarginSettingState extends State<ReaderPageMarginSetting> {
   static const settingKey = 'readerPageMarginPercent';
 
   double get value {
@@ -724,21 +727,30 @@ class _ReaderPageMarginSettingState extends State<_ReaderPageMarginSetting> {
 
   @override
   Widget build(BuildContext context) {
+    final slider = Slider(
+      value: value,
+      min: 0,
+      max: 40,
+      label: '${value.toStringAsFixed(1)}%',
+      onChanged: change,
+      onChangeEnd: (_) => appdata.saveData(),
+    );
+    final percentage = TextButton(
+      onPressed: edit,
+      child: Text('${value.toStringAsFixed(1)}%'),
+    );
+    if (widget.compact) {
+      return Row(
+        children: [
+          Expanded(child: slider),
+          percentage,
+        ],
+      );
+    }
     return ListTile(
       title: Text('Page margin size'.tl),
-      trailing: TextButton(
-        onPressed: edit,
-        child: Text('${value.toStringAsFixed(1)}%'),
-      ),
-      subtitle: Slider(
-        value: value,
-        min: 0,
-        max: 40,
-        divisions: 400,
-        label: '${value.toStringAsFixed(1)}%',
-        onChanged: change,
-        onChangeEnd: (_) => appdata.saveData(),
-      ),
+      trailing: percentage,
+      subtitle: slider,
     );
   }
 }

@@ -104,8 +104,6 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
       if (integrity.isEmpty || integrity.first[0] != 'ok') {
         throw StateError('read later database integrity check failed');
       }
-      _createTable();
-      _migrateSchema();
     } catch (e, s) {
       Log.error(
         'ReadLater',
@@ -121,8 +119,10 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
       final old = File(dbPath);
       if (old.existsSync()) await old.rename(backup.path);
       _db = sqlite3.open(dbPath);
-      _createTable();
     }
+    // A valid older schema needs migration, not corrupt-database recovery.
+    _createTable();
+    _migrateSchema();
     isInitialized = true;
     notifyListeners();
   }
@@ -145,8 +145,51 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
   }
 
   void _migrateSchema() {
-    final columns = _db.select('PRAGMA table_info(read_later);');
-    if (!columns.any((row) => row['name'] == 'description')) {
+    final columns = _db
+        .select('PRAGMA table_info(read_later);')
+        .map((row) => row['name'] as String)
+        .toSet();
+    final type = columns.contains('comic_type') ? 'comic_type' : 'type';
+    final timestamp = columns.contains('added_at') ? 'added_at' : 'added_time';
+    if (!columns.containsAll([
+      'id',
+      type,
+      'source_key',
+      'title',
+      'cover',
+      timestamp,
+    ])) {
+      throw const FormatException('Unsupported read later database schema');
+    }
+    if (type != 'comic_type' ||
+        timestamp != 'added_at' ||
+        !columns.containsAll(['subtitle', 'tags'])) {
+      final subtitle = columns.contains('subtitle')
+          ? "COALESCE(subtitle, '')"
+          : "''";
+      final tags = columns.contains('tags') ? "COALESCE(tags, '[]')" : "'[]'";
+      final description = columns.contains('description')
+          ? "COALESCE(description, '')"
+          : "''";
+      _db.execute('BEGIN IMMEDIATE;');
+      try {
+        // Rebuild because the old NOT NULL columns and primary key would
+        // otherwise still reject inserts made using the current field names.
+        _db.execute('ALTER TABLE read_later RENAME TO read_later_legacy;');
+        _createTable();
+        _db.execute('''
+          INSERT INTO read_later
+            (id, comic_type, source_key, title, subtitle, description, tags, cover, added_at)
+          SELECT id, $type, source_key, title, $subtitle, $description, $tags, cover, $timestamp
+          FROM read_later_legacy;
+        ''');
+        _db.execute('DROP TABLE read_later_legacy;');
+        _db.execute('COMMIT;');
+      } catch (_) {
+        _db.execute('ROLLBACK;');
+        rethrow;
+      }
+    } else if (!columns.contains('description')) {
       _db.execute(
         "ALTER TABLE read_later ADD COLUMN description TEXT NOT NULL DEFAULT '';",
       );

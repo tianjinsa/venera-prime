@@ -12,6 +12,16 @@ Edge taps resolve their configured direction before crossing a chapter boundary.
 
 Swipe direction continues to follow the reading mode, independently of the reverse-tap preference. Gallery and continuous, left-to-right, right-to-left and top-to-bottom modes are covered by widget tests for both taps and swipes.
 
+In continuous reading, a normal swipe begun at the decoded chapter boundary switches chapters on release, including when all images fit in the viewport. This does not require pulling 160 pixels beyond the scroll extent. Small or cancelled movements and zoom gestures do not switch chapters. The next wheel, trackpad or reading-direction arrow input at the boundary also continues to the adjacent chapter; unread content in a long image still scrolls first. Edge taps retain the configured reading direction and reverse-tap preference.
+
+The continuous chapter navigation fix and its regression coverage incorporate [zklall's contribution for #36](https://github.com/zklall/venera-prime/commit/71bbe32e17212dffc253878acad7504635e01976).
+
+The bottom toolbar has a page-margin control with a continuous slider and precise numeric entry. Changes preview immediately while retaining the reading position and respect comic, device and global settings. Dragging saves once on release. Single-image gallery pages retain their relative pinch zoom as margins change.
+
+Two-page spreads and multi-image gallery screens also offer previous/next image actions. These shift the group by one image while ordinary page turns retain the configured images-per-screen step. Reading direction and single-cover settings are respected; chapter changes reset the temporary grouping offset.
+
+Favorites folders no longer show a permanent last-check status above the comic grid. Update checks and their progress remain available through background tasks.
+
 ## Android updates
 
 The update dialog selects an APK using Android's supported ABI order, with a universal APK fallback. Tapping **Update** closes the dialog, shows a background-download message, and creates a pinned background task with byte/percentage progress and cancellation. File size and the release's SHA-256 digest (when provided) are checked before exposing the completed file to installation. Failed or cancelled downloads remove partial files before another download may retry. Download completion does not install automatically: it pins an **Install** action and starts a soft opacity pulse on the floating task button. Tapping the task explicitly opens installation; an adjacent details button exposes errors. The floating-button setting and reduced-animation preference remain respected.
