@@ -9,6 +9,7 @@ import 'agent_disclosure.dart';
 import 'agent_image_view.dart';
 import 'agent_models.dart';
 import 'agent_text_view.dart';
+import 'agent_wire.dart';
 
 class AgentUserMessageView extends StatelessWidget {
   final AgentMessage message;
@@ -146,6 +147,7 @@ class AgentMessageParts extends StatelessWidget {
   final bool busy;
   final bool showError;
   final String? resetToken;
+  final AgentMessageImageLoader? imageLoader;
   final bool Function(AgentJson) canRetry;
   final void Function(AgentJson) onRetry;
   final void Function(String) onShowcase;
@@ -158,6 +160,7 @@ class AgentMessageParts extends StatelessWidget {
     required this.busy,
     this.showError = true,
     this.resetToken,
+    this.imageLoader,
     required this.canRetry,
     required this.onRetry,
     required this.onShowcase,
@@ -173,23 +176,53 @@ class AgentMessageParts extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      for (final index in indices) _part(context, message.parts[index], index),
-      if (showError && message.error != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text(
-            message.error!,
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.error,
-              fontSize: 12,
+  Widget build(BuildContext context) {
+    final images = <String, AgentImageAttachment>{
+      for (final call in message.tools)
+        for (final image in agentToolImages([call])) image.id: image,
+    }.values.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final index in indices)
+          _part(context, message.parts[index], index),
+        // Images a tool read stay with the response, so the user sees the
+        // cover the model was given even after the receipt is collapsed.
+        if (images.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '工具读取的图片（${images.length}）',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                AgentImageStrip(
+                  images: images,
+                  readImage: (image) => imageLoader?.call(message, image),
+                ),
+              ],
             ),
           ),
-        ),
-    ],
-  );
+        if (showError && message.error != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              message.error!,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+                fontSize: 12,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget _part(BuildContext context, AgentJson part, int index) {
     switch (part['type']) {
       case 'text':
@@ -366,6 +399,7 @@ class AgentMessageParts extends StatelessWidget {
     if (name == 'comic_comments') return Icons.forum_outlined;
     if (name == 'reading_stats') return Icons.bar_chart;
     if (name == 'showcase_comics') return Icons.view_sidebar_outlined;
+    if (name == 'comic_cover') return Icons.image_outlined;
     return Icons.menu_book_outlined;
   }
 }
@@ -423,8 +457,8 @@ String agentToolCaption(AgentJson part) {
         pages(data['page'], data['max_page']),
         '${data['count']} 条评论',
       ]);
-    case 'open_comic' || 'open_page':
-      return '已打开';
+    case 'comic_cover':
+      return data['title'] is String ? '《${data['title']}》' : '已读取封面';
     case 'app_logs':
       return join([
         pages(data['page'], data['total_pages']),
@@ -450,6 +484,8 @@ String agentToolCaption(AgentJson part) {
       return seconds is int
           ? '近 ${data['days']} 天 ${(seconds / 60).round()} 分钟'
           : '';
+    case 'open_comic' || 'open_page':
+      return '已打开';
   }
   if (data['parts'] is List) return '${(data['parts'] as List).length} 个分区';
   if (data['results'] is List) return '${(data['results'] as List).length} 项';

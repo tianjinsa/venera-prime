@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_source/source_library.dart';
@@ -12,7 +13,9 @@ import 'package:venera/foundation/history.dart';
 import 'package:venera/foundation/log.dart';
 import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/res.dart';
+import 'package:venera/network/images.dart';
 import 'agent_app_bridge.dart';
+import 'agent_images.dart';
 import 'agent_models.dart';
 import 'agent_store.dart';
 import 'agent_web_search.dart';
@@ -20,12 +23,25 @@ import 'agent_web_search.dart';
 part 'agent_tool_schemas.dart';
 part 'agent_tools_catalog.dart';
 part 'agent_tools_code.dart';
+part 'agent_tools_cover.dart';
 part 'agent_tools_library.dart';
 
 class AgentToolContext {
   final String conversationId;
   final AgentRun run;
-  const AgentToolContext(this.conversationId, this.run);
+
+  /// The response that issued the call. Images a tool reads are stored with
+  /// it, so they survive restarts and are cleaned up with the message.
+  final String? messageId;
+
+  /// Images returned to a model without image input would only cost tokens.
+  final bool supportsVision;
+  const AgentToolContext(
+    this.conversationId,
+    this.run, {
+    this.messageId,
+    this.supportsVision = true,
+  });
 }
 
 class AgentTools {
@@ -38,6 +54,16 @@ class AgentTools {
   final AgentAppBridge app;
   final AgentWebSearchClient webSearch;
 
+  /// Reads the bytes of a cover the way the app displays it. Tests replace it
+  /// with local bytes; the default honours source headers and the cache.
+  final Future<Uint8List> Function(
+    String url,
+    String? sourceKey,
+    String? comicId,
+    void Function() checkStop,
+  )
+  loadCover;
+
   /// Details already read in this session. Chapter pages, downloads and the
   /// reader reuse them instead of requesting the whole comic again.
   final _details = <String, (DateTime, ComicDetails)>{};
@@ -49,6 +75,33 @@ class AgentTools {
   /// Network favorite ids some sources need to remove an entry again.
   final _networkFavoriteIds = <String, String>{};
 
+  /// Images read by the current tool call, keyed by image id. The controller
+  /// moves them onto the response after the receipt is saved.
+  final _pendingImages = <String, AgentImageDraft>{};
+
+  /// Takes the images a finished call returned; the caller must store them.
+  List<AgentImageDraft> takeImages(AgentJson result) {
+    final data = result['data'];
+    if (data is! Map || data['image'] is! Map) return const [];
+    final attachment = AgentImageAttachment.fromJson(
+      agentObject(data['image']),
+    );
+    final image = _pendingImages.remove(attachment.id);
+    if (image == null || image.attachment.byteLength != attachment.byteLength) {
+      return const [];
+    }
+    return [image];
+  }
+
+  /// Keeps a caller that drops results, such as a cancelled turn, from holding
+  /// every image it read for the life of the process.
+  void _rememberPending(AgentImageDraft image) {
+    _pendingImages[image.attachment.id] = image;
+    while (_pendingImages.length > 16) {
+      _pendingImages.remove(_pendingImages.keys.first);
+    }
+  }
+
   AgentTools(
     this.store, {
     LocalFavoritesManager? favorites,
@@ -58,6 +111,7 @@ class AgentTools {
     this.sourceTimeout = const Duration(seconds: 30),
     AgentAppBridge? app,
     this.webSearch = const AgentWebSearchClient(),
+    this.loadCover = _loadCoverBytes,
   }) : app = app ?? const AgentAppBridge(),
        favorites = favorites ?? LocalFavoritesManager(),
        later = later ?? ReadLaterManager(),
@@ -66,6 +120,26 @@ class AgentTools {
        sources = sources ?? ComicSource.all;
 
   static List<AgentJson> get schemas => _agentToolSchemas;
+
+  /// The bytes of a thumbnail, as the app loads them for display.
+  static Future<Uint8List> _loadCoverBytes(
+    String url,
+    String? sourceKey,
+    String? comicId,
+    void Function() checkStop,
+  ) async {
+    await for (final progress in ImageDownloader.loadThumbnail(
+      url,
+      sourceKey,
+      comicId,
+      checkStop,
+    )) {
+      checkStop();
+      final data = progress.imageBytes;
+      if (data != null) return data;
+    }
+    throw StateError('Empty cover response');
+  }
 
   /// Regenerated for each model request so settings changes take effect on
   /// the next turn. The static catalog remains available for argument checks.
@@ -336,6 +410,8 @@ class AgentTools {
         };
       case 'showcase_comics':
         return _showcase(a, c);
+      case 'comic_cover':
+        return _comicCover(a, c);
       case 'fav_list_folders':
         final keyword = a.containsKey('keyword')
             ? _text(a, 'keyword').toLowerCase()

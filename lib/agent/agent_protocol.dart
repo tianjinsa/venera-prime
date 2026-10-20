@@ -60,13 +60,20 @@ abstract final class AgentProtocolCodec {
   };
 
   static Map<String, String> headers(AgentModel model, String apiKey) => {
-    if (model.protocol == AgentProtocol.messages)
-      'anthropic-version': '2023-06-01',
+    ...authHeaders(model.protocol, apiKey),
     ...model.headers,
     'Content-Type': 'application/json',
     'Accept': model.stream ? 'text/event-stream' : 'application/json',
+  };
+
+  /// Authentication headers of a protocol, also used to list its models.
+  static Map<String, String> authHeaders(
+    AgentProtocol protocol,
+    String apiKey,
+  ) => {
+    if (protocol == AgentProtocol.messages) 'anthropic-version': '2023-06-01',
     if (apiKey.isNotEmpty)
-      if (model.protocol == AgentProtocol.messages)
+      if (protocol == AgentProtocol.messages)
         'x-api-key': apiKey
       else
         'Authorization': 'Bearer $apiKey',

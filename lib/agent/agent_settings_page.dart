@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera/components/components.dart' show Appbar;
 import 'agent_models.dart';
+import 'agent_model_catalog.dart';
 import 'agent_source_backups.dart';
 import 'agent_store.dart';
 
@@ -42,7 +43,12 @@ mixin _AgentSettingsSaver<T extends StatefulWidget> on State<T> {
 
 class AgentSettingsPage extends StatefulWidget {
   final AgentStore store;
-  const AgentSettingsPage({super.key, required this.store});
+  final AgentModelCatalogClient catalog;
+  const AgentSettingsPage({
+    super.key,
+    required this.store,
+    this.catalog = const AgentModelCatalogClient(),
+  });
   @override
   State<AgentSettingsPage> createState() => _AgentSettingsPageState();
 }
@@ -78,7 +84,9 @@ class _AgentSettingsPageState extends State<AgentSettingsPage>
                   : '${settings.models.length} 个模型 · 默认 ${settings.defaultModel?.name ?? '未设置'}',
               onTap: _saving
                   ? null
-                  : () => _open(AgentModelsPage(store: store)),
+                  : () => _open(
+                      AgentModelsPage(store: store, catalog: widget.catalog),
+                    ),
             ),
             _AgentSettingsTile(
               key: const ValueKey('agent-settings-search'),
@@ -140,7 +148,15 @@ class _AgentSettingsPageState extends State<AgentSettingsPage>
 
 class AgentModelsPage extends StatefulWidget {
   final AgentStore store;
-  const AgentModelsPage({super.key, required this.store});
+
+  /// Optional for tests and other hosts; the default reads the service over
+  /// the application's network settings.
+  final AgentModelCatalogClient catalog;
+  const AgentModelsPage({
+    super.key,
+    required this.store,
+    this.catalog = const AgentModelCatalogClient(),
+  });
   @override
   State<AgentModelsPage> createState() => _AgentModelsPageState();
 }
@@ -153,7 +169,11 @@ class _AgentModelsPageState extends State<AgentModelsPage>
   Future<void> _edit([AgentModel? model]) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _AgentModelEditor(store: store, original: model),
+        builder: (_) => _AgentModelEditor(
+          store: store,
+          catalog: widget.catalog,
+          original: model,
+        ),
       ),
     );
     if (mounted) setState(() {});

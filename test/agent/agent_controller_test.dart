@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,7 +63,12 @@ void main() {
     baseUrl: 'https://example.invalid/v1',
     model: 'test',
   );
-  const comic = AgentComic(sourceKey: 'jm', comicId: '123', title: '真实漫画');
+  const comic = AgentComic(
+    sourceKey: 'jm',
+    comicId: '123',
+    title: '真实漫画',
+    cover: 'https://example.invalid/cover',
+  );
 
   setUp(() async {
     root = await Directory.systemTemp.createTemp('venera-agent-controller-');
@@ -319,6 +325,94 @@ void main() {
       },
     );
   }
+
+  test(
+    'a cover read by a tool is stored with its response and sent once',
+    () async {
+      final png = File('assets/app_icon.png').readAsBytesSync();
+      final coveredTools = AgentTools(
+        store,
+        favorites: favorites,
+        later: later,
+        initializeSources: () async {},
+        sources: () => sources,
+        loadCover: (_, _, _, _) async => png,
+      );
+      const vision = AgentModel(
+        id: 'vision',
+        name: '识图模型',
+        baseUrl: 'https://example.invalid/v1',
+        model: 'test',
+        supportsVision: true,
+      );
+      await store.saveSettings(
+        const AgentSettings(models: [vision], defaultModelId: 'vision'),
+        {},
+      );
+      var requests = 0;
+      List<AgentJson>? secondWire;
+      final client = ScriptedClient((_, wire, _, _) async {
+        requests++;
+        if (requests == 1) {
+          return const AgentResponse('', '', [
+            AgentToolCall(
+              'cover',
+              'comic_cover',
+              '{"source_key":"jm","comic_id":"123"}',
+            ),
+          ]);
+        }
+        secondWire = wire;
+        return const AgentResponse('封面看起来是一部校园漫画。', '', []);
+      });
+      controller = AgentController(
+        store,
+        client: client,
+        tools: coveredTools,
+      );
+      final c = controller!;
+      store.remember(c.conversation.id, comic);
+      // The remembered comic already names its cover, so no source is needed.
+      await c.send('看看这本的封面');
+
+      final call = c.messages[1].tools.single;
+      expect(call['state'], 'done', reason: jsonEncode(call['result']));
+      final images = call['images'] as List;
+      expect(images, hasLength(1));
+      final attachment = AgentImageAttachment.fromJson(
+        agentObject(images.single),
+      );
+      expect(attachment.mimeType, 'image/png');
+      expect(attachment.byteLength, png.length);
+      expect(store.imageBytes(c.conversation.id, attachment.id), png);
+
+      // The next request carries the cover once, after the tool receipt.
+      expect(secondWire, isNotNull);
+      final imageMessage = secondWire!.last;
+      expect(imageMessage['role'], 'user');
+      final content = imageMessage['content'] as List;
+      expect(content, hasLength(2));
+      expect((content.first as Map)['type'], 'text');
+      expect((content.last as Map)['type'], 'image_url');
+      expect(
+        base64Decode(
+          ((content.last as Map)['image_url'] as Map)['url']
+              .toString()
+              .split(',')
+              .last,
+        ),
+        png,
+      );
+      expect(
+        secondWire!.where((m) => m['role'] == 'tool').single['content'],
+        contains('example.invalid/cover'),
+      );
+      // The saved conversation keeps the image after a restart.
+      final reloaded = store.messages(c.conversation.id)[1];
+      expect(reloaded.tools.single['images'], hasLength(1));
+      expect(c.error, isNull);
+    },
+  );
 
   test(
     'stop followed by a late source completion cannot write or mutate the conversation',

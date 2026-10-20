@@ -25,6 +25,7 @@ const agentToolLabels = {
   'comic_status': '查询漫画状态',
   'comic_comments': '读取评论',
   'showcase_comics': '展示漫画',
+  'comic_cover': '查看漫画封面',
   'explore_load': '读取发现页',
   'category_comics': '读取分类漫画',
   'ranking_comics': '读取排行榜',
@@ -315,6 +316,13 @@ class AgentModel {
     nativeWebSearch: json['native_web_search'] as bool? ?? false,
   );
   Uri get endpoint {
+    final base = baseEndpoint(baseUrl, protocol);
+    return base.replace(path: '${base.path}${protocol.path}');
+  }
+
+  /// The configured address without its protocol path. A complete endpoint of
+  /// any protocol is accepted as its base address.
+  static Uri baseEndpoint(String baseUrl, AgentProtocol protocol) {
     final uri = Uri.tryParse(baseUrl.trim());
     if (uri == null ||
         !['https', 'http'].contains(uri.scheme) ||
@@ -326,7 +334,6 @@ class AgentModel {
     }
     var path = uri.path.replaceFirst(RegExp(r'/+$'), '');
     var explicitEndpoint = false;
-    // A complete endpoint of any protocol is accepted as its base address.
     for (final other in AgentProtocol.values) {
       if (path.endsWith(other.path)) {
         explicitEndpoint = true;
@@ -338,7 +345,7 @@ class AgentModel {
     if (path.isEmpty && protocol != AgentProtocol.chat && !explicitEndpoint) {
       path = '/v1';
     }
-    return uri.replace(path: '$path${protocol.path}');
+    return uri.replace(path: path);
   }
 
   void validate() {

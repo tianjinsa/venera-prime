@@ -1,13 +1,35 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:venera/agent/agent_model_catalog.dart';
 import 'package:venera/agent/agent_models.dart';
 import 'package:venera/agent/agent_settings_page.dart';
 import 'package:venera/agent/agent_store.dart';
 import 'agent_test_support.dart';
+
+/// Serves the list a service would, without any real connection.
+class _CatalogAdapter implements HttpClientAdapter {
+  final requests = <String>[];
+  final responses = <(int, String)>[];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    requests.add(options.uri.toString());
+    final next = responses.isEmpty ? (404, '{}') : responses.removeAt(0);
+    return ResponseBody.fromString(next.$2, next.$1);
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -22,11 +44,13 @@ void main() {
   Finder field(String name) => find.byKey(ValueKey('agent-model-$name'));
   late Directory directory;
   late AgentStore store;
+  late _CatalogAdapter adapter;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp('agent-model-editor-');
     configureAgentTestPaths(directory.path);
     store = await AgentStore.open('${directory.path}/agent');
+    adapter = _CatalogAdapter();
     await store.saveSettings(
       AgentSettings(models: const [model], defaultModelId: model.id),
       {model.id: previousKey},
@@ -44,7 +68,16 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
-    await tester.pumpWidget(MaterialApp(home: AgentSettingsPage(store: store)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AgentSettingsPage(
+          store: store,
+          catalog: AgentModelCatalogClient(
+            createDio: () => Dio()..httpClientAdapter = adapter,
+          ),
+        ),
+      ),
+    );
     await tapAgentSetting(tester, 'agent-settings-models');
     await tester.tap(find.text(model.name));
     await tester.pumpAndSettle();
@@ -275,4 +308,92 @@ void main() {
     },
     variant: android,
   );
+
+  testWidgets(
+    'the model ID can be chosen from the list the service returns',
+    (tester) async {
+      adapter.responses.add((
+        200,
+        jsonEncode({
+          'data': [
+            {'id': 'qwen-max'},
+            {'id': 'qwen-plus'},
+          ],
+        }),
+      ));
+      await openEditor(tester);
+      await tester.tap(find.byKey(const ValueKey('agent-model-list')));
+      await tester.pumpAndSettle();
+      expect(adapter.requests, ['https://example.invalid/v1/models']);
+      expect(find.text('选择模型 ID'), findsOneWidget);
+      expect(find.text('qwen-max'), findsOneWidget);
+      expect(find.text('qwen-plus'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('agent-model-option-qwen-plus')),
+      );
+      await tester.pumpAndSettle();
+      final controller = tester
+          .widget<TextFormField>(field('model'))
+          .controller!;
+      expect(controller.text, 'qwen-plus');
+      // The saved display name is kept; only an empty one follows the ID.
+      final name = tester.widget<TextFormField>(field('name')).controller!;
+      expect(name.text, model.name);
+      expect(tester.takeException(), isNull);
+    },
+    variant: android,
+  );
+
+  testWidgets(
+    'the model list can be filtered and cancelled without change',
+    (tester) async {
+      adapter.responses.add((
+        200,
+        jsonEncode({
+          'data': [
+            {'id': 'alpha-model'},
+            {'id': 'beta-model'},
+          ],
+        }),
+      ));
+      await openEditor(tester);
+      await tester.tap(find.byKey(const ValueKey('agent-model-list')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('agent-model-picker-search')),
+        'beta',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('alpha-model'), findsNothing);
+      expect(find.text('beta-model'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextFormField>(field('model')).controller!.text,
+        model.model,
+      );
+      expect(tester.takeException(), isNull);
+    },
+    variant: android,
+  );
+
+  testWidgets('a service without a model list keeps manual input usable', (
+    tester,
+  ) async {
+    await openEditor(tester);
+    await tester.enterText(field('url'), 'https://example.invalid/v1');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('agent-model-list')));
+    // The versioned fallback is tried before reporting the support gap.
+    await tester.pumpAndSettle();
+    expect(adapter.requests, ['https://example.invalid/v1/models']);
+    expect(find.textContaining('请手动填写模型 ID'), findsWidgets);
+    await tester.enterText(field('model'), 'typed-by-hand');
+    await tester.pump();
+    expect(
+      tester.widget<TextFormField>(field('model')).controller!.text,
+      'typed-by-hand',
+    );
+    expect(tester.takeException(), isNull);
+  }, variant: android);
 }

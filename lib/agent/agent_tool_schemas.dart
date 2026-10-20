@@ -396,6 +396,16 @@ final _agentToolSchemas = <AgentJson>[
     },
     ['comics'],
   ),
+  _schema(
+    'comic_cover',
+    '读取一本漫画的封面图片并直接放入对话，只有开启图片输入的模型能看到它；无需先搜索或查询详情。'
+        '提供 source_key 和 comic_id，或某个 http(s) 封面地址。返回封面来源、格式和大小，可直接据此描述封面',
+    {
+      'source_key': _sourceArg,
+      'comic_id': _comicIdArg,
+      'url': {'type': 'string', 'description': '可直接读取的 http(s) 封面图片地址'},
+    },
+  ),
 
   // Discovery.
   _schema(

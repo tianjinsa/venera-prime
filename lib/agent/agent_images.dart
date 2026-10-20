@@ -92,9 +92,31 @@ Future<AgentImageDraft> readAgentImage(XFile file) async {
   if (bytes.length > agentImageMaxBytes) {
     throw AgentException('IMAGE_TOO_LARGE', '图片“${file.name}”超过20 MB，请缩小后添加');
   }
+  return validateAgentImage(name: file.name, bytes: bytes);
+}
+
+const agentImageMimeTypes = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+];
+
+/// Validates image bytes the agent will show or send, independent of where
+/// they came from. Animated images are rejected: a cover must be one frame.
+Future<AgentImageDraft> validateAgentImage({
+  required String name,
+  required Uint8List bytes,
+}) async {
+  if (bytes.isEmpty) {
+    throw AgentException('INVALID_IMAGE', '图片“$name”是空文件');
+  }
+  if (bytes.length > agentImageMaxBytes) {
+    throw AgentException('IMAGE_TOO_LARGE', '图片“$name”超过20 MB，请缩小后添加');
+  }
   // Detect the content itself, not a user-supplied filename extension.
   final mime = lookupMimeType('', headerBytes: bytes);
-  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].contains(mime)) {
+  if (!agentImageMimeTypes.contains(mime)) {
     throw const AgentException('INVALID_IMAGE', '请选择 JPEG、PNG、WebP 或静态 GIF 图片');
   }
   ui.Codec? codec;
@@ -112,14 +134,14 @@ Future<AgentImageDraft> readAgentImage(XFile file) async {
   } on AgentException {
     rethrow;
   } catch (_) {
-    throw AgentException('INVALID_IMAGE', '图片“${file.name}”无法解码，请选择有效图片');
+    throw AgentException('INVALID_IMAGE', '图片“$name”无法解码，请选择有效图片');
   } finally {
     codec?.dispose();
   }
   return AgentImageDraft(
     AgentImageAttachment(
       id: agentId(),
-      name: file.name,
+      name: name,
       mimeType: mime!,
       byteLength: bytes.length,
     ),

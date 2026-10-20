@@ -418,6 +418,53 @@ class AgentStore {
     }
   }
 
+  /// Stores an image that is not a user attachment, such as a cover a tool
+  /// read. The message must already list its metadata, so the record always
+  /// belongs to a part and follows that message's deletion cascade.
+  void saveMessageImage(String messageId, AgentImageDraft image) {
+    _db.execute('BEGIN;');
+    try {
+      final rows = _db.select(
+        'SELECT parts,conversation FROM messages WHERE id=?;',
+        [messageId],
+      );
+      if (rows.isEmpty) {
+        throw const AgentException('IMAGE_MISSING', '消息尚未保存，无法附加图片');
+      }
+      final parts = jsonDecode(rows.single['parts'] as String) as List;
+      // Compare the stored entry with its decoded form: nested maps must not
+      // depend on the key order an encode/decode round trip produces.
+      final expected = image.attachment.toJson();
+      final described = parts.any(
+        (part) =>
+            part is Map &&
+            part['type'] == 'tool_call' &&
+            part['images'] is List &&
+            (part['images'] as List).any(
+              (image) =>
+                  image is Map &&
+                  image['type'] == 'image' &&
+                  image['id'] == expected['id'] &&
+                  image['byte_length'] == expected['byte_length'],
+            ),
+      );
+      if (!described) {
+        throw const AgentException('IMAGE_MISSING', '消息中没有这张图片的信息');
+      }
+      if (image.bytes.length != image.attachment.byteLength) {
+        throw const AgentException('INVALID_IMAGE', '图片附件信息不完整');
+      }
+      _db.execute(
+        'INSERT OR REPLACE INTO message_images(id,message,content) VALUES (?,?,?);',
+        [image.attachment.id, messageId, image.bytes],
+      );
+      _db.execute('COMMIT;');
+    } catch (_) {
+      _db.execute('ROLLBACK;');
+      rethrow;
+    }
+  }
+
   Uint8List? imageBytes(String conversationId, String imageId) {
     final rows = _db.select(
       '''

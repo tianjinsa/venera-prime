@@ -259,6 +259,7 @@ class AgentTurnView extends StatelessWidget {
     busy: busy,
     showError: showError,
     resetToken: _complete ? messages.last.id : 'active',
+    imageLoader: imageLoader,
     canRetry: (call) => canRetry(message, call),
     onRetry: (call) => onRetry(message, call),
     onShowcase: onShowcase,

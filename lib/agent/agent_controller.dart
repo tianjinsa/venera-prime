@@ -481,6 +481,7 @@ class AgentController extends ChangeNotifier {
     }
     call['state'] = 'running';
     call.remove('result');
+    call.remove('images');
     store.saveMessage(message);
     _notify();
     final stopwatch = Stopwatch()..start();
@@ -496,14 +497,39 @@ class AgentController extends ChangeNotifier {
         ? await tools.execute(
             name,
             args,
-            AgentToolContext(conversation.id, run),
+            AgentToolContext(
+              conversation.id,
+              run,
+              messageId: message.id,
+              supportsVision:
+                  store.settings.findModel(message.modelId)?.supportsVision ??
+                  false,
+            ),
           )
         : const AgentException('USER_DENIED', '用户拒绝了该操作，不要重复请求').toJson();
     run.check();
+    // A tool that read an image stores the bytes with this response, and the
+    // call keeps its metadata so the next request and history can show it.
+    final images = tools.takeImages(result);
+    if (images.isNotEmpty) {
+      call['images'] = [
+        ...?(call['images'] as List?),
+        for (final image in images) image.attachment.toJson(),
+      ];
+    }
     call['result'] = result;
     call['state'] = result['ok'] == true ? 'done' : 'failed';
     call['duration_ms'] = stopwatch.elapsedMilliseconds;
     store.saveMessage(message);
+    for (final image in images) {
+      try {
+        store.saveMessageImage(message.id, image);
+      } on AgentException catch (e) {
+        // The receipt stays valid; only this image cannot be shown again.
+        call['image_error'] = e.message;
+        store.saveMessage(message);
+      }
+    }
     showcases = store.showcases(conversation.id);
     _notify();
   }

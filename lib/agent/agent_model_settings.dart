@@ -2,8 +2,13 @@ part of 'agent_settings_page.dart';
 
 class _AgentModelEditor extends StatefulWidget {
   final AgentStore store;
+  final AgentModelCatalogClient catalog;
   final AgentModel? original;
-  const _AgentModelEditor({required this.store, this.original});
+  const _AgentModelEditor({
+    required this.store,
+    required this.catalog,
+    this.original,
+  });
   @override
   State<_AgentModelEditor> createState() => _AgentModelEditorState();
 }
@@ -22,6 +27,8 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
   late AgentProtocol _protocol;
   bool _pastingKey = false;
   bool _saving = false;
+  bool _loadingModels = false;
+  String? _modelsError;
   String? _error;
   static const _encoder = JsonEncoder.withIndent('  ');
   List<AgentThinkingLevel> _levels = [];
@@ -249,6 +256,87 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       if (mounted) setState(() => _pastingKey = false);
     }
   }
+
+  /// Reads the identifiers the configured service serves, so choosing one
+  /// replaces typing it exactly. The request only uses the current form
+  /// values and never saves or sends the conversation.
+  Future<void> _loadModels() async {
+    if (_saving || _pastingKey || _loadingModels) return;
+    final url = _value('url');
+    if (url.isEmpty) {
+      _setModelsError('请先填写 API 地址');
+      return;
+    }
+    final Map<String, String> headers;
+    try {
+      headers = {
+        for (final entry in _object('headers', '自定义请求头').entries)
+          entry.key: entry.value as String,
+      };
+      // Validate the address and headers before opening a connection.
+      AgentModel(
+        id: widget.original?.id ?? 'catalog',
+        name: 'catalog',
+        baseUrl: url,
+        model: 'catalog',
+        headers: headers,
+      ).validate();
+    } on FormatException catch (e) {
+      _setModelsError(e.message);
+      return;
+    } catch (_) {
+      _setModelsError('自定义请求头的键和值都需要是字符串');
+      return;
+    }
+    final protocol = _protocol;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _loadingModels = true;
+      _modelsError = null;
+    });
+    try {
+      final ids = await widget.catalog.listModels(
+        baseUrl: url,
+        protocol: protocol,
+        apiKey: _value('key'),
+        headers: headers,
+      );
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      // The request is done; the sheet below owns the rest of the wait.
+      setState(() => _loadingModels = false);
+      final picked = await _showModelPicker(ids);
+      if (picked == null || !mounted) return;
+      _change(() {
+        _fields['model']!.text = picked;
+        // A single empty display name follows the chosen identifier; a name
+        // the user typed or that was saved before stays as it is.
+        if (_value('name').isEmpty) _fields['name']!.text = picked;
+      });
+    } on AgentException catch (e) {
+      _setModelsError(e.message);
+    } catch (_) {
+      _setModelsError('读取模型列表失败，请检查网络和 API 地址');
+    } finally {
+      if (mounted) setState(() => _loadingModels = false);
+    }
+  }
+
+  void _setModelsError(String message) {
+    if (!mounted) return;
+    setState(() => _modelsError = message);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<String?> _showModelPicker(List<String> ids) => showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    constraints: const BoxConstraints(maxWidth: 640),
+    builder: (_) => _AgentModelPicker(ids: ids, selected: _value('model')),
+  );
 
   Future<void> _save() async {
     if (_saving || _pastingKey) return;
@@ -549,7 +637,40 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 required: true,
                 hint: '填写 /v1 基础地址或完整的 ${_protocol.path} 地址。',
               ),
-              _field('model', '模型 ID', required: true, hint: '填写服务商提供的准确模型名称。'),
+              _field(
+                'model',
+                '模型 ID',
+                required: true,
+                hint: '可直接从模型服务请求列表选择，也可手动填写准确名称。',
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  key: const ValueKey('agent-model-list'),
+                  onPressed: _saving || _pastingKey || _loadingModels
+                      ? null
+                      : _loadModels,
+                  icon: _loadingModels
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.list_alt_rounded),
+                  label: const Text('从服务获取模型列表'),
+                ),
+              ),
+              if (_modelsError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    _modelsError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
               _field('key', 'API Key', hint: '只保存在本机；无需密钥的本地服务可留空。'),
               Align(
                 alignment: Alignment.centerRight,
@@ -609,6 +730,113 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
           if (_error != null) _AgentErrorText(_error!),
         ],
       ),
+    ),
+  );
+}
+
+/// Identifiers returned by the configured service, filtered by a search box.
+/// Nothing is downloaded besides the list itself, and the current value is
+/// only replaced when a row is chosen.
+class _AgentModelPicker extends StatefulWidget {
+  final List<String> ids;
+  final String selected;
+  const _AgentModelPicker({required this.ids, required this.selected});
+  @override
+  State<_AgentModelPicker> createState() => _AgentModelPickerState();
+}
+
+class _AgentModelPickerState extends State<_AgentModelPicker> {
+  final _search = TextEditingController();
+  late List<String> _filtered = widget.ids;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  void _filter(String value) {
+    final keyword = value.trim().toLowerCase();
+    setState(() {
+      _filtered = keyword.isEmpty
+          ? widget.ids
+          : widget.ids
+                .where((id) => id.toLowerCase().contains(keyword))
+                .toList();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: BoxConstraints(
+      maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '选择模型 ID',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              IconButton(
+                tooltip: '关闭',
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: TextField(
+            key: const ValueKey('agent-model-picker-search'),
+            controller: _search,
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.search),
+              hintText: '搜索模型 ID',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onChanged: _filter,
+          ),
+        ),
+        Flexible(
+          child: _filtered.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('没有匹配的模型 ID', textAlign: TextAlign.center),
+                )
+              : ListView.builder(
+                  key: const ValueKey('agent-model-picker'),
+                  shrinkWrap: true,
+                  itemCount: _filtered.length,
+                  itemBuilder: (context, index) {
+                    final id = _filtered[index];
+                    return ListTile(
+                      key: ValueKey('agent-model-option-$id'),
+                      title: Text(id),
+                      selected: id == widget.selected,
+                      trailing: id == widget.selected
+                          ? const Icon(Icons.check)
+                          : null,
+                      onTap: () => Navigator.pop(context, id),
+                    );
+                  },
+                ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: _AgentHelpText('共 ${widget.ids.length} 个模型。选择后仍可手动修改。'),
+        ),
+      ],
     ),
   );
 }
