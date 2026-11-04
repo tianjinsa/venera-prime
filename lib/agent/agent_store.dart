@@ -418,6 +418,25 @@ class AgentStore {
     }
   }
 
+  /// Tool images use the same message ownership and deletion cascade as uploads.
+  void saveToolImage(
+    String conversationId,
+    String messageId,
+    AgentImageDraft image,
+  ) {
+    final message = _db.select(
+      "SELECT id FROM messages WHERE id=? AND conversation=? AND role='assistant';",
+      [messageId, conversationId],
+    );
+    if (message.isEmpty || image.bytes.length != image.attachment.byteLength) {
+      throw const AgentException('INVALID_IMAGE', '封面所属消息无效');
+    }
+    _db.execute(
+      'INSERT INTO message_images(id,message,content) VALUES (?,?,?);',
+      [image.attachment.id, messageId, image.bytes],
+    );
+  }
+
   Uint8List? imageBytes(String conversationId, String imageId) {
     final rows = _db.select(
       '''

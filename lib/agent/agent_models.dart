@@ -21,6 +21,7 @@ const agentToolLabels = {
   'comic_open_by_id': '按 ID 查看漫画',
   'comic_resolve': '识别漫画',
   'comic_get': '查看漫画详情',
+  'comic_read_cover': '读取漫画封面',
   'comic_chapters': '读取章节目录',
   'comic_status': '查询漫画状态',
   'comic_comments': '读取评论',

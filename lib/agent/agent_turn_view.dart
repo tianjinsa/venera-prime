@@ -255,6 +255,7 @@ class AgentTurnView extends StatelessWidget {
   }) => AgentMessageParts(
     key: ValueKey('${message.id}-${indices.join(',')}'),
     message: message,
+    imageLoader: imageLoader,
     indices: indices,
     busy: busy,
     showError: showError,

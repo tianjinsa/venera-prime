@@ -142,6 +142,7 @@ bool agentToolHasFailure(AgentJson part) {
 /// An ordered response slice, without a card or a repeated model heading.
 class AgentMessageParts extends StatelessWidget {
   final AgentMessage message;
+  final AgentMessageImageLoader? imageLoader;
   final List<int> indices;
   final bool busy;
   final bool showError;
@@ -154,6 +155,7 @@ class AgentMessageParts extends StatelessWidget {
   const AgentMessageParts({
     super.key,
     required this.message,
+    this.imageLoader,
     required this.indices,
     required this.busy,
     this.showError = true,
@@ -276,6 +278,13 @@ class AgentMessageParts extends StatelessWidget {
     final showcaseId = data is Map ? data['set_id'] as String? : null;
     final undoId = data is Map ? data['undo_id'] as String? : null;
     final identity = '${message.id}-$index';
+    final cover =
+        part['name'] == 'comic_read_cover' &&
+            result?['ok'] == true &&
+            data is Map &&
+            data['image'] is Map
+        ? AgentImageAttachment.fromJson(agentObject(data['image']))
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -308,6 +317,18 @@ class AgentMessageParts extends StatelessWidget {
             ),
           ),
         ),
+        if (cover != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 22, top: 8, bottom: 8),
+            child: SizedBox(
+              height: 150,
+              child: AgentImageTile(
+                key: ValueKey('tool-cover-${cover.id}'),
+                image: cover,
+                readImage: () => imageLoader?.call(message, cover),
+              ),
+            ),
+          ),
         if (showcaseId != null ||
             undoId != null && hasUndo(undoId) ||
             canRetry(part))
@@ -363,6 +384,7 @@ class AgentMessageParts extends StatelessWidget {
         name == 'ranking_comics') {
       return Icons.explore_outlined;
     }
+    if (name == 'comic_read_cover') return Icons.image_outlined;
     if (name == 'comic_comments') return Icons.forum_outlined;
     if (name == 'reading_stats') return Icons.bar_chart;
     if (name == 'showcase_comics') return Icons.view_sidebar_outlined;
@@ -404,6 +426,14 @@ String agentToolCaption(AgentJson part) {
   switch (part['name']) {
     case 'showcase_comics':
       return '已展示 ${data['count']} 本';
+    case 'comic_read_cover':
+      final image = data['image'];
+      return join([
+        if (data['title'] is String) '《${data['title']}》',
+        '已读取封面',
+        if (image is Map && image['byte_length'] is int)
+          agentFormatBytes(image['byte_length'] as int),
+      ]);
     case 'comic_get' || 'comic_open_by_id':
       final chapters = data['chapters'];
       return join([

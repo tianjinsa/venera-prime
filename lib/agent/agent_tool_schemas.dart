@@ -74,6 +74,15 @@ AgentJson _schema(
 /// each result reports total or has_more so the model can decide to continue.
 final _agentToolSchemas = <AgentJson>[
   _webSearchSchema(AgentSearchEngine.values),
+  _schema(
+    'comic_read_cover',
+    '读取漫画封面图片供识图模型分析。提供 source_key + comic_id，或 cover_url（可附 source_key 复用源请求头）。不读取章节图片；无需预先调用详情工具',
+    {
+      'source_key': _sourceArg,
+      'comic_id': _comicIdArg,
+      'cover_url': {'type': 'string', 'description': '已知的封面 HTTP(S) 地址'},
+    },
+  ),
   // Sources.
   _schema('list_sources', '列出已安装漫画源及能力概览；源不明确时使用', {}),
   _schema(

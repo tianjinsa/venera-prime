@@ -361,7 +361,7 @@ void main() {
         .map((s) => s['function']['name'] as String)
         .toList();
     expect(names.toSet().length, names.length);
-    expect(names.length, 56);
+    expect(names.length, 57);
     for (final name in names) {
       expect(agentToolLabels, contains(name), reason: name);
       final params = AgentTools.schemas.firstWhere(

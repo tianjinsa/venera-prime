@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:file_selector/file_selector.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:mime/mime.dart';
 import 'package:venera/utils/io.dart' show IO;
 import 'agent_models.dart';
+import 'package:venera/network/images.dart';
 
 const agentImageMaxBytes = 20 * 1024 * 1024;
 
@@ -88,9 +90,12 @@ Future<AgentImageDraft> readAgentImage(XFile file) async {
   if (await file.length() > agentImageMaxBytes) {
     throw AgentException('IMAGE_TOO_LARGE', '图片“${file.name}”超过20 MB，请缩小后添加');
   }
-  final bytes = await file.readAsBytes();
+  return validateAgentImage(await file.readAsBytes(), file.name);
+}
+
+Future<AgentImageDraft> validateAgentImage(Uint8List bytes, String name) async {
   if (bytes.length > agentImageMaxBytes) {
-    throw AgentException('IMAGE_TOO_LARGE', '图片“${file.name}”超过20 MB，请缩小后添加');
+    throw AgentException('IMAGE_TOO_LARGE', '图片“$name”超过20 MB，请缩小后添加');
   }
   // Detect the content itself, not a user-supplied filename extension.
   final mime = lookupMimeType('', headerBytes: bytes);
@@ -112,17 +117,38 @@ Future<AgentImageDraft> readAgentImage(XFile file) async {
   } on AgentException {
     rethrow;
   } catch (_) {
-    throw AgentException('INVALID_IMAGE', '图片“${file.name}”无法解码，请选择有效图片');
+    throw AgentException('INVALID_IMAGE', '图片“$name”无法解码，请选择有效图片');
   } finally {
     codec?.dispose();
   }
   return AgentImageDraft(
     AgentImageAttachment(
       id: agentId(),
-      name: file.name,
+      name: name,
       mimeType: mime!,
       byteLength: bytes.length,
     ),
     bytes,
   );
+}
+
+/// Reuses source headers, virtual cover resolution, cache and thumbnail queue.
+Future<Uint8List> loadAgentCover(
+  String url,
+  String? sourceKey,
+  String? comicId,
+  AgentRun run,
+) async {
+  final iterator = StreamIterator(
+    ImageDownloader.loadThumbnail(url, sourceKey, comicId, run.check),
+  );
+  try {
+    while (await run.wait(iterator.moveNext())) {
+      final bytes = iterator.current.imageBytes;
+      if (bytes != null) return bytes;
+    }
+    throw const AgentException('COVER_LOAD_FAILED', '封面未返回图片数据');
+  } finally {
+    await iterator.cancel();
+  }
 }

@@ -3,7 +3,14 @@ part of 'agent_settings_page.dart';
 class _AgentModelEditor extends StatefulWidget {
   final AgentStore store;
   final AgentModel? original;
-  const _AgentModelEditor({required this.store, this.original});
+  final bool duplicate;
+  final AgentModelDiscovery Function()? discoveryFactory;
+  const _AgentModelEditor({
+    required this.store,
+    this.original,
+    this.duplicate = false,
+    this.discoveryFactory,
+  });
   @override
   State<_AgentModelEditor> createState() => _AgentModelEditorState();
 }
@@ -34,7 +41,9 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     super.initState();
     final model = widget.original;
     final values = {
-      'name': model?.name ?? '',
+      'name': widget.duplicate && model != null
+          ? '${model.name}（副本）'
+          : model?.name ?? '',
       'url': model?.baseUrl ?? 'https://api.openai.com/v1',
       'model': model?.model ?? '',
       'key': widget.store.secrets[model?.id] ?? '',
@@ -250,6 +259,47 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     }
   }
 
+  Future<void> _fetchModels() async {
+    if (_saving || _pastingKey) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    try {
+      final connection = AgentModel(
+        id: 'discovery',
+        name: 'discovery',
+        model: 'discovery',
+        baseUrl: _value('url'),
+        protocol: _protocol,
+        headers: Map<String, String>.from(_object('headers', '请求头')),
+      );
+      connection.validate();
+      final selected = await showDialog<AgentProviderModel>(
+        context: context,
+        builder: (_) => AgentModelPicker(
+          connection: connection,
+          apiKey: _value('key'),
+          selectedId: _value('model'),
+          discoveryFactory: widget.discoveryFactory,
+        ),
+      );
+      if (!mounted || selected == null) return;
+      _fields['model']!.text = selected.id;
+      if (_value('name').isEmpty) {
+        _fields['name']!.text = selected.name ?? selected.id;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e is FormatException
+                ? e.message.toString()
+                : '连接配置无效，请检查 API 地址与自定义请求头',
+          ),
+        ),
+      );
+    }
+  }
+
   Future<void> _save() async {
     if (_saving || _pastingKey) return;
     if (!_form.currentState!.validate()) return;
@@ -275,7 +325,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
         throw const FormatException('最大输出 tokens 需要正整数（可写作 32k），或留空');
       }
       final model = AgentModel(
-        id: widget.original?.id ?? agentId(),
+        id: widget.duplicate ? agentId() : widget.original?.id ?? agentId(),
         name: _value('name'),
         baseUrl: _value('url'),
         model: _value('model'),
@@ -304,7 +354,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
       await widget.store.saveSettings(
         old.copyWith(
           models: models,
-          defaultModelId: old.defaultModelId ?? model.id,
+          defaultModelId: old.defaultModel?.id ?? model.id,
         ),
         {...widget.store.secrets, model.id: _value('key')},
       );
@@ -519,7 +569,7 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
     child: Form(
       key: _form,
       child: _AgentSettingsScaffold(
-        title: widget.original == null ? '添加模型' : '编辑模型',
+        title: widget.original == null || widget.duplicate ? '添加模型' : '编辑模型',
         footer: FilledButton.icon(
           onPressed: _saving || _pastingKey ? null : _save,
           icon: const Icon(Icons.check_rounded),
@@ -549,8 +599,22 @@ class _AgentModelEditorState extends State<_AgentModelEditor> {
                 required: true,
                 hint: '填写 /v1 基础地址或完整的 ${_protocol.path} 地址。',
               ),
-              _field('model', '模型 ID', required: true, hint: '填写服务商提供的准确模型名称。'),
+              _field(
+                'model',
+                '模型 ID',
+                required: true,
+                hint: '可从服务获取并选择，也可手动填写准确的模型 ID。',
+              ),
               _field('key', 'API Key', hint: '只保存在本机；无需密钥的本地服务可留空。'),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  key: const ValueKey('agent-model-fetch-models'),
+                  onPressed: _saving || _pastingKey ? null : _fetchModels,
+                  icon: const Icon(Icons.cloud_download_outlined),
+                  label: const Text('从服务获取模型列表'),
+                ),
+              ),
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(

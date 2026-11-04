@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:venera/foundation/comic_source/comic_source.dart';
@@ -14,10 +15,12 @@ import 'package:venera/foundation/read_later.dart';
 import 'package:venera/foundation/res.dart';
 import 'agent_app_bridge.dart';
 import 'agent_models.dart';
+import 'agent_images.dart';
 import 'agent_store.dart';
 import 'agent_web_search.dart';
 
 part 'agent_tool_schemas.dart';
+part 'agent_tools_cover.dart';
 part 'agent_tools_catalog.dart';
 part 'agent_tools_code.dart';
 part 'agent_tools_library.dart';
@@ -25,7 +28,14 @@ part 'agent_tools_library.dart';
 class AgentToolContext {
   final String conversationId;
   final AgentRun run;
-  const AgentToolContext(this.conversationId, this.run);
+  final String? messageId;
+  final bool supportsVision;
+  const AgentToolContext(
+    this.conversationId,
+    this.run, {
+    this.messageId,
+    this.supportsVision = false,
+  });
 }
 
 class AgentTools {
@@ -37,6 +47,8 @@ class AgentTools {
   final Duration sourceTimeout;
   final AgentAppBridge app;
   final AgentWebSearchClient webSearch;
+  final Future<Uint8List> Function(String, String?, String?, AgentRun)
+  coverLoader;
 
   /// Details already read in this session. Chapter pages, downloads and the
   /// reader reuse them instead of requesting the whole comic again.
@@ -58,6 +70,7 @@ class AgentTools {
     this.sourceTimeout = const Duration(seconds: 30),
     AgentAppBridge? app,
     this.webSearch = const AgentWebSearchClient(),
+    this.coverLoader = loadAgentCover,
   }) : app = app ?? const AgentAppBridge(),
        favorites = favorites ?? LocalFavoritesManager(),
        later = later ?? ReadLaterManager(),
@@ -305,6 +318,8 @@ class AgentTools {
           deepseekModel: store.settings.webSearch.deepseekSearchModel,
           run: c.run,
         );
+      case 'comic_read_cover':
+        return _readCover(a, c);
       case 'list_sources':
         await c.run.wait(initializeSources());
         return sources().map(_capability).toList();

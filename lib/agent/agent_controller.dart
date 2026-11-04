@@ -496,7 +496,12 @@ class AgentController extends ChangeNotifier {
         ? await tools.execute(
             name,
             args,
-            AgentToolContext(conversation.id, run),
+            AgentToolContext(
+              conversation.id,
+              run,
+              messageId: message.id,
+              supportsVision: model?.supportsVision == true,
+            ),
           )
         : const AgentException('USER_DENIED', '用户拒绝了该操作，不要重复请求').toJson();
     run.check();

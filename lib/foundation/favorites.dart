@@ -328,6 +328,10 @@ class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
   Future<void> _initInternal() async {
     counts = {};
     _db = sqlite3.open("${App.dataPath}/local_favorite.db");
+    // Keep background identity reads from blocking folder writes. Backups
+    // export SQLite snapshots, including committed WAL pages.
+    _db.execute('PRAGMA busy_timeout = 1000;');
+    _db.execute('PRAGMA journal_mode = WAL;');
     _db.execute("""
       create table if not exists folder_order (
         folder_name text primary key,
@@ -424,6 +428,7 @@ class LocalFavoritesManager with ChangeNotifier, BatchedNotifications {
     return Isolate.run(() {
       final db = sqlite3.open(dbPath, mode: OpenMode.readOnly);
       try {
+        db.execute('PRAGMA busy_timeout = 1000;');
         var hashedIds = <String, int>{};
         for (var folder in folders) {
           var rows = db.select(

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:venera/components/components.dart' show Appbar;
 import 'agent_models.dart';
+import 'agent_model_discovery.dart';
+import 'agent_model_picker.dart';
 import 'agent_source_backups.dart';
 import 'agent_store.dart';
 
@@ -140,7 +142,12 @@ class _AgentSettingsPageState extends State<AgentSettingsPage>
 
 class AgentModelsPage extends StatefulWidget {
   final AgentStore store;
-  const AgentModelsPage({super.key, required this.store});
+  final AgentModelDiscovery Function()? discoveryFactory;
+  const AgentModelsPage({
+    super.key,
+    required this.store,
+    this.discoveryFactory,
+  });
   @override
   State<AgentModelsPage> createState() => _AgentModelsPageState();
 }
@@ -150,10 +157,15 @@ class _AgentModelsPageState extends State<AgentModelsPage>
   @override
   AgentStore get store => widget.store;
 
-  Future<void> _edit([AgentModel? model]) async {
+  Future<void> _edit([AgentModel? model, bool duplicate = false]) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => _AgentModelEditor(store: store, original: model),
+        builder: (_) => _AgentModelEditor(
+          store: store,
+          original: model,
+          duplicate: duplicate,
+          discoveryFactory: widget.discoveryFactory,
+        ),
       ),
     );
     if (mounted) setState(() {});
@@ -229,7 +241,9 @@ class _AgentModelsPageState extends State<AgentModelsPage>
                     tooltip: '管理 ${model.name}',
                     enabled: !_saving,
                     onSelected: (action) {
-                      if (action == 'delete') {
+                      if (action == 'duplicate') {
+                        _edit(model, true);
+                      } else if (action == 'delete') {
                         _delete(model);
                       } else {
                         _saveSettings(
@@ -239,6 +253,7 @@ class _AgentModelsPageState extends State<AgentModelsPage>
                     },
                     itemBuilder: (_) => const [
                       PopupMenuItem(value: 'default', child: Text('设为默认模型')),
+                      PopupMenuItem(value: 'duplicate', child: Text('复制模型配置')),
                       PopupMenuItem(value: 'delete', child: Text('删除模型')),
                     ],
                   ),
