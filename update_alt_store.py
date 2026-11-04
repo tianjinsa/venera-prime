@@ -1,150 +1,124 @@
+"""Update the Prime AltStore feed from metadata without downloading IPA files."""
+
 import json
-import plistlib
-import re
-import requests
 import os
-from datetime import datetime
+from pathlib import Path
+import re
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+
+REPOSITORY = "venera-app/venera-prime"
+BUNDLE_ID = "com.github.wgh136.venera.prime"
+
 
 def prepare_description(text):
-    text = re.sub('<[^<]+?>', '', text) # Remove HTML tags
-    text = re.sub(r'#{1,6}\s?', '', text) # Remove markdown header tags
-    text = re.sub(r'\*{2}', '', text) # Remove all occurrences of two consecutive asterisks
-    text = re.sub(r'(?<=\r|\n)-', '•', text) # Only replace - with • if it is preceded by \r or \n
-    text = re.sub(r'`', '"', text) # Replace ` with "
-    text = re.sub(r'\r\n\r\n', '\r \n', text) # Replace \r\n\r\n with \r \n (avoid incorrect display of the description regarding paragraphs)
-    return text
+    text = re.sub(r"<[^<]+?>", "", text or "")
+    text = re.sub(r"(?m)^#{1,6}\s?", "", text)
+    return text.replace("**", "").replace("`", '"')
 
-def fetch_latest_release(repo_url):
-    api_url = f"https://api.github.com/repos/{repo_url}/releases"
-    headers = {
-        "Accept": "application/vnd.github+json",
-    }
-    try:
-        response = requests.get(api_url, headers=headers)
-        response.raise_for_status()
-        release = response.json()
-        return release
-    except requests.RequestException as e:
-        print(f"Error fetching releases: {e}")
-        raise
 
-def get_file_size(url):
-    try:
-        response = requests.head(url)
-        response.raise_for_status()
-        return int(response.headers.get('Content-Length', 0))
-    except requests.RequestException as e:
-        print(f"Error getting file size: {e}")
-        return 194586
+def fetch_latest_release(repo_url, tag=None):
+    endpoint = f"tags/{quote(tag, safe='')}" if tag else "latest"
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Venera-Prime-AltStore"}
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(f"https://api.github.com/repos/{repo_url}/releases/{endpoint}", headers=headers)
+    with urlopen(request, timeout=30) as response:
+        return json.load(response)
 
-def update_json_file_release(json_file, latest_release):
-    if isinstance(latest_release, list) and latest_release:
-        latest_release = latest_release[0]
-    else:
-        print("Error getting latest release")
-        return
 
-    try:
-        with open(json_file, "r") as file:
-            data = json.load(file)
-    except json.JSONDecodeError as e:
-        print(f"Error reading JSON file: {e}")
-        data = {"apps": []}
-        raise
-
-    app = data["apps"][0]
-
-    full_version = latest_release["tag_name"]
+def update_json_file_release(json_file, latest_release, repo_url=REPOSITORY):
+    if isinstance(latest_release, list):
+        latest_release = next(
+            (item for item in latest_release if not item.get("draft") and not item.get("prerelease")),
+            None,
+        )
+    if not latest_release:
+        raise ValueError("No stable release found")
+    if latest_release.get("draft") or latest_release.get("prerelease"):
+        return False
     tag = latest_release["tag_name"]
-    # Extract version like 1.4.5 from tag, which may be like 'v1.4.5'
-    version_match = re.search(r"(\d+\.\d+\.\d+)", full_version)
-    if version_match:
-        version = version_match.group(1)
-    else:
-        print("Error: Could not parse version from tag_name.")
-        return
-    version_date = latest_release["published_at"]
-    date_obj = datetime.strptime(version_date, "%Y-%m-%dT%H:%M:%SZ")
-    version_date = date_obj.strftime("%Y-%m-%d")
-
-    description = latest_release["body"]
-    description = prepare_description(description)
-
-    assets = latest_release.get("assets", [])
-    download_url = None
-    size = None
-    for asset in assets:
-        # venera-ios-1.4.5+145.ipa
-        if asset["name"] == f"venera-ios-{version}+{version.replace('.', '')}.ipa":
-            download_url = asset["browser_download_url"]
-            size = asset["size"]
-            break
-
-    if download_url is None or size is None:
-        print("Error: IPA file not found in release assets.")
-        return
-
-    version_entry = {
-        "version": version,
-        "date": version_date,
-        "localizedDescription": description,
-        "downloadURL": download_url,
-        "size": size
-    }
-
-    duplicate_entries = [item for item in app["versions"] if item["version"] == version]
-    if duplicate_entries:
-        app["versions"].remove(duplicate_entries[0])
-
-    app["versions"].insert(0, version_entry)
-
-    app.update({
-        "version": version,
-        "versionDate": version_date,
-        "versionDescription": description,
-        "downloadURL": download_url,
-        "size": size
-    })
-
-    if "news" not in data:
+    match = re.fullmatch(r"v?(\d+\.\d+\.\d+)", tag)
+    if match is None:
+        raise ValueError("Release tag is not a stable version")
+    version = match.group(1)
+    ipa_pattern = re.compile(rf"venera(?:-prime)?-ios-{re.escape(version)}\+(\d+)\.ipa")
+    assets = [asset for asset in latest_release.get("assets", []) if ipa_pattern.fullmatch(asset["name"])]
+    if len(assets) != 1:
+        raise ValueError("Release must contain exactly one matching iOS IPA")
+    ipa = assets[0]
+    if not isinstance(ipa.get("size"), int) or ipa["size"] <= 0:
+        raise ValueError("IPA size is missing from release metadata")
+    build = ipa_pattern.fullmatch(ipa["name"]).group(1)
+    published = latest_release["published_at"]
+    description = prepare_description(latest_release.get("body"))
+    path = Path(json_file)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    app = data["apps"][0]
+    # The inherited feed describes an app with a different bundle ID.
+    if app.get("bundleIdentifier") != BUNDLE_ID:
+        app["versions"] = []
         data["news"] = []
-
-    news_identifier = f"release-{full_version}"
-    date_string = date_obj.strftime("%d/%m/%y")
-    news_entry = {
-        "appID": "com.github.wgh136.venera",
-        "caption": f"Update of Venera just got released!",
-        "date": latest_release["published_at"],
-        "identifier": news_identifier,
+    url = f"https://github.com/{repo_url}"
+    icon = f"https://raw.githubusercontent.com/{repo_url}/master/assets/app_icon.png"
+    data.update({
+        "name": "Venera Prime",
+        "identifier": f"{BUNDLE_ID}.source",
+        "website": url,
+        "subtitle": "Venera Prime AltStore Source",
+        "description": "AltStore source for Venera Prime releases.",
+        "iconURL": icon,
+    })
+    entry = {
+        "version": version,
+        "buildVersion": build,
+        "date": published[:10],
+        "localizedDescription": description,
+        "downloadURL": ipa["browser_download_url"],
+        "size": ipa["size"],
+        "minOSVersion": "14.0",
+    }
+    versions = [entry] + [item for item in app.get("versions", []) if item["version"] != version]
+    versions.sort(key=lambda item: tuple(int(part) for part in item["version"].split(".")), reverse=True)
+    newest = versions[0]
+    app.update({
+        "name": "Venera Prime",
+        "bundleIdentifier": BUNDLE_ID,
+        "developerName": "Venera Prime contributors",
+        "iconURL": icon,
+        "versions": versions,
+        "version": newest["version"],
+        "versionDate": newest["date"],
+        "versionDescription": newest["localizedDescription"],
+        "downloadURL": newest["downloadURL"],
+        "size": newest["size"],
+    })
+    news_id = f"release-{tag}"
+    news = {
+        "appID": BUNDLE_ID,
+        "caption": "A new Venera Prime version is available.",
+        "date": published,
+        "identifier": news_id,
         "notify": True,
         "tintColor": "#0784FC",
-        "title": f"{full_version} - Venera  {date_string}",
-        "url": f"https://github.com/venera-app/venera/releases/tag/{tag}"
+        "title": f"Venera Prime {version}",
+        "url": f"{url}/releases/tag/{quote(tag, safe='')}",
     }
+    data["news"] = [news] + [item for item in data.get("news", []) if item["identifier"] != news_id]
+    if data == json.loads(path.read_text(encoding="utf-8")):
+        return False
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True
 
-    news_entry_exists = any(item["identifier"] == news_identifier for item in data["news"])
-    if not news_entry_exists:
-        data["news"].append(news_entry)
-
-    try:
-        with open(json_file, "w") as file:
-            json.dump(data, file, indent=2)
-        print("JSON file updated successfully.")
-    except IOError as e:
-        print(f"Error writing to JSON file: {e}")
-        raise
 
 def main():
-    repo_url = "venera-app/venera"
-    is_nightly = "NIGHTLY_LINK" in os.environ
+    repository = os.environ.get("GITHUB_REPOSITORY", REPOSITORY)
+    release = fetch_latest_release(repository, os.environ.get("RELEASE_TAG"))
+    changed = update_json_file_release("alt_store.json", release, repository)
+    print("AltStore feed updated" if changed else "AltStore feed unchanged")
 
-    try:
-        fetched_data_latest = fetch_latest_release(repo_url)
-        json_file = "alt_store.json"
-        update_json_file_release(json_file, fetched_data_latest)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        raise
 
 if __name__ == "__main__":
     main()

@@ -31,6 +31,7 @@ class _ReaderImagesState extends State<_ReaderImages> {
   void _handleJumpToLastPage() {
     if (reader._jumpToLastPageOnLoad) {
       reader._page = reader.maxPage;
+      reader._alignContinuousChapterEnd = reader.mode.isContinuous;
       reader._jumpToLastPageOnLoad = false;
     }
   }
@@ -54,6 +55,8 @@ class _ReaderImagesState extends State<_ReaderImages> {
         if (!mounted) return;
         setState(() {
           reader.images = images;
+          reader.prepareSpreadLayout();
+          reader.resolveChapterNavigation();
           reader.isLoading = false;
           inProgress = false;
           _handleJumpToLastPage();
@@ -87,6 +90,8 @@ class _ReaderImagesState extends State<_ReaderImages> {
           if (!mounted) return;
           setState(() {
             reader.images = res.data;
+            reader.prepareSpreadLayout();
+            reader.resolveChapterNavigation();
             reader.isLoading = false;
             inProgress = false;
             _handleJumpToLastPage();
@@ -147,7 +152,7 @@ class _ReaderImagesState extends State<_ReaderImages> {
             true;
         return _GalleryMode(
           key: Key(
-            '${reader.mode.key}_${reader.imagesPerPage}_${reader.twoPageSpread}_${reader.showSingleImageOnFirstPage()}_${showComments}_$showCommentsAtEnd',
+            '${reader.mode.key}_${reader.imagesPerPage}_${reader.twoPageSpread}_${reader.showSingleImageOnFirstPage()}_${reader.imageGroupingOffset}_${reader.imageGroupingAnchor}_${reader.spreadLayoutRevision}_${showComments}_$showCommentsAtEnd',
           ),
         );
       } else {
@@ -171,6 +176,59 @@ class _GalleryModeState extends State<_GalleryMode>
   int get preCacheCount => appdata.settings["preloadImageCount"];
 
   var photoViewControllers = <int, PhotoViewController>{};
+
+  double? _lastPageMargin;
+  final _unmarginedInitialScales = <int, double>{};
+  final _pendingSpreadSizes = <int, Size>{};
+  bool _spreadSizeUpdateScheduled = false;
+  Timer? _spreadSizeRetry;
+  final _spreadMetadataStreams = <int, (ImageStream, ImageStreamListener)>{};
+
+  void _queueSpreadSize(int index, Size size) {
+    if (!mounted) return;
+    if (reader.spreadImageSizes[index] == size ||
+        _pendingSpreadSizes[index] == size) {
+      return;
+    }
+    _pendingSpreadSizes[index] = size;
+    if (_spreadSizeUpdateScheduled) return;
+    _spreadSizeUpdateScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) => _flushSpreadSizes());
+    SchedulerBinding.instance.ensureVisualUpdate();
+  }
+
+  void _flushSpreadSizes() {
+    if (!mounted) return;
+    if (reader.isPageAnimating) {
+      _spreadSizeRetry?.cancel();
+      _spreadSizeRetry = Timer(
+        const Duration(milliseconds: 50),
+        _flushSpreadSizes,
+      );
+      return;
+    }
+    _spreadSizeUpdateScheduled = false;
+    final sizes = Map<int, Size>.of(_pendingSpreadSizes);
+    _pendingSpreadSizes.clear();
+    if (sizes.isEmpty) return;
+    if (reader.applySpreadImageSizes(sizes)) {
+      reader.updateHistory();
+      context.readerScaffold.update();
+    } else {
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _spreadSizeRetry?.cancel();
+    keyRepeatTimer?.cancel();
+    for (final (stream, listener) in _spreadMetadataStreams.values) {
+      stream.removeListener(listener);
+    }
+    _spreadMetadataStreams.clear();
+    super.dispose();
+  }
 
   late _ReaderState reader;
 
@@ -197,9 +255,7 @@ class _GalleryModeState extends State<_GalleryMode>
   }
 
   int get totalImagePages {
-    return !reader.showSingleImageOnFirstPage()
-        ? (reader.images!.length / reader.imagesPerPage).ceil()
-        : 1 + ((reader.images!.length - 1) / reader.imagesPerPage).ceil();
+    return reader.maxPage;
   }
 
   int get totalPages => reader.totalPages;
@@ -252,26 +308,7 @@ class _GalleryModeState extends State<_GalleryMode>
 
   /// Get the range of images for the given page. [page] is 1-based.
   (int start, int end) getPageImagesRange(int page) {
-    var imagesPerPage = reader.imagesPerPage;
-    if (reader.showSingleImageOnFirstPage()) {
-      if (page == 1) {
-        return (0, 1);
-      } else {
-        int startIndex = (page - 2) * imagesPerPage + 1;
-        int endIndex = math.min(
-          startIndex + imagesPerPage,
-          reader.images!.length,
-        );
-        return (startIndex, endIndex);
-      }
-    } else {
-      int startIndex = (page - 1) * imagesPerPage;
-      int endIndex = math.min(
-        startIndex + imagesPerPage,
-        reader.images!.length,
-      );
-      return (startIndex, endIndex);
-    }
+    return reader.imageLayout.range(page);
   }
 
   /// Get the image indices for current page. Returns null if no images.
@@ -300,10 +337,42 @@ class _GalleryModeState extends State<_GalleryMode>
     if (isChapterCommentsPage(page)) return;
     var (startIndex, endIndex) = getPageImagesRange(page);
     for (int i = startIndex; i < endIndex; i++) {
-      shouldPreCache
-          ? _precacheImage(i + 1, context)
-          : _preDownloadImage(i + 1, context);
+      if (shouldPreCache && reader.twoPageSpread) {
+        _precacheSpreadImage(i);
+      } else if (shouldPreCache) {
+        _precacheImage(i + 1, context);
+      } else {
+        _preDownloadImage(i + 1, context);
+      }
     }
+  }
+
+  void _precacheSpreadImage(int index) {
+    if (_spreadMetadataStreams.containsKey(index)) return;
+    final stream = _createImageProvider(
+      index + 1,
+      context,
+    ).resolve(createLocalImageConfiguration(context));
+    late final ImageStreamListener listener;
+    void release() {
+      if (_spreadMetadataStreams[index]?.$2 != listener) return;
+      stream.removeListener(listener);
+      _spreadMetadataStreams.remove(index);
+    }
+
+    listener = ImageStreamListener((info, synchronous) {
+      _queueSpreadSize(
+        index,
+        Size(info.image.width.toDouble(), info.image.height.toDouble()),
+      );
+      // Match precacheImage's ownership and keep it alive through this frame.
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        info.dispose();
+        release();
+      });
+    }, onError: (Object error, StackTrace? stack) => release());
+    _spreadMetadataStreams[index] = (stream, listener);
+    stream.addListener(listener);
   }
 
   Widget _buildChapterCommentsPage() {
@@ -326,6 +395,29 @@ class _GalleryModeState extends State<_GalleryMode>
       builder: (context, constraints) {
         final viewportSize = constraints.biggest;
         final margin = readerPageMargin(reader.cid, reader.type.sourceKey);
+        final previousMargin = _lastPageMargin;
+        _lastPageMargin = margin;
+        if (previousMargin != null && previousMargin != margin) {
+          final ratio = (1 - margin * 2) / (1 - previousMargin * 2);
+          for (final entry in photoViewControllers.entries) {
+            final (start, end) = getPageImagesRange(entry.key);
+            if (end - start != 1 || reader.twoPageSpread) continue;
+            final scale = entry.value.scale;
+            if (scale == null) continue;
+            final initialScale = entry.value.getInitialScale?.call();
+            if (initialScale != null) {
+              _unmarginedInitialScales.putIfAbsent(
+                entry.key,
+                () => initialScale / (1 - previousMargin * 2),
+              );
+            }
+            // PhotoView retains its scale when only initialScale changes.
+            entry.value.updateMultiple(
+              scale: scale * ratio,
+              position: entry.value.position * ratio,
+            );
+          }
+        }
         return Listener(
           onPointerDown: (event) {
             fingers++;
@@ -415,7 +507,7 @@ class _GalleryModeState extends State<_GalleryMode>
                       pageImages,
                       startIndex,
                       singleCover:
-                          index == 1 && reader.showSingleImageOnFirstPage(),
+                          index == 1 && reader.imageLayout.firstPageCount == 1,
                     ),
                   ),
                 );
@@ -478,6 +570,7 @@ class _GalleryModeState extends State<_GalleryMode>
               for (var key in keys) {
                 if (key != i) {
                   photoViewControllers.remove(key);
+                  _unmarginedInitialScales.remove(key);
                 }
               }
             },
@@ -492,6 +585,9 @@ class _GalleryModeState extends State<_GalleryMode>
     int startIndex, {
     bool singleCover = false,
   }) {
+    if (reader.twoPageSpread) {
+      return _buildBookSpread(images, startIndex, singleCover: singleCover);
+    }
     final axis = reader.mode == ReaderMode.galleryTopToBottom
         ? Axis.vertical
         : Axis.horizontal;
@@ -542,6 +638,58 @@ class _GalleryModeState extends State<_GalleryMode>
         : Row(children: children);
   }
 
+  Widget _buildBookSpread(
+    List<String> images,
+    int startIndex, {
+    required bool singleCover,
+  }) {
+    var slots = List<int?>.generate(images.length, (i) => i);
+    if (slots.length == 1 &&
+        !reader.standaloneSpreadImages.contains(startIndex)) {
+      slots = singleCover ? [null, 0] : [0, null];
+    }
+    if (reader.mode == ReaderMode.galleryRightToLeft) {
+      slots = slots.reversed.toList();
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final rects = readerSpreadRects(constraints.biggest, [
+          for (final slot in slots)
+            slot == null ? null : reader.spreadImageSizes[startIndex + slot],
+        ]);
+        return Stack(
+          children: [
+            for (var i = 0; i < rects.length; i++)
+              Positioned.fromRect(
+                rect: rects[i],
+                child: slots[i] == null
+                    ? const SizedBox.expand(
+                        key: ValueKey('reader-spread-blank'),
+                      )
+                    : ComicImage(
+                        key: ValueKey(
+                          'reader-spread-image-${startIndex + slots[i]! + 1}',
+                        ),
+                        image: _createImageProviderFromKey(
+                          images[slots[i]!],
+                          context,
+                          startIndex + slots[i]! + 1,
+                        ),
+                        width: rects[i].width,
+                        height: rects[i].height,
+                        fit: BoxFit.contain,
+                        onImageSize: (size) =>
+                            _queueSpreadSize(startIndex + slots[i]!, size),
+                        onInit: imageStates.add,
+                        onDispose: imageStates.remove,
+                      ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Future<void> animateToPage(int page) {
     if ((page - controller.page!.round()).abs() > 1) {
@@ -566,6 +714,37 @@ class _GalleryModeState extends State<_GalleryMode>
       return;
     }
     var controller = photoViewControllers[reader.page]!;
+    if (reader.twoPageSpread) {
+      final initial = initialScaleForPage();
+      if ((controller.scale ?? initial) > initial * 1.05) {
+        controller.animateScale?.call(initial, Offset.zero);
+        return;
+      }
+      final (start, end) = getPageImagesRange(reader.page);
+      final viewport = context.findRenderObject();
+      if (end - start == 2 && viewport is RenderBox) {
+        for (final imageState in imageStates) {
+          final key = imageState.widget.key;
+          if (key != ValueKey('reader-spread-image-${start + 1}') &&
+              key != ValueKey('reader-spread-image-$end')) {
+            continue;
+          }
+          final box = imageState.context.findRenderObject();
+          if (box is! RenderBox || !box.hasSize) continue;
+          final origin = box.localToGlobal(Offset.zero);
+          final globalRect = origin & box.size;
+          if (!globalRect.contains(location)) continue;
+          final center = viewport.globalToLocal(globalRect.center);
+          final target =
+              initial * (viewport.size.width / box.size.width).clamp(1.0, 4.0);
+          controller.animateScale?.call(
+            target,
+            (viewport.size.center(Offset.zero) - center) * (target / initial),
+          );
+          return;
+        }
+      }
+    }
     controller.onDoubleClick?.call();
   }
 
@@ -575,7 +754,7 @@ class _GalleryModeState extends State<_GalleryMode>
       return;
     }
     var photoViewController = photoViewControllers[reader.page]!;
-    double target = photoViewController.getInitialScale!.call()! * 1.75;
+    double target = initialScaleForPage() * 1.75;
     var size = reader.size;
     Offset zoomPosition;
     if (appdata.settings['longPressZoomPosition'] != 'center') {
@@ -596,9 +775,18 @@ class _GalleryModeState extends State<_GalleryMode>
       return;
     }
     var photoViewController = photoViewControllers[reader.page]!;
-    double target = photoViewController.getInitialScale!.call()!;
+    double target = initialScaleForPage();
     photoViewController.animateScale?.call(target);
     isLongPressing = false;
+  }
+
+  double initialScaleForPage() {
+    final unmarginedScale = _unmarginedInitialScales[reader.page];
+    if (unmarginedScale != null) {
+      return unmarginedScale *
+          (1 - readerPageMargin(reader.cid, reader.type.sourceKey) * 2);
+    }
+    return photoViewControllers[reader.page]!.getInitialScale!.call()!;
   }
 
   Timer? keyRepeatTimer;
@@ -714,6 +902,10 @@ const Set<PointerDeviceKind> _kTouchLikeDeviceTypes = <PointerDeviceKind>{
 
 const double _kChangeChapterOffset = 160;
 
+// Use finger travel for a new swipe at the boundary. Elastic overscroll is
+// damped and may be unavailable when a short chapter fits in the viewport.
+const double _kChapterSwipeDistance = 64;
+
 class _ContinuousMode extends StatefulWidget {
   const _ContinuousMode({super.key});
 
@@ -747,7 +939,8 @@ class _ContinuousModeState extends State<_ContinuousMode>
   bool get _visibleImagesReady =>
       imageStates.isNotEmpty &&
       imageStates.every(
-        (state) => state is _ComicImageState &&
+        (state) =>
+            state is _ComicImageState &&
             (state._imageInfo != null || state._lastException != null),
       );
 
@@ -760,7 +953,10 @@ class _ContinuousModeState extends State<_ContinuousMode>
         ? position.maxScrollExtent - position.pixels
         : position.pixels - position.minScrollExtent;
     if (remaining <= 0.5) return false;
-    smoothTo(position.viewportDimension * (forward ? 1 : -1));
+    smoothTo(
+      position.viewportDimension * 0.9 * (forward ? 1 : -1),
+      accelerate: false,
+    );
     return true;
   }
 
@@ -791,6 +987,38 @@ class _ContinuousModeState extends State<_ContinuousMode>
   bool prepareToNextChapter = false;
   bool jumpToNextChapter = false;
   bool jumpToPrevChapter = false;
+
+  bool _swipeStartedAtChapterStart = false;
+  bool _swipeStartedAtChapterEnd = false;
+  bool _chapterSwipeAllowed = false;
+  Offset _chapterSwipeDelta = Offset.zero;
+  bool _chapterNavigationPending = false;
+
+  void _resetChapterSwipe() {
+    _chapterSwipeAllowed = false;
+    _swipeStartedAtChapterStart = false;
+    _swipeStartedAtChapterEnd = false;
+    _chapterSwipeDelta = Offset.zero;
+    jumpToNextChapter = false;
+    jumpToPrevChapter = false;
+  }
+
+  double _readingDelta(Offset delta) =>
+      reader.mode == ReaderMode.continuousTopToBottom
+      ? -delta.dy
+      : reader.mode == ReaderMode.continuousRightToLeft
+      ? delta.dx
+      : -delta.dx;
+
+  void _scrollInReadingDirection(double delta) {
+    if (delta == 0 || _chapterNavigationPending) return;
+    final forward = delta > 0;
+    if (!isZoomedIn && (forward ? isAtChapterEnd : isAtChapterStart)) {
+      _chapterNavigationPending = reader.turnPage(forward: forward);
+      return;
+    }
+    smoothTo(delta);
+  }
 
   bool isZoomedIn = false;
   bool isLongPressing = false;
@@ -851,6 +1079,8 @@ class _ContinuousModeState extends State<_ContinuousMode>
   @override
   void initState() {
     reader = context.reader;
+    _openingAtChapterEnd = reader._alignContinuousChapterEnd;
+    reader._alignContinuousChapterEnd = false;
     reader._imageViewController = this;
     itemPositionsListener.itemPositions.addListener(onPositionChanged);
     cached = List.filled(reader.maxPage + 2, false);
@@ -858,6 +1088,28 @@ class _ContinuousModeState extends State<_ContinuousMode>
       if (mounted) cacheImages(reader.page);
     });
     super.initState();
+  }
+
+  bool _openingAtChapterEnd = false;
+  bool _endAlignmentScheduled = false;
+
+  void _alignChapterEnd() {
+    if (!_openingAtChapterEnd || _endAlignmentScheduled) return;
+    _endAlignmentScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _endAlignmentScheduled = false;
+      if (!mounted ||
+          !_openingAtChapterEnd ||
+          !_visibleImagesReady ||
+          _scrollController?.hasClients != true) {
+        return;
+      }
+      // Initial placeholder extents can move the list away from its end when
+      // uncached images decode. Enter the previous chapter at the decoded end.
+      final position = scrollController.position;
+      position.jumpTo(position.maxScrollExtent);
+      _openingAtChapterEnd = false;
+    });
   }
 
   @override
@@ -890,7 +1142,7 @@ class _ContinuousModeState extends State<_ContinuousMode>
 
   double? _futurePosition;
 
-  void smoothTo(double offset) {
+  void smoothTo(double offset, {bool accelerate = true}) {
     if (HardwareKeyboard.instance.isShiftPressed) {
       return;
     }
@@ -901,13 +1153,15 @@ class _ContinuousModeState extends State<_ContinuousMode>
     var currentLocation = scrollController.position.pixels;
     var old = _futurePosition;
     _futurePosition ??= currentLocation;
-    double k = (_futurePosition! - currentLocation).abs() / 1600 + 1;
+    double k = accelerate
+        ? (_futurePosition! - currentLocation).abs() / 1600 + 1
+        : 1;
     final customSpeed = appdata.settings.getReaderSetting(
       context.reader.cid,
       context.reader.type.sourceKey,
       "readerScrollSpeed",
     );
-    if (customSpeed is num) {
+    if (accelerate && customSpeed is num) {
       k *= customSpeed;
     }
     _futurePosition = _futurePosition! + offset * k;
@@ -954,7 +1208,13 @@ class _ContinuousModeState extends State<_ContinuousMode>
       if (isCTRLPressed) {
         return;
       }
-      smoothTo(event.scrollDelta.dy);
+      final horizontal = reader.mode != ReaderMode.continuousTopToBottom;
+      final delta =
+          horizontal && event.scrollDelta.dx.abs() > event.scrollDelta.dy.abs()
+          ? event.scrollDelta.dx *
+                (reader.mode == ReaderMode.continuousRightToLeft ? -1 : 1)
+          : event.scrollDelta.dy;
+      _scrollInReadingDirection(delta);
     }
   }
 
@@ -990,6 +1250,7 @@ class _ContinuousModeState extends State<_ContinuousMode>
       context.readerScaffold.setFloatingButton(0);
     }
     var isZoomedIn = (scale ?? photoViewController.scale) != 1.0;
+    if (isZoomedIn) _resetChapterSwipe();
     if (isZoomedIn != this.isZoomedIn) {
       setState(() {
         this.isZoomedIn = isZoomedIn;
@@ -1095,6 +1356,7 @@ class _ContinuousModeState extends State<_ContinuousMode>
                 fit: BoxFit.contain,
                 onInit: (state) => imageStates.add(state),
                 onDispose: (state) => imageStates.remove(state),
+                onImageReady: _alignChapterEnd,
               ),
             ),
           ),
@@ -1120,7 +1382,14 @@ class _ContinuousModeState extends State<_ContinuousMode>
 
     widget = Listener(
       onPointerDown: (event) {
+        _openingAtChapterEnd = false;
         fingers++;
+        _resetChapterSwipe();
+        if (fingers == 1 && !isZoomedIn) {
+          _chapterSwipeAllowed = true;
+          _swipeStartedAtChapterStart = isAtChapterStart;
+          _swipeStartedAtChapterEnd = isAtChapterEnd;
+        }
         if (fingers > 1 && !disableScroll) {
           setState(() {
             disableScroll = true;
@@ -1141,17 +1410,41 @@ class _ContinuousModeState extends State<_ContinuousMode>
           });
         }
         if (fingers == 0) {
-          if (jumpToPrevChapter) {
-            context.readerScaffold.setFloatingButton(0);
-            reader.toPrevChapter(toLastPage: true);
-          } else if (jumpToNextChapter) {
-            context.readerScaffold.setFloatingButton(0);
-            reader.toNextChapter();
+          if (!_chapterSwipeAllowed) {
+            _resetChapterSwipe();
+            return;
           }
+          final travel = _readingDelta(_chapterSwipeDelta);
+          final crossTravel = reader.mode == ReaderMode.continuousTopToBottom
+              ? _chapterSwipeDelta.dx.abs()
+              : _chapterSwipeDelta.dy.abs();
+          final nextSwipe =
+              _swipeStartedAtChapterEnd &&
+              travel >= _kChapterSwipeDistance &&
+              travel > crossTravel;
+          final prevSwipe =
+              _swipeStartedAtChapterStart &&
+              -travel >= _kChapterSwipeDistance &&
+              -travel > crossTravel;
+          if (!isZoomedIn &&
+              !_chapterNavigationPending &&
+              (jumpToPrevChapter || prevSwipe) &&
+              !reader.isFirstChapterOfGroup) {
+            context.readerScaffold.setFloatingButton(0);
+            _chapterNavigationPending = reader.toPrevChapter(toLastPage: true);
+          } else if (!isZoomedIn &&
+              !_chapterNavigationPending &&
+              (jumpToNextChapter || nextSwipe) &&
+              !reader.isLastChapterOfGroup) {
+            context.readerScaffold.setFloatingButton(0);
+            _chapterNavigationPending = reader.toNextChapter();
+          }
+          _resetChapterSwipe();
         }
       },
       onPointerCancel: (event) {
         fingers--;
+        _resetChapterSwipe();
         if (fingers <= 1 && disableScroll) {
           setState(() {
             disableScroll = false;
@@ -1160,11 +1453,14 @@ class _ContinuousModeState extends State<_ContinuousMode>
       },
       onPointerPanZoomUpdate: (event) {
         if (event.scale == 1.0) {
-          smoothTo(0 - event.panDelta.dy);
+          _scrollInReadingDirection(_readingDelta(event.panDelta));
         }
       },
       onPointerMove: (event) {
         Offset value = event.delta;
+        if (fingers == 1 && !isZoomedIn) {
+          _chapterSwipeDelta += value;
+        }
         if (photoViewController.scale == 1 || fingers != 1) {
           return;
         }
@@ -1348,6 +1644,7 @@ class _ContinuousModeState extends State<_ContinuousMode>
 
   @override
   void toPage(int page) {
+    _openingAtChapterEnd = false;
     itemScrollController.jumpTo(index: page);
     _futurePosition = null;
   }
@@ -1387,24 +1684,19 @@ class _ContinuousModeState extends State<_ContinuousMode>
         event.logicalKey == LogicalKeyboardKey.arrowRight) {
       forward = false;
     }
-    if (forward == true) {
-      scrollController.animateTo(
-        scrollController.offset + context.height * 0.25,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.ease,
-      );
-    } else if (forward == false) {
-      scrollController.animateTo(
-        scrollController.offset - context.height * 0.25,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.ease,
+    if (forward != null) {
+      _scrollInReadingDirection(
+        scrollController.position.viewportDimension * (forward ? .25 : -.25),
       );
     }
   }
 
   @override
   bool handleOnTap(Offset location) {
-    if (delayedIsScrolling) {
+    // A boundary can still be bouncing after a swipe/trackpad gesture. The
+    // next edge tap must be able to continue reading instead of being eaten
+    // by the delayed scrolling guard.
+    if (delayedIsScrolling && !isAtChapterStart && !isAtChapterEnd) {
       return true;
     }
     return false;

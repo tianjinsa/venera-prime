@@ -37,6 +37,84 @@ void main() {
     BackgroundTasks.instance.configure(history: {});
   });
 
+  testWidgets('empty task counts are hidden in the panel and details', (
+    tester,
+  ) async {
+    BackgroundTasks.instance.start('empty-check', 'Empty check')
+      ..update(completed: 0, total: 0)
+      ..finish(message: 'No comics to check');
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        builder: (context, child) => BackgroundTaskOverlay(child: child!),
+        home: const Scaffold(),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('background-task-badge')));
+    await tester.pumpAndSettle();
+    expect(find.text('No comics to check'), findsOneWidget);
+    expect(find.textContaining('0/0'), findsNothing);
+    await tester.tap(find.text('Empty check'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.textContaining('0/0'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('repeated badge activation opens only one task panel', (
+    tester,
+  ) async {
+    final task = BackgroundTasks.instance.start('panel-reentry', 'Panel task')
+      ..finish();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: App.rootNavigatorKey,
+        builder: (context, child) => BackgroundTaskOverlay(child: child!),
+        home: const Scaffold(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final badge = find.byKey(const Key('background-task-badge'));
+    final panels = find.byType(BottomSheet, skipOffstage: false);
+
+    await tester.tap(badge);
+    await tester.tap(badge);
+    await tester.tap(badge);
+    await tester.pumpAndSettle();
+    expect(panels, findsOneWidget);
+
+    await tester.tap(badge);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f6);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pumpAndSettle();
+    expect(panels, findsOneWidget);
+
+    await tester.tap(find.text(task.title));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(badge);
+    await tester.pumpAndSettle();
+    expect(panels, findsOneWidget);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(panels, findsNothing);
+    expect(App.rootNavigatorKey.currentState!.canPop(), isFalse);
+
+    await tester.tap(badge);
+    await tester.pumpAndSettle();
+    expect(panels, findsOneWidget);
+    App.rootNavigatorKey.currentState!.pop();
+    await tester.pumpAndSettle();
+    expect(panels, findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('badge supports F6 focus and Enter or Space activation', (
     tester,
   ) async {
@@ -322,7 +400,7 @@ void main() {
   });
 
   testWidgets(
-    'badge starts at the bottom corner and snaps to either corner without gesture-inset gaps',
+    'badge stays fully visible at both safe corners without gesture-inset gaps',
     (tester) async {
       tester.view.physicalSize = const Size(400, 800);
       tester.view.devicePixelRatio = 1;
@@ -348,7 +426,7 @@ void main() {
       final badge = find.byKey(const Key('background-task-badge'));
       await tester.pumpAndSettle();
       expect(tester.getRect(badge).bottom, 768);
-      expect(tester.getRect(badge).right, greaterThan(400));
+      expect(tester.getRect(badge).right, 400);
       expect(tester.getCenter(badge).dx, lessThan(400));
       final toTop = await tester.startGesture(tester.getCenter(badge));
       await toTop.moveTo(const Offset(40, 60));
@@ -356,14 +434,14 @@ void main() {
       await toTop.up();
       await tester.pumpAndSettle();
       expect(tester.getRect(badge).top, 24);
-      expect(tester.getRect(badge).left, lessThan(0));
+      expect(tester.getRect(badge).left, 0);
       final toBottom = await tester.startGesture(tester.getCenter(badge));
       await toBottom.moveTo(const Offset(360, 738));
       await tester.pump();
       await toBottom.up();
       await tester.pumpAndSettle();
       expect(tester.getRect(badge).bottom, 768);
-      expect(tester.getRect(badge).right, greaterThan(400));
+      expect(tester.getRect(badge).right, 400);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

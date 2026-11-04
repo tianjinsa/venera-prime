@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:venera/foundation/app_update.dart';
 import 'package:venera/foundation/app_update_service.dart';
 import 'package:venera/foundation/background_tasks.dart';
+import 'package:venera/utils/io.dart' show overrideIO;
 import 'package:venera/utils/translations.dart';
 
 const _bytes = [1, 2, 3, 4];
@@ -111,6 +112,32 @@ void main() {
     tasks.dispose();
     await directory.delete(recursive: true);
   });
+
+  test(
+    'update validation and restoration work inside application IO overrides',
+    () async {
+      await overrideIO(() async {
+        final updates = service();
+        final task = await updates.startDownload(_release, _asset);
+        await _finish(task);
+        expect(task.status, BackgroundTaskStatus.completed);
+        expect(await updates.readyFile!.length(), _asset.size);
+        expect(validations, 1);
+        expect(installs, 0);
+        final restoredTasks = BackgroundTasks();
+        try {
+          final restored = service(registry: restoredTasks);
+          await restored.restore();
+          expect(restored.task!.status, BackgroundTaskStatus.completed);
+          expect(await restored.readyFile!.readAsBytes(), _bytes);
+          expect(downloader.calls, 1);
+          expect(validations, 2);
+        } finally {
+          restoredTasks.dispose();
+        }
+      });
+    },
+  );
 
   test(
     'start returns immediately, duplicate clicks reuse one task, validation precedes ready',

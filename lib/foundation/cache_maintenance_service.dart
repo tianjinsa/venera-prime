@@ -9,6 +9,8 @@ import 'package:venera/foundation/log.dart';
 class CacheMaintenanceService with WidgetsBindingObserver {
   static final instance = CacheMaintenanceService();
   final CacheManager Function() _manager;
+  final DateTime Function() _now;
+  final VoidCallback _persist;
   final Duration interval;
   Timer? _timer;
   bool _started = false;
@@ -30,8 +32,12 @@ class CacheMaintenanceService with WidgetsBindingObserver {
 
   CacheMaintenanceService({
     CacheManager Function()? manager,
+    DateTime Function()? now,
+    VoidCallback? persist,
     this.interval = const Duration(hours: 1),
-  }) : _manager = manager ?? CacheManager.new;
+  }) : _manager = manager ?? CacheManager.new,
+       _now = now ?? DateTime.now,
+       _persist = persist ?? appdata.writeImplicitData;
 
   void start() {
     if (_started) return;
@@ -82,21 +88,53 @@ class CacheMaintenanceService with WidgetsBindingObserver {
 
   Future<void> clean({String reason = 'manual'}) {
     if (_running != null) return _running!;
-    final operation = _run(reason);
-    _running = operation;
-    return operation.whenComplete(() => _running = null);
+    _applySettings();
+    if ((reason == 'startup' || reason == 'periodic' || reason == 'resumed') &&
+        !_dailyCheckDue()) {
+      return Future<void>.value();
+    }
+    return _running = _run(reason).whenComplete(() => _running = null);
+  }
+
+  bool _dailyCheckDue() {
+    final record = appdata.implicitData['cacheMaintenance'];
+    if (record is! Map ||
+        record['finishedAt'] is! int ||
+        record['retentionDays'] != _retention ||
+        record['limitSize'] != _limit) {
+      return true;
+    }
+    final DateTime last;
+    try {
+      last = DateTime.fromMillisecondsSinceEpoch(record['finishedAt']);
+    } on ArgumentError {
+      return true;
+    }
+    final now = _now().toLocal();
+    return last.year != now.year ||
+        last.month != now.month ||
+        last.day != now.day;
   }
 
   Future<void> _run(String reason) async {
     do {
       _rerun = false;
       _applySettings();
+      final retention = _retention;
+      final limit = _limit;
       final runner = runTask;
       if (runner == null) {
         await _manager().checkCache();
       } else {
         await runner(reason, _manager().checkCache);
       }
+      // Persist only successful maintenance; failures remain retryable.
+      appdata.implicitData['cacheMaintenance'] = {
+        'finishedAt': _now().millisecondsSinceEpoch,
+        'retentionDays': retention,
+        'limitSize': limit,
+      };
+      _persist();
       reason = 'settings';
     } while (_rerun);
   }

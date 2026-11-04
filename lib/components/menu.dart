@@ -101,9 +101,16 @@ class _MenuRoute<T> extends PopupRoute<T> {
                   color: entry.color
                 ),
               const SizedBox(width: 12),
-              Text(
-                  entry.text,
-                  style: TextStyle(color: entry.color)
+              Expanded(
+                child: Tooltip(
+                  message: entry.text,
+                  child: Text(
+                    entry.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: entry.color),
+                  ),
+                ),
               ),
             ],
           ),

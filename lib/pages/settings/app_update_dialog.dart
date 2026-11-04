@@ -102,7 +102,7 @@ class _AppUpdateDialogState extends State<_AppUpdateDialog> {
         onPressed: () => Navigator.pop(context),
         child: Text('Cancel'.tl),
       ),
-      TextButton(
+      FilledButton(
         onPressed: _busy || _selecting ? null : _update,
         child: Text(_asset != null ? 'Update'.tl : 'Open release page'.tl),
       ),

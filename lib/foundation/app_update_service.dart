@@ -374,10 +374,16 @@ class AppUpdateService {
     String? expectedDigest,
   }) async {
     // Do not follow a cache symlink outside the private updater directory.
-    if (await FileSystemEntity.type(file.path, followLinks: false) !=
-            FileSystemEntityType.file ||
-        await file.length() != asset.size) {
-      throw const FormatException('Update download is incomplete');
+    final type = await FileSystemEntity.type(file.path, followLinks: false);
+    if (type != FileSystemEntityType.file) {
+      throw FormatException('Update file is not a regular file ($type)');
+    }
+    final actualSize = await file.length();
+    if (actualSize != asset.size) {
+      throw FormatException(
+        'Update download is incomplete '
+        '(expected ${asset.size} bytes, received $actualSize bytes)',
+      );
     }
     final digest = (await sha256.bind(file.openRead()).first).toString();
     final publishedDigest = asset.digest;

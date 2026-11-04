@@ -5,6 +5,8 @@ import 'package:dio/io.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/foundation/app_update.dart';
+import 'package:venera/foundation/log.dart';
+import 'package:venera/network/app_dio.dart' show AppDio;
 
 ReleaseAsset apk(String name) => ReleaseAsset(
   name: name,
@@ -83,6 +85,10 @@ void main() {
       dir = await Directory.systemTemp.createTemp('update-test-');
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((request) {
+        if (request.uri.path == '/partial.apk') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set('content-range', 'bytes 0-3/9');
+        }
         request.response.add(bytes);
         request.response.close();
       });
@@ -91,7 +97,7 @@ void main() {
       await server.close(force: true);
       await dir.delete(recursive: true);
     });
-    Dio localDio() => Dio()
+    Dio localDio() => AppDio()
       ..httpClientAdapter = IOHttpClientAdapter(
         createHttpClient: () => HttpOverrides.runWithHttpOverrides(
           () => HttpClient(),
@@ -108,12 +114,15 @@ void main() {
     test(
       'verified download becomes installable and partial file is removed',
       () async {
+        final progress = <int>[];
         final downloaded = await AppUpdateDownloader(dio: localDio()).download(
           asset(digest: 'sha256:${sha256.convert(bytes)}'),
           dir,
           cancelToken: CancelToken(),
+          onProgress: (received, total) => progress.add(received),
         );
         expect(await downloaded.readAsBytes(), bytes);
+        expect(progress.last, bytes.length);
         expect(await File('${downloaded.path}.part').exists(), isFalse);
       },
     );
@@ -128,12 +137,57 @@ void main() {
         expect(dir.listSync(), isEmpty);
       }
     });
+    test(
+      'incomplete responses report byte counts without signed URLs',
+      () async {
+        Log.clear();
+        await expectLater(
+          AppUpdateDownloader(dio: localDio()).download(
+            ReleaseAsset(
+              name: 'venera.apk',
+              url: 'http://127.0.0.1:${server.port}/partial.apk?sig=private',
+              size: 9,
+            ),
+            dir,
+            cancelToken: CancelToken(),
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              contains('expected 9 bytes, received 4 bytes'),
+            ),
+          ),
+        );
+        final diagnostic = Log.logs.last.content;
+        expect(diagnostic, contains('expected=9, actual=4, received=4'));
+        expect(diagnostic, contains('status=206'));
+        expect(diagnostic, contains('content-range=bytes 0-3/9'));
+        expect(diagnostic, isNot(contains('private')));
+        expect(diagnostic, isNot(contains('127.0.0.1')));
+        expect(dir.listSync(), isEmpty);
+        Log.clear();
+      },
+    );
     test('cancelled downloads clean up partial files', () async {
       final cancel = CancelToken()..cancel();
       await expectLater(
         AppUpdateDownloader(
           dio: localDio(),
         ).download(asset(), dir, cancelToken: cancel),
+        throwsA(isA<DioException>()),
+      );
+      expect(dir.listSync(), isEmpty);
+    });
+    test('cancellation during transfer removes partial files', () async {
+      final cancel = CancelToken();
+      await expectLater(
+        AppUpdateDownloader(dio: localDio()).download(
+          asset(),
+          dir,
+          cancelToken: cancel,
+          onProgress: (_, _) => cancel.cancel(),
+        ),
         throwsA(isA<DioException>()),
       );
       expect(dir.listSync(), isEmpty);

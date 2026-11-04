@@ -1,27 +1,27 @@
 {
-  "name": "Venera",
-  "identifier": "com.github.wgh136.venera.source",
-  "website": "https://github.com/venera-app/venera",
-  "subtitle": "Venera official AltStore Source.",
-  "description": "This is the official AltStore Source for Venera.\n\n A comic reader that supports reading local and network comics",
+  "name": "Venera Prime",
+  "identifier": "com.github.wgh136.venera.prime.source",
+  "website": "https://github.com/venera-app/venera-prime",
+  "subtitle": "Venera Prime AltStore Source",
+  "description": "AltStore source for Venera Prime releases.",
   "tintColor": "#0784FC",
-  "iconURL": "https://raw.githubusercontent.com/venera-app/venera/master/assets/app_icon.png",
+  "iconURL": "https://raw.githubusercontent.com/venera-app/venera-prime/master/assets/app_icon.png",
   "apps": [
     {
       "beta": false,
-      "name": "Venera",
-      "bundleIdentifier": "com.github.wgh136.venera",
-      "developerName": "wgh136",
+      "name": "Venera Prime",
+      "bundleIdentifier": "com.github.wgh136.venera.prime",
+      "developerName": "Venera Prime contributors",
       "subtitle": "A comic reader that supports reading local and network comics",
-      "version": "1.6.3",
-      "versionDate": "2026-03-08",
-      "versionDescription": "What's Changed\r\n* Update AltStore source with latest release by @github-actions[bot] in https://github.com/venera-app/venera/pull/736\r\n* deps: flutter 3.41.4 and upgrade dependencies by @ynyxx in https://github.com/venera-app/venera/pull/809\r\n* Add downloaded comic restore in import comic by @bustesoul in https://github.com/venera-app/venera/pull/765\r\n* chore: update Android Gradle plugin to version 8.12.3 and upgrade Gra\u2026 by @ynyxx in https://github.com/venera-app/venera/pull/810\r\n* Fix customImageProcessing not triggering due to async keyword mismatch by @UCPr251 in https://github.com/venera-app/venera/pull/763\r\n* Add device-specific settings by @Arkalin in https://github.com/venera-app/venera/pull/808\r\n* Fix: reader swipe gesture causing  back navigation when image is loading by @boa-z in https://github.com/venera-app/venera/pull/764\r\n* Enhance image resizing logic. Close 800 by @ynyxx in https://github.com/venera-app/venera/pull/812\r \nNew Contributors\r\n* @UCPr251 made their first contribution in https://github.com/venera-app/venera/pull/763\r\n* @Arkalin made their first contribution in https://github.com/venera-app/venera/pull/808\r \nFull Changelog: https://github.com/venera-app/venera/compare/v1.6.2...v1.6.3",
-      "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.6.3/venera-ios-1.6.3%2B163.ipa",
+      "version": "2.7.0",
+      "versionDate": "2026-11-03",
+      "versionDescription": "Venera Prime 2.7.0\n\n本次更新\n\n- 搜索历史与页码恢复：历史条目显示搜索词、漫画源胶囊、源定义的筛选属性和上次浏览页码；同词不同源或不同筛选分别记录。点击条目恢复来源、筛选及对应页顶部。聚合搜索单独记录，从聚合进入单源列表也会建立记录。连续模式记录实际可见结果所属页，预加载不会提前推进历史，回滚也会更新页码；页与页之间增加细虚线和小号页码。只能使用游标翻页的源逐页恢复并显示进度，可取消；来源失效时提示重新选择，选项变化时回退到当前默认值及第一页。保留旧历史及复制、删除、清空功能，翻页合并本地保存，离开搜索时再同步。\n- 本地下载管理 #38（@suppermanzero）：本地列表显示漫画体积和来源，操作菜单可进入详情、继续阅读或直接选择已下载章节；新增漫画及分类排序、新建／重命名／删除分类、批量移动。分类为应用内虚拟分类，不移动实际文件；删除分类不会删除漫画。离线进度指向未下载章节时回退到已下载章节。\n- 双页排版与跨页 #47（@zklall）：双页保持各自比例并统一页高，宽图可独占展开页；支持手动固定配对、逐图调整和恢复自动排版，按漫画及章节保存。双击可聚焦单页，再次双击还原；保留阅读方向、封面单页、尾页空位及切换后的原图位置。参考并整合提出者提供的实现。\n- 首页单张时的图片移位 #34（@MisakaTukasa）：开启首页单张后，“后移一张图片”可将下一张并入首页；从第二组前移到首页时也会调整首组配对。\n- 连续阅读按屏幕翻页 #46（@GalahadVi）：连续阅读的点击、按键等翻页操作每次移动约 90% 视口，保留少量重叠，长图不会整张跳过；只有到达章节实际滚动边界后才进入相邻章节。\n- 章节混合名称排序 #48（@zklall）：统一按卷号、话号比较纯数字及中英文前缀章名，支持中文数字、全角数字和小数话数；同话号保持原顺序，章节 ID 与阅读记录映射不变。本地导入及扫描同时接入，“源默认排序”仍保留源顺序。整合提出者提供的修复。\n- 大 ZIP／CBZ 导入 #45（@Arteiimis）：归档预检和解压改用文件后备流，压缩文件上限从 512 MiB 调整为 2 GiB，避免将整包读入内存；继续保留总展开量 1 GiB、单条 256 MiB、条目数量、压缩比和路径等安全限制。\n- EPUB 导出与 Android 文件读写 #43（@lzx377z）：修正 EPUB 图片引用、XML 转义和并发导出临时目录冲突；Android 系统文档目录读写处理短读、短写和长度未知的文件，并收紧并发句柄及 JNI 引用生命周期。请在原荣耀设备及原漫画上复查导出缺图与本地空图片。\n- 阅读页重新加载与图片处理 #49（@sakana155）：顶部新增重新加载入口，清理当前可见页缓存后重载并保留位置；修正异步图片处理失败后等待不结束、旧取消流干扰新加载、像素通道及编码偏移等问题。原始禁漫黑图未复现，不能据此保证其根因已解决。\n- 图片收藏横向滚动 #50（@lzx377z）：每条图片收藏列表使用独立滚动控制器，支持桌面鼠标拖动及可拖动滚动条；仍需在原 Windows 环境复查。\n- 更新检查期间的 WebDAV 上传：检查收藏更新时，漫画源保存数据产生的自动上传请求合并，在最后一批检查结束后触发一次；异常和取消也会释放批处理。手动上传仍可执行，关闭自动同步会阻止最终自动上传。\n- Windows 代理与存储路径切换：修正系统代理读取失败、协议代理列表解析及原生内存释放；迁移存储目录改为分块复制，完整复制并持久化后再切换路径，旧目录因文件占用清理失败时保留旧文件并记录错误。仍须选择空目录、完成或取消排队下载；Windows WebDAV 原环境尚未验证。\n- 下载暂停／继续及完成入库：同一任务的异步运行串行化，旧任务回调不再调度新章节；完成入库和队列保存可等待，入库失败保留可重试任务。结合 Android 文件读写修正降低竞争与资源泄漏风险；尚未取得原始拷贝漫画闪退任务，仍需原环境复查。\n- 项目说明与交流入口：增加仅在本机首次确认前展示的项目说明，老用户升级后也会看到；说明非官方分支、LLM 辅助维护、个人本地／NAS 漫画阅读用途及通过 Fork + Issue 请求合并的贡献方式。“设置 → 关于”可重看说明，提供独立 Telegram 群及标明归属的上游群入口。README 同步更新英文说明。\n- 历史界面：移除常驻的“尚未检查”等更新状态文字，相关任务信息仍在后台任务中查看。\n\n请更新后验证并反馈\n\n请关联 issue 的提出者安装 2.7.0，按原来的复现步骤复查。\n\n- 如果问题已解决，请在原 issue 中确认，并及时关闭尚未关闭的 issue。\n- 如果问题仍存在，请在原 issue 提供版本号、系统与设备、漫画源、复现步骤，以及必要的日志或录屏；已关闭的问题也可继续留言或重新打开。\n- 日志、截图和录屏请遮盖账号、密码、令牌及 WebDAV 私有地址等敏感信息。\n- 关联 issue 不代表所有设备、漫画源及服务端都已验证，也不会自动关闭这些 issue。\n- #44 的沉浸阅读锁定仍未实现，不属于本版新增功能。\n\n历史待确认问题\n\n以下改动属于此前版本，本次再次关联是为了收集升级验证结果。已重新读取这些 issue 的正文、最新评论及状态；没有发现提出者明确确认升级验证通过的文字反馈，已关闭的条目仍列出需要复查的行为。\n\n| 相关 issue | 提出者 | 请复查的行为 |\n| --- | --- | --- |\n| #26（已关闭） | @tkp206093 | 双页阅读方向、单双页切换后的阅读位置；此前反馈仅有截图，本版也进一步调整了双页布局 |\n| #33（已关闭） | @suppermanzero | 阅读页底部页边距按钮的实时预览、拖动及精确输入 |\n| #35（已关闭） | @suppermanzero | 收藏夹顶部无常驻检测文字，进度和结果可在后台任务查看 |\n| #36（已关闭） | @zklall | 连续阅读在章节实际边界通过滑动、点击、滚轮、触控板和方向键跨章 |\n| #37（已关闭） | @h0stg | AltStore 客户端能显示 Prime 新版并更新 |\n| #39（已关闭） | @lzx377z | 关闭自动同步后仍可手动上传／下载，WebDAV 配置页“继续”执行所选操作 |\n| #40（已关闭） | @zklall | 折叠屏设置入口、悬浮球完整显示、倒序目录下的实际跨章方向和返回上一章末尾的位置 |\n\n验证范围\n\n- 本地使用 Flutter 3.41.4 / Linux 执行全量自动化回归，覆盖搜索恢复、本地分类、双页布局、下载串行恢复、EPUB、大 ZIP、存储迁移、图片处理和 WebDAV 批处理；本次全量结果为 384 项通过、2 项外部配置测试跳过；静态分析无错误或警告，仅原有一条属性顺序信息提示。\n- 搜索来源、图片及旧备份用例包含合成数据；WebDAV 使用本地 HTTP 测试服务，不能视为验证了用户的坚果云／NAS 账户、代理或证书。\n- 本轮开发期间曾在华为 TAS-AN00 / Android 12 的独立测试包完成 16 项 ZIP、下载、EPUB、本地 WebDAV、图片处理及分类集成回归；首次通知和搜索改造后的调试预览包通过 ADB 安装并启动。这些是开发构建记录，不是 2.7.0 正式附件的真机升级验证。\n- 未完成 Windows／macOS／iOS 原环境功能验证，也没有原始拷贝漫画闪退任务或禁漫黑图样本；Windows WebDAV、原始导出缺图、折叠屏硬件及第三方服务仍需用户复查。\n- 正式发布采用 Android、iOS、macOS、Windows、Linux x64、Linux ARM64 六平台及十四个标准附件的机器人流程，以六平台及 Release 任务全部成功作为发布完成条件。iOS 生成未签名 IPA；构建成功不等于各平台真机功能验证。不额外下载或核验线上附件及签名。\n",
+      "downloadURL": "https://github.com/venera-app/venera-prime/releases/download/v2.7.0/venera-prime-ios-2.7.0%2B270.ipa",
       "localizedDescription": "A comic reader that supports reading local and network comics",
-      "iconURL": "https://raw.githubusercontent.com/venera-app/venera/master/assets/app_icon.png",
+      "iconURL": "https://raw.githubusercontent.com/venera-app/venera-prime/master/assets/app_icon.png",
       "tintColor": "#0784FC",
       "category": "utilities",
-      "size": 15489327,
+      "size": 16692937,
       "appPermissions": {
         "entitlements": [
           "application-identifier",
@@ -40,110 +40,84 @@
       },
       "versions": [
         {
-          "version": "1.6.3",
-          "date": "2026-03-08",
-          "localizedDescription": "What's Changed\r\n* Update AltStore source with latest release by @github-actions[bot] in https://github.com/venera-app/venera/pull/736\r\n* deps: flutter 3.41.4 and upgrade dependencies by @ynyxx in https://github.com/venera-app/venera/pull/809\r\n* Add downloaded comic restore in import comic by @bustesoul in https://github.com/venera-app/venera/pull/765\r\n* chore: update Android Gradle plugin to version 8.12.3 and upgrade Gra\u2026 by @ynyxx in https://github.com/venera-app/venera/pull/810\r\n* Fix customImageProcessing not triggering due to async keyword mismatch by @UCPr251 in https://github.com/venera-app/venera/pull/763\r\n* Add device-specific settings by @Arkalin in https://github.com/venera-app/venera/pull/808\r\n* Fix: reader swipe gesture causing  back navigation when image is loading by @boa-z in https://github.com/venera-app/venera/pull/764\r\n* Enhance image resizing logic. Close 800 by @ynyxx in https://github.com/venera-app/venera/pull/812\r \nNew Contributors\r\n* @UCPr251 made their first contribution in https://github.com/venera-app/venera/pull/763\r\n* @Arkalin made their first contribution in https://github.com/venera-app/venera/pull/808\r \nFull Changelog: https://github.com/venera-app/venera/compare/v1.6.2...v1.6.3",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.6.3/venera-ios-1.6.3%2B163.ipa",
-          "size": 15489327
+          "version": "2.7.0",
+          "buildVersion": "270",
+          "date": "2026-11-03",
+          "localizedDescription": "Venera Prime 2.7.0\n\n本次更新\n\n- 搜索历史与页码恢复：历史条目显示搜索词、漫画源胶囊、源定义的筛选属性和上次浏览页码；同词不同源或不同筛选分别记录。点击条目恢复来源、筛选及对应页顶部。聚合搜索单独记录，从聚合进入单源列表也会建立记录。连续模式记录实际可见结果所属页，预加载不会提前推进历史，回滚也会更新页码；页与页之间增加细虚线和小号页码。只能使用游标翻页的源逐页恢复并显示进度，可取消；来源失效时提示重新选择，选项变化时回退到当前默认值及第一页。保留旧历史及复制、删除、清空功能，翻页合并本地保存，离开搜索时再同步。\n- 本地下载管理 #38（@suppermanzero）：本地列表显示漫画体积和来源，操作菜单可进入详情、继续阅读或直接选择已下载章节；新增漫画及分类排序、新建／重命名／删除分类、批量移动。分类为应用内虚拟分类，不移动实际文件；删除分类不会删除漫画。离线进度指向未下载章节时回退到已下载章节。\n- 双页排版与跨页 #47（@zklall）：双页保持各自比例并统一页高，宽图可独占展开页；支持手动固定配对、逐图调整和恢复自动排版，按漫画及章节保存。双击可聚焦单页，再次双击还原；保留阅读方向、封面单页、尾页空位及切换后的原图位置。参考并整合提出者提供的实现。\n- 首页单张时的图片移位 #34（@MisakaTukasa）：开启首页单张后，“后移一张图片”可将下一张并入首页；从第二组前移到首页时也会调整首组配对。\n- 连续阅读按屏幕翻页 #46（@GalahadVi）：连续阅读的点击、按键等翻页操作每次移动约 90% 视口，保留少量重叠，长图不会整张跳过；只有到达章节实际滚动边界后才进入相邻章节。\n- 章节混合名称排序 #48（@zklall）：统一按卷号、话号比较纯数字及中英文前缀章名，支持中文数字、全角数字和小数话数；同话号保持原顺序，章节 ID 与阅读记录映射不变。本地导入及扫描同时接入，“源默认排序”仍保留源顺序。整合提出者提供的修复。\n- 大 ZIP／CBZ 导入 #45（@Arteiimis）：归档预检和解压改用文件后备流，压缩文件上限从 512 MiB 调整为 2 GiB，避免将整包读入内存；继续保留总展开量 1 GiB、单条 256 MiB、条目数量、压缩比和路径等安全限制。\n- EPUB 导出与 Android 文件读写 #43（@lzx377z）：修正 EPUB 图片引用、XML 转义和并发导出临时目录冲突；Android 系统文档目录读写处理短读、短写和长度未知的文件，并收紧并发句柄及 JNI 引用生命周期。请在原荣耀设备及原漫画上复查导出缺图与本地空图片。\n- 阅读页重新加载与图片处理 #49（@sakana155）：顶部新增重新加载入口，清理当前可见页缓存后重载并保留位置；修正异步图片处理失败后等待不结束、旧取消流干扰新加载、像素通道及编码偏移等问题。原始禁漫黑图未复现，不能据此保证其根因已解决。\n- 图片收藏横向滚动 #50（@lzx377z）：每条图片收藏列表使用独立滚动控制器，支持桌面鼠标拖动及可拖动滚动条；仍需在原 Windows 环境复查。\n- 更新检查期间的 WebDAV 上传：检查收藏更新时，漫画源保存数据产生的自动上传请求合并，在最后一批检查结束后触发一次；异常和取消也会释放批处理。手动上传仍可执行，关闭自动同步会阻止最终自动上传。\n- Windows 代理与存储路径切换：修正系统代理读取失败、协议代理列表解析及原生内存释放；迁移存储目录改为分块复制，完整复制并持久化后再切换路径，旧目录因文件占用清理失败时保留旧文件并记录错误。仍须选择空目录、完成或取消排队下载；Windows WebDAV 原环境尚未验证。\n- 下载暂停／继续及完成入库：同一任务的异步运行串行化，旧任务回调不再调度新章节；完成入库和队列保存可等待，入库失败保留可重试任务。结合 Android 文件读写修正降低竞争与资源泄漏风险；尚未取得原始拷贝漫画闪退任务，仍需原环境复查。\n- 项目说明与交流入口：增加仅在本机首次确认前展示的项目说明，老用户升级后也会看到；说明非官方分支、LLM 辅助维护、个人本地／NAS 漫画阅读用途及通过 Fork + Issue 请求合并的贡献方式。“设置 → 关于”可重看说明，提供独立 Telegram 群及标明归属的上游群入口。README 同步更新英文说明。\n- 历史界面：移除常驻的“尚未检查”等更新状态文字，相关任务信息仍在后台任务中查看。\n\n请更新后验证并反馈\n\n请关联 issue 的提出者安装 2.7.0，按原来的复现步骤复查。\n\n- 如果问题已解决，请在原 issue 中确认，并及时关闭尚未关闭的 issue。\n- 如果问题仍存在，请在原 issue 提供版本号、系统与设备、漫画源、复现步骤，以及必要的日志或录屏；已关闭的问题也可继续留言或重新打开。\n- 日志、截图和录屏请遮盖账号、密码、令牌及 WebDAV 私有地址等敏感信息。\n- 关联 issue 不代表所有设备、漫画源及服务端都已验证，也不会自动关闭这些 issue。\n- #44 的沉浸阅读锁定仍未实现，不属于本版新增功能。\n\n历史待确认问题\n\n以下改动属于此前版本，本次再次关联是为了收集升级验证结果。已重新读取这些 issue 的正文、最新评论及状态；没有发现提出者明确确认升级验证通过的文字反馈，已关闭的条目仍列出需要复查的行为。\n\n| 相关 issue | 提出者 | 请复查的行为 |\n| --- | --- | --- |\n| #26（已关闭） | @tkp206093 | 双页阅读方向、单双页切换后的阅读位置；此前反馈仅有截图，本版也进一步调整了双页布局 |\n| #33（已关闭） | @suppermanzero | 阅读页底部页边距按钮的实时预览、拖动及精确输入 |\n| #35（已关闭） | @suppermanzero | 收藏夹顶部无常驻检测文字，进度和结果可在后台任务查看 |\n| #36（已关闭） | @zklall | 连续阅读在章节实际边界通过滑动、点击、滚轮、触控板和方向键跨章 |\n| #37（已关闭） | @h0stg | AltStore 客户端能显示 Prime 新版并更新 |\n| #39（已关闭） | @lzx377z | 关闭自动同步后仍可手动上传／下载，WebDAV 配置页“继续”执行所选操作 |\n| #40（已关闭） | @zklall | 折叠屏设置入口、悬浮球完整显示、倒序目录下的实际跨章方向和返回上一章末尾的位置 |\n\n验证范围\n\n- 本地使用 Flutter 3.41.4 / Linux 执行全量自动化回归，覆盖搜索恢复、本地分类、双页布局、下载串行恢复、EPUB、大 ZIP、存储迁移、图片处理和 WebDAV 批处理；本次全量结果为 384 项通过、2 项外部配置测试跳过；静态分析无错误或警告，仅原有一条属性顺序信息提示。\n- 搜索来源、图片及旧备份用例包含合成数据；WebDAV 使用本地 HTTP 测试服务，不能视为验证了用户的坚果云／NAS 账户、代理或证书。\n- 本轮开发期间曾在华为 TAS-AN00 / Android 12 的独立测试包完成 16 项 ZIP、下载、EPUB、本地 WebDAV、图片处理及分类集成回归；首次通知和搜索改造后的调试预览包通过 ADB 安装并启动。这些是开发构建记录，不是 2.7.0 正式附件的真机升级验证。\n- 未完成 Windows／macOS／iOS 原环境功能验证，也没有原始拷贝漫画闪退任务或禁漫黑图样本；Windows WebDAV、原始导出缺图、折叠屏硬件及第三方服务仍需用户复查。\n- 正式发布采用 Android、iOS、macOS、Windows、Linux x64、Linux ARM64 六平台及十四个标准附件的机器人流程，以六平台及 Release 任务全部成功作为发布完成条件。iOS 生成未签名 IPA；构建成功不等于各平台真机功能验证。不额外下载或核验线上附件及签名。\n",
+          "downloadURL": "https://github.com/venera-app/venera-prime/releases/download/v2.7.0/venera-prime-ios-2.7.0%2B270.ipa",
+          "size": 16692937,
+          "minOSVersion": "14.0"
         },
         {
-          "version": "1.6.2",
-          "date": "2026-01-01",
-          "localizedDescription": "What's Changed\r\n* Set status bar transparent when startup. by @lings03 in https://github.com/venera-app/venera/pull/664\r\n* Jump to last page when continuously flipping to previous chapter.  by @lings03 in https://github.com/venera-app/venera/pull/665\r\n* Show chapter comments at end of chapter. by @lings03 in https://github.com/venera-app/venera/pull/666\r\n* Save file name: {comic}_EP{chapter}_P{page}.{ext} to avoid conflict. by @lings03 in https://github.com/venera-app/venera/pull/669\r\n* Enable to refresh history info. by @lings03 in https://github.com/venera-app/venera/pull/722\r\n* Update AltStore source with latest release by @github-actions[bot] in https://github.com/venera-app/venera/pull/651\r\n* Update comic source URL to use jsdelivr CDN for improved reliability by @wgh136 in https://github.com/venera-app/venera/pull/734\r\n* Improve layout of buttons in reader by @wgh136 in https://github.com/venera-app/venera/pull/735\r \n\r\nFull Changelog: https://github.com/venera-app/venera/compare/v1.6.1...v1.6.2",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.6.2/venera-ios-1.6.2%2B162.ipa",
-          "size": 15209455
+          "version": "2.6.3",
+          "buildVersion": "263",
+          "date": "2026-10-17",
+          "localizedDescription": "Venera Prime 2.6.3\n\n本次更新\n\n- 旧备份导入后重启白屏：部分旧版 \".venera\" 备份的“稍后阅读”数据库使用旧字段，导入后首页读取失败，即使稍后阅读列表为空也会触发白屏。本版补齐数据库迁移，恢复后可正常进入首页，并继续添加、删除稍后阅读条目；已有条目、来源和加入时间会保留。已在受影响手机上覆盖安装修复构建，保留原有数据后正常启动。\n- 数据库迁移失败时保留数据：旧表转换使用事务，失败时回滚；不支持的表结构会报告初始化或导入失败，避免将结构不兼容的完整数据库误当成损坏文件而重建。\n\n请更新后验证并反馈\n\n请遇到导入后白屏的用户安装 2.6.3 后重新启动应用，无须先卸载或清除数据。关联 issue 的提出者也请按原来的复现步骤复查。\n\n- 如果问题已解决，请在原 issue 中确认，并及时关闭尚未关闭的 issue。\n- 如果问题仍存在，请在原 issue 提供版本号、系统与设备、漫画源、复现步骤，以及必要的日志或录屏；已关闭的问题也可继续留言或重新打开。\n- 日志、截图和录屏请遮盖账号、密码、令牌及 WebDAV 私有地址等敏感信息。\n- 关联 issue 不代表所有设备、漫画源及服务端都已验证，也不会自动关闭这些 issue。\n\n历史待确认问题\n\n以下改动属于此前版本，本次再次关联仅为收集新版验证结果。已核对当前正文及评论，尚未发现提出者明确确认升级后验证通过的文字反馈；已关闭的条目仍请按下表复查。\n\n| 相关 issue | 提出者 | 请复查的行为 |\n| --- | --- | --- |\n| #26（已关闭） | @tkp206093 | 双页布局、阅读方向和切换后的阅读位置；最近反馈为截图，尚无明确文字结论 |\n| #33（已关闭） | @suppermanzero | 阅读页底部页边距按钮的实时预览、拖动和精确输入 |\n| #35（已关闭） | @suppermanzero | 收藏夹顶部不再常驻检测信息，进度和结果仍可在后台任务查看 |\n| #36（已关闭） | @zklall | 连续阅读在章节实际边界通过滑动、边缘点击、滚轮、触控板及方向键进入相邻章节 |\n| #37（已关闭） | @h0stg | AltStore 源能显示 Prime 新版并用于更新；源已由上一版机器人流程更新，仍需客户端复查 |\n| #39 | @lzx377z | 关闭自动同步后仍可手动上传、下载；WebDAV 配置页点击“继续”执行选中的操作 |\n| #40（已关闭） | @zklall | 折叠屏设置入口、悬浮球完整显示、目录排序与实际跨章方向，以及返回上一章章末的位置 |\n\n验证范围\n\n- 本次修复的 Linux 定向回归 7 项通过，覆盖旧表空数据及有数据的迁移、时间保留、条目读写、重开数据库、备份导入，以及原生 ZIP 和 WAL 快照。相关 Dart 静态分析无问题。\n- 华为 TAS-AN00 独立测试包 6 项通过、1 项仅供主机执行的 WAL 导出测试跳过，覆盖数据库迁移及导入后重新初始化。\n- 受影响手机已覆盖安装包含本次修复的 2.6.2 临时构建，未卸载、未清除应用数据；首页可见原有 291 条历史记录及阅读统计，再次冷启动成功，日志不再出现缺字段或相应渲染错误。这是实际受影响数据的升级恢复验证，不是 2.6.3 正式附件的真机安装验证。\n- 自动化用例采用与旧备份相同表结构的合成数据；未在手机上重新完整导入两份原始备份。部分导入漫画源脚本仍有独立的解析或配置错误，不属于本次数据库修复范围；未验证全部第三方漫画源、WebDAV 服务和其他设备。\n- 本版按 Android、iOS、macOS、Windows、Linux x64、Linux ARM64 六平台及十四个标准附件发布，以六平台构建及机器人 Release 任务全部成功作为发布完成条件。不额外下载核验线上附件；iOS 工作流生成未签名 IPA，构建成功不表示各平台真机验证完成。\n",
+          "downloadURL": "https://github.com/venera-app/venera-prime/releases/download/v2.6.3/venera-prime-ios-2.6.3%2B263.ipa",
+          "size": 16597545,
+          "minOSVersion": "14.0"
         },
         {
-          "version": "1.6.1",
-          "date": "2025-11-29",
-          "localizedDescription": "What's Changed\r\n* Update AltStore source with latest release by @github-actions[bot] in https://github.com/venera-app/venera/pull/602\r\n* Add encryptAes for js_engine by @liulifox233 in https://github.com/venera-app/venera/pull/645\r\n* Optimize iOS full-screen back gesture implementation by @liulifox233 in https://github.com/venera-app/venera/pull/643\r\n* Fix landscape reader layout and wrap long settings labels by @boa-z in https://github.com/venera-app/venera/pull/640\r\n* Enhance Cloudflare challenge detection logic by @Y-Ymeow in https://github.com/venera-app/venera/pull/619\r\n* interceptor: mask log by @Pacalini in https://github.com/venera-app/venera/pull/618\r\n* feat: skip sync setting by @Pacalini in https://github.com/venera-app/venera/pull/563\r\n* flutter 3.38.3 by @wgh136 in https://github.com/venera-app/venera/pull/648\r\n* fix: enable multi-select actions in local comics search mode by @wgh136 in https://github.com/venera-app/venera/pull/650\r\n* feat: add comment keyword blocking functionality by @wgh136 in https://github.com/venera-app/venera/pull/649\r \nNew Contributors\r\n* @Y-Ymeow made their first contribution in https://github.com/venera-app/venera/pull/619\r \nFull Changelog: https://github.com/venera-app/venera/compare/v1.6.0...v1.6.1",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.6.1/venera-ios-1.6.1%2B161.ipa",
-          "size": 15202312
+          "version": "2.6.2",
+          "buildVersion": "262",
+          "date": "2026-10-17",
+          "localizedDescription": "Venera Prime 2.6.2\n\n本次更新\n\n- 收藏夹导入与导出入口：在收藏夹概览和本地“全部”页面的右上角菜单增加“从文件导入”和“导出”，导出时可选择一个本地收藏夹，沿用原有 JSON 格式。具体收藏夹原有的重命名、排序、导出、更新漫画信息和删除操作继续保留；补充导入导出失败提示，并修正菜单长文本溢出。\n- WebDAV 手动同步 #39（@lzx377z）：配置 WebDAV 后，即使关闭“自动同步数据”，主页仍可手动上传、下载；配置页点击“继续”会执行选中的上传或下载，“保存”只保存配置。自动同步仍受各设备独立开关控制，排队的自动上传在执行前重新检查开关。\n- 备份内容停留在旧数据：修复 SQLite WAL 模式下直接复制主数据库、遗漏日志中已提交记录的问题。自动同步和手动导出的历史、收藏、稍后阅读、阅读统计及 Cookie 数据库均改为生成完整快照。旧备份无法补回原先未打包的记录；升级后请先从数据最完整的设备重新上传，再让其他设备下载。\n- 多设备 WebDAV 备份识别：上传版本会递增到本地及远端已知版本之后，并使用独立文件名，避免多个设备从同一备份开始使用时生成同名文件。备份日期和版本按数字排序，下载根据实际备份标识判断是否已同步，避免相同版本号的不同内容被跳过；兼容旧格式的 ETag、修改时间及缺少元数据的服务端。上传失败不再空增版本，恢复数据产生的通知不再立即触发回传。同步仍采用整包快照，不会自动合并多台设备同时产生的不同修改。\n- 折叠屏侧栏和后台任务悬浮球 #40（@zklall）：扩大侧栏设置入口的有效点击区域，并避开底部系统导航安全区；悬浮球贴边后完整保留在可见区域内，继续支持拖动和窗口尺寸变化。\n- 倒序目录与跨章阅读 #40（@zklall）：将目录显示排序与实际阅读顺序分开，分组目录同样提供排序入口。自动模式优先复用已缓存页面中的明确章节链接，无法识别时可独立指定实际阅读顺序；目录正序或倒序不再直接决定上一章、下一章的方向。连续模式返回上一章时，等待可见图片解码后对齐章末。该问题与悬浮球问题统一在 #40 跟踪，原 #41、#42 已由提出者合并到该 issue。\n- AltStore 源 #37（@h0stg）：修正源中继承的旧应用包名和版本信息，使用 Venera Prime 实际 IPA 的版本、构建号、下载地址和大小。加入正式 Release 成功后由机器人更新源的工作流，跳过草稿和预发布版本，缺少完整 IPA 元数据时保留原源文件。\n\n感谢 @zklall 提供 #40 的修复分支和回归测试。本版不包含 #38 的下载管理新功能提案。\n\n请更新后验证并反馈\n\n请关联 issue 的提出者安装 2.6.2 后，按原来的复现步骤复查；遇到备份内容停留在旧数据的用户，也请重新上传并在其他设备下载检查。\n\n- 如果问题已解决，请在原 issue 中确认，并及时关闭尚未关闭的 issue。\n- 如果问题仍存在，请在原 issue 提供版本号、系统与设备、漫画源、复现步骤，以及必要的日志或录屏；已关闭的问题也可继续留言或重新打开。\n- 日志、截图和录屏请遮盖账号、密码、令牌及 WebDAV 私有地址等敏感信息。\n- 关联 issue 不代表所有设备、漫画源及服务端都已验证，也不会自动关闭这些 issue。\n\n历史待确认问题\n\n以下改动属于此前版本，本次再次关联仅为收集新版验证结果。表中 issue 虽已关闭，但当前没有提出者明确确认验证通过的文字反馈；#34 已由提出者确认符合预期，不再列为待确认。\n\n| 相关 issue | 提出者 | 请复查的行为 |\n| --- | --- | --- |\n| #26 | @tkp206093 | 双页布局、阅读方向和切换后的阅读位置；最新反馈只有截图，尚无明确验证结论 |\n| #33 | @suppermanzero | 阅读页底部页边距按钮的实时预览、拖动和精确输入 |\n| #35 | @suppermanzero | 收藏夹顶部不再常驻检测信息，进度和结果仍可在后台任务查看 |\n| #36 | @zklall | 连续阅读在章节实际边界通过滑动、边缘点击、滚轮、触控板及方向键进入相邻章节；本版对倒序目录的进一步修正在 #40 跟踪 |\n\n验证范围\n\n- Linux、Flutter 3.41.4 环境下，完整 Flutter 回归 334 项通过、2 项需要外部配置的测试跳过。已启用本地原生 ZIP 库，覆盖收藏夹导入导出、WebDAV 同步、多设备备份、WAL 快照、章节顺序、六种阅读模式、折叠屏布局和后台任务。\n- AltStore 脚本测试 3 项、发布身份规则测试 6 项通过；版本一致性、工作流 YAML 及差异检查通过。Dart 静态分析无错误和警告，仅有关于页一处既有的组件参数排序提示。Linux x64 本地 Release 构建通过。\n- 跳过项分别需要外部 TLS 探测地址和真实更新 Feed 配置；原生更新下载模拟回归已执行，不能据此宣称真实升级成功。\n- 备份回归使用合成数据、本地原生 ZIP 库和 SQLite WAL 数据库；WebDAV 使用本地 HTTP 服务模拟多设备和失败场景。用户提供的原始备份仅检查了 ZIP、数据库完整性和 WAL 格式，未完整导入运行其中的图源脚本，未连接用户的 WebDAV 服务。\n- 阅读器使用模拟图源、缓存 HTML 和本地图片验证，未验证真实漫画网站上的整套流程、折叠屏真机和系统权限交互。\n- 本版按 Android、iOS、macOS、Windows、Linux x64、Linux ARM64 六平台及十四个标准附件发布，以六平台构建及机器人 Release 任务全部成功作为发布完成条件。未验证本版正式包真机安装及从上一版本的应用内升级；iOS 工作流生成未签名 IPA，构建成功不表示真机验证完成。\n",
+          "downloadURL": "https://github.com/venera-app/venera-prime/releases/download/v2.6.2/venera-prime-ios-2.6.2%2B262.ipa",
+          "size": 16596993,
+          "minOSVersion": "14.0"
         },
         {
-          "version": "1.6.0",
-          "date": "2025-11-01",
-          "localizedDescription": "What's Changed\r\n* Update AltStore source with latest release by @github-actions[bot] in https://github.com/venera-app/venera/pull/559\r\n* \u8c03\u6574\u591a\u6536\u85cf\u5939\u6f2b\u753b\u6e90\u7684\u6536\u85cf\u72b6\u6001\u663e\u793a\u903b\u8f91 by @Ftbom in https://github.com/venera-app/venera/pull/571\r\n* Enhance onResponse to support Future and validate result type by @wgh136 in https://github.com/venera-app/venera/pull/574\r\n* [iOS] Enable full screen swipe back gesture by @liulifox233 in https://github.com/venera-app/venera/pull/575\r\n* [linux] Fix linux nhentai cover image by @4b1tQu4ntN3k0 in https://github.com/venera-app/venera/pull/578\r\n* feat: \u652f\u6301\u8fc7\u6ee4\u9605\u8bfb\u5b8c\u6210\u60c5\u51b5 by @luckyray-fan in https://github.com/venera-app/venera/pull/582\r\n* Fix chinese character issue when compressing files. Close 565 by @ynyx631 in https://github.com/venera-app/venera/pull/583\r\n* Add support for ArrayBuffer to showInputDialog. by @wgh136 in https://github.com/venera-app/venera/pull/585\r\n* Added support for localstorage when logging in via webview. by @wgh136 in https://github.com/venera-app/venera/pull/586\r\n* Fix the issue of the comic list loading infinitely. Close 584 by @ynyx631 in https://github.com/venera-app/venera/pull/588\r\n* Save data when mark all as read by @lings03 in https://github.com/venera-app/venera/pull/592\r\n* Chapter comments. by @lings03 in https://github.com/venera-app/venera/pull/593\r\n* Optimize favorite page and home page. by @lings03 in https://github.com/venera-app/venera/pull/594\r\n* Update version code by @wgh136 in https://github.com/venera-app/venera/pull/596\r\n* Fix missing depends in deb package. Close 587 by @wgh136 in https://github.com/venera-app/venera/pull/597\r\n* feat: \u672c\u5730\u6536\u85cf\u641c\u7d22\u652f\u6301\u8f6c\u5c0f\u5199\u5339\u914d by @luckyray-fan in https://github.com/venera-app/venera/pull/598\r\n* Fix editor page gesture confict by @liulifox233 in https://github.com/venera-app/venera/pull/600\r \nNew Contributors\r\n* @github-actions[bot] made their first contribution in https://github.com/venera-app/venera/pull/559\r\n* @Ftbom made their first contribution in https://github.com/venera-app/venera/pull/571\r\n* @liulifox233 made their first contribution in https://github.com/venera-app/venera/pull/575\r\n* @4b1tQu4ntN3k0 made their first contribution in https://github.com/venera-app/venera/pull/578\r\n* @ynyx631 made their first contribution in https://github.com/venera-app/venera/pull/583\r \nFull Changelog: https://github.com/venera-app/venera/compare/v1.5.3...v1.6.0",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.6.0/venera-ios-1.6.0%2B160.ipa",
-          "size": 15064741
-        },
-        {
-          "version": "1.5.3",
-          "date": "2025-10-13",
-          "localizedDescription": "1. Fix an issue where the app freezes after swiping back on Android. 544\r\n2. Enable minification when building for Android. 547\r\n3. Prevent the app from creating an archive download task when the archive URL is an empty string.",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.5.3/venera-ios-1.5.3%2B153.ipa",
-          "size": 15047841
-        },
-        {
-          "version": "1.4.5",
-          "date": "2025-06-18",
-          "localizedDescription": "1. Fixed an abnormal single image height issue when \"imagesPerPage > 1\". 379  \r\n2. Fixed an invalid page calculation issue when \"showSingleImageOnFirstPage\" is enabled.  \r\n3. Fixed an issue with incorrect reading history when displaying a single image on the first page.  \r\n4. Fixed abnormal history recording when pages are not flipped. 392  \r\n5. Fixed an issue where the download task would stop after exiting the reader. 387  \r\n6. Fixed a \"RangeError\" when translating tags. 356  \r\n7. Reset the current folder to null on the favorites page if the folder is invalid. 389  \r\n8. Fixed various issues when using a custom download path on Android. 400  \r\n9. Set the initial chapter to the first downloaded chapter if no history exists when starting to read a local comic. 405  \r\n10. Removed the config file repository URL from the app.",
-          "downloadURL": "https://github.com/venera-app/venera/releases/download/v1.4.5/venera-ios-1.4.5%2B145.ipa",
-          "size": 14960268
+          "version": "2.6.1",
+          "buildVersion": "261",
+          "date": "2026-10-16",
+          "localizedDescription": "Venera Prime 2.6.1\n\n本次更新\n\n- 收藏更新检查进度：修复启动后的自动检查在漫画因检查间隔被跳过时显示 \"0/0\" 的问题。进度保留收藏夹的漫画总数，并将跳过项计入已处理数量；完成后分别显示检查数与跳过数。空收藏夹显示“没有需要检查的漫画”，后台任务列表和详情不再显示无意义的 \"0/0\"。\n- 备份导入兼容性：导入 \".venera\" 备份时，空文件或仅含空白的图源脚本不再阻断整份数据恢复；跳过这些脚本并列出文件名，本机同名非空脚本会保留。手动导入和 WebDAV 恢复均提供提示，并补充简体、繁体中文翻译。配置、账号数据、数据库、备份清单和压缩包安全校验仍然保留，导入失败时继续执行原有回滚。\n\n请更新后验证并反馈\n\n请关联 issue 的提出者安装 2.6.1 后，按原来的复现步骤复查；遇到上述两项问题的用户也请复查自动检查进度和备份导入结果。\n\n- 如果问题已解决，请在原 issue 中确认，并及时关闭尚未关闭的 issue。\n- 如果问题仍存在，请在原 issue 提供版本号、系统与设备、漫画源、复现步骤，以及必要的日志或录屏；已关闭的问题也可继续留言或重新打开。\n- 日志、截图和录屏请遮盖账号、密码、令牌及 WebDAV 私有地址等敏感信息。\n- 关联 issue 不代表所有设备、漫画源及服务端都已验证，也不会自动关闭这些 issue。\n\n历史待确认问题\n\n以下改动属于此前版本，本次再次关联仅为收集新版验证结果。发布前已重新核对正文、作者和最新评论；已关闭但没有明确验证结论的条目仍列出并注明状态。\n\n| 相关 issue | 提出者 | 请复查的行为 |\n| --- | --- | --- |\n| #21 | @huangshengshi | 更换本地漫画存储目录后能否正常下载 |\n| #22 | @18258163996 | 更换本地漫画存储目录后的下载；其他用户已反馈 2.4.1 有效，仍待提出者确认 |\n| #26 | @tkp206093 | 双页布局、阅读方向和切换后的阅读位置；issue 已关闭，最新反馈只有截图，尚无明确验证结论 |\n| #28 | @Arteiimis | 自动同步开启时，相同源数据是否仍重复上传，以及追更遇到 HTTP 429 后的请求与上传频率；关闭开关已有确认，后续上传风暴仍待复查 |\n| #32 | @akschy | 探索页设为初始页面时，图源后台加载完成后是否自动显示内容 |\n| #33 | @suppermanzero | 阅读页底部页边距按钮的实时预览、拖动和精确输入；issue 已关闭，尚无提出者明确验证反馈 |\n| #34 | @MisakaTukasa | 双页和多图画廊能否前移、后移一张图片以调整跨页配对；issue 已关闭，尚无提出者明确验证反馈 |\n| #35 | @suppermanzero | 收藏夹顶部不再常驻检测信息，进度和结果仍可在后台任务查看；issue 已关闭，尚无提出者明确验证反馈 |\n| #36 | @zklall | 连续阅读在章节实际边界通过滑动、边缘点击、滚轮、触控板及方向键进入相邻章节，短章节和边界回弹时也能继续阅读 |\n\n验证范围\n\n- Linux、Flutter 3.41.4 环境下，已完成本次更新进度与后台任务显示的相关回归，以及备份导入、旧 ZIP 兼容、文件回滚、压缩包安全、同步门禁、备份保留策略和凭据恢复相关回归；相关 Dart 静态分析与差异检查通过。\n- 导入回归使用合成备份和模拟图源，覆盖有无清单、空白脚本、保留本机同名脚本、账号数据恢复，以及清单缺失文件、损坏账号数据和数据库时拒绝导入。未执行用户原始备份的完整应用恢复，也未连接用户 WebDAV 服务验证。\n- 本版执行 Android、iOS、macOS、Windows、Linux x64 和 Linux ARM64 六平台构建，标准产物范围为十四个附件；以六平台构建及机器人 Release 任务全部成功作为发布完成条件。不额外执行附件下载、哈希比对或签名复核。\n- 尚未执行本版正式包的真机安装、从上一版本应用内升级、原始备份在各平台的导入及系统权限交互验证。iOS 工作流生成未签名 IPA；构建成功不表示完成签名安装或各平台真机验证。\n",
+          "downloadURL": "https://github.com/venera-app/venera-prime/releases/download/v2.6.1/venera-prime-ios-2.6.1%2B261.ipa",
+          "size": 16570331,
+          "minOSVersion": "14.0"
         }
       ]
     }
   ],
   "news": [
     {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2025-06-18T09:02:01Z",
-      "identifier": "release-v1.4.5",
+      "appID": "com.github.wgh136.venera.prime",
+      "caption": "A new Venera Prime version is available.",
+      "date": "2026-11-03T18:31:30Z",
+      "identifier": "release-v2.7.0",
       "notify": true,
       "tintColor": "#0784FC",
-      "title": "v1.4.5 - Venera  18/06/25",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.4.5"
+      "title": "Venera Prime 2.7.0",
+      "url": "https://github.com/venera-app/venera-prime/releases/tag/v2.7.0"
     },
     {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2025-10-13T12:47:27Z",
-      "identifier": "release-v1.5.3",
+      "appID": "com.github.wgh136.venera.prime",
+      "caption": "A new Venera Prime version is available.",
+      "date": "2026-10-17T13:58:24Z",
+      "identifier": "release-v2.6.3",
       "notify": true,
       "tintColor": "#0784FC",
-      "title": "v1.5.3 - Venera  13/10/25",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.5.3"
+      "title": "Venera Prime 2.6.3",
+      "url": "https://github.com/venera-app/venera-prime/releases/tag/v2.6.3"
     },
     {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2025-11-01T07:31:38Z",
-      "identifier": "release-v1.6.0",
+      "appID": "com.github.wgh136.venera.prime",
+      "caption": "A new Venera Prime version is available.",
+      "date": "2026-10-17T10:04:49Z",
+      "identifier": "release-v2.6.2",
       "notify": true,
       "tintColor": "#0784FC",
-      "title": "v1.6.0 - Venera  01/11/25",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.6.0"
+      "title": "Venera Prime 2.6.2",
+      "url": "https://github.com/venera-app/venera-prime/releases/tag/v2.6.2"
     },
     {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2025-11-29T08:51:14Z",
-      "identifier": "release-v1.6.1",
+      "appID": "com.github.wgh136.venera.prime",
+      "caption": "A new Venera Prime version is available.",
+      "date": "2026-10-16T12:39:57Z",
+      "identifier": "release-v2.6.1",
       "notify": true,
       "tintColor": "#0784FC",
-      "title": "v1.6.1 - Venera  29/11/25",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.6.1"
-    },
-    {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2026-01-01T08:31:16Z",
-      "identifier": "release-v1.6.2",
-      "notify": true,
-      "tintColor": "#0784FC",
-      "title": "v1.6.2 - Venera  01/01/26",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.6.2"
-    },
-    {
-      "appID": "com.github.wgh136.venera",
-      "caption": "Update of Venera just got released!",
-      "date": "2026-03-08T09:49:52Z",
-      "identifier": "release-v1.6.3",
-      "notify": true,
-      "tintColor": "#0784FC",
-      "title": "v1.6.3 - Venera  08/03/26",
-      "url": "https://github.com/venera-app/venera/releases/tag/v1.6.3"
+      "title": "Venera Prime 2.6.1",
+      "url": "https://github.com/venera-app/venera-prime/releases/tag/v2.6.1"
     }
   ]
 }
