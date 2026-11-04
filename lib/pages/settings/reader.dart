@@ -247,6 +247,35 @@ class _ReaderSettingsState extends State<ReaderSettings> {
             onChanged: () => widget.onChanged?.call('readerPageMarginPercent'),
           ),
         ),
+        _SwitchSetting(
+          title: 'Line enhancement'.tl,
+          subtitle:
+              'Deepen faint lines and text. Reduce strength for color comics.'
+                  .tl,
+          settingKey: 'readerLineEnhancement',
+          onChanged: () {
+            setState(() {});
+            widget.onChanged?.call('readerLineEnhancement');
+          },
+          comicId: isEnabledSpecificSettings ? widget.comicId : null,
+          comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+          useDeviceSettings: useDeviceSpecificSettings,
+        ).toSliver(),
+        SliverAnimatedVisibility(
+          visible: readerSetting('readerLineEnhancement') == true,
+          child: _SliderSetting(
+            title: 'Line enhancement strength'.tl,
+            settingsIndex: 'readerLineEnhancementStrength',
+            interval: 0.05,
+            min: 0.0,
+            max: 1.0,
+            onChanged: () =>
+                widget.onChanged?.call('readerLineEnhancementStrength'),
+            comicId: isEnabledSpecificSettings ? widget.comicId : null,
+            comicSource: isEnabledSpecificSettings ? widget.comicSource : null,
+            useDeviceSettings: useDeviceSpecificSettings,
+          ),
+        ),
         SelectSetting(
           title: 'Night mode'.tl,
           settingKey: 'readerNightMode',
@@ -265,13 +294,7 @@ class _ReaderSettingsState extends State<ReaderSettings> {
           useDeviceSettings: useDeviceSpecificSettings,
         ).toSliver(),
         SliverAnimatedVisibility(
-          visible:
-              appdata.settings.getReaderSetting(
-                widget.comicId ?? '',
-                widget.comicSource ?? 'global',
-                'readerNightMode',
-              ) !=
-              'none',
+          visible: readerSetting('readerNightMode') != 'none',
           child: _SliderSetting(
             title: 'Night mode intensity'.tl,
             settingsIndex: 'readerNightModeIntensity',

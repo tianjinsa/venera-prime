@@ -25,31 +25,6 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
       context.reader.mode == ReaderMode.galleryRightToLeft ||
       context.reader.mode == ReaderMode.continuousRightToLeft;
 
-  Color? _nightOverlay(BuildContext context) {
-    final mode = appdata.settings.getReaderSetting(
-      context.reader.cid,
-      context.reader.type.sourceKey,
-      'readerNightMode',
-    );
-    if (mode == null || mode == 'none') return null;
-    final intensity =
-        (appdata.settings.getReaderSetting(
-                  context.reader.cid,
-                  context.reader.type.sourceKey,
-                  'readerNightModeIntensity',
-                )
-                as num?)
-            ?.toDouble()
-            .clamp(0.0, 0.8) ??
-        0.25;
-    final color = switch (mode) {
-      'warm' => Colors.orange,
-      'red' => Colors.red,
-      _ => Colors.black,
-    };
-    return color.withValues(alpha: intensity);
-  }
-
   int showFloatingButtonValue = 0;
 
   var lastValue = 0;
@@ -204,24 +179,23 @@ class _ReaderScaffoldState extends State<_ReaderScaffold> {
     return Stack(
       children: [
         Positioned.fill(
-          child: AbsorbPointer(
-            absorbing: context.reader.isPageAnimating,
-            child: ColoredBox(
-              color: readerBackgroundColor(
-                context,
-                context.reader.cid,
-                context.reader.type.sourceKey,
+          child: ReaderColorEffects(
+            comicId: context.reader.cid,
+            sourceKey: context.reader.type.sourceKey,
+            enhanceLines: !isOnChapterCommentsPage,
+            child: AbsorbPointer(
+              absorbing: context.reader.isPageAnimating,
+              child: ColoredBox(
+                color: readerBackgroundColor(
+                  context,
+                  context.reader.cid,
+                  context.reader.type.sourceKey,
+                ),
+                child: widget.child,
               ),
-              child: widget.child,
             ),
           ),
         ),
-        if (_nightOverlay(context) != null)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: ColoredBox(color: _nightOverlay(context)!),
-            ),
-          ),
         if (appdata.settings['showPageNumberInReader'] == true &&
             !isOnChapterCommentsPage)
           buildPageInfoText(),

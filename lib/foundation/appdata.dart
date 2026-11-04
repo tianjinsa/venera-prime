@@ -580,6 +580,8 @@ class Settings with ChangeNotifier {
     'showChapterCommentsAtEnd':
         false, // show chapter comments at end of chapter
     'readerBackground': 'theme', // theme, white, gray, black, sepia
+    'readerLineEnhancement': false,
+    'readerLineEnhancementStrength': 0.5, // 0.0 - 1.0
     'readerNightMode': 'none', // none, warm, dark, red
     'readerNightModeIntensity': 0.25, // 0.0 - 0.8
     'removeReadLaterOnComplete': true,
