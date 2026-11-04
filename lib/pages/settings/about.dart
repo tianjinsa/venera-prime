@@ -56,6 +56,9 @@ class _AboutSettingsState extends State<AboutSettings> {
                   ? Text('New version available'.tl)
                   : const TaskStatusText(taskKey: 'app-update-check'),
               trailing: Button.filled(
+                onPressed: hasUpdate
+                    ? task!.onOpenResult!
+                    : () => checkUpdateUi(),
                 child: Text(
                   task?.isRunning == true
                       ? "Checking".tl
@@ -63,9 +66,6 @@ class _AboutSettingsState extends State<AboutSettings> {
                       ? "View update".tl
                       : "Check".tl,
                 ),
-                onPressed: hasUpdate
-                    ? task!.onOpenResult!
-                    : () => checkUpdateUi(),
               ).fixHeight(32),
             );
           },

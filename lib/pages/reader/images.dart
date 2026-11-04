@@ -219,17 +219,6 @@ class _GalleryModeState extends State<_GalleryMode>
     }
   }
 
-  @override
-  void dispose() {
-    _spreadSizeRetry?.cancel();
-    keyRepeatTimer?.cancel();
-    for (final (stream, listener) in _spreadMetadataStreams.values) {
-      stream.removeListener(listener);
-    }
-    _spreadMetadataStreams.clear();
-    super.dispose();
-  }
-
   late _ReaderState reader;
 
   bool get showChapterCommentsAtEnd {
@@ -284,6 +273,11 @@ class _GalleryModeState extends State<_GalleryMode>
 
   @override
   void dispose() {
+    _spreadSizeRetry?.cancel();
+    for (final (stream, listener) in _spreadMetadataStreams.values) {
+      stream.removeListener(listener);
+    }
+    _spreadMetadataStreams.clear();
     keyRepeatTimer?.cancel();
     controller.dispose();
     for (final controller in photoViewControllers.values) {
