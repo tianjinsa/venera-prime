@@ -40,7 +40,9 @@ const _kLeftBarWidth = 256.0;
 const _kTwoPanelChangeWidth = 720.0;
 
 class FavoritesPage extends StatefulWidget {
-  const FavoritesPage({super.key});
+  const FavoritesPage({super.key, this.initialLocalFolder});
+
+  final String? initialLocalFolder;
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -54,6 +56,27 @@ class _FavoritesPageState extends State<FavoritesPage> {
   bool _openLocalSearch = false;
 
   FolderList? folderList;
+
+  // Home shortcuts are pushed routes, not the persistent Favorites tab.
+  bool get isFolderShortcut => widget.initialLocalFolder != null;
+
+  Widget buildLeading(BuildContext context) {
+    if (isFolderShortcut) {
+      return IconButton(
+        tooltip: 'Back'.tl,
+        icon: const Icon(Icons.arrow_back),
+        onPressed: () => Navigator.maybePop(context),
+      );
+    }
+    return context.width <= _kTwoPanelChangeWidth
+        ? IconButton(
+            tooltip: 'Folders'.tl,
+            icon: const Icon(Icons.menu),
+            color: context.colorScheme.primary,
+            onPressed: showFolderSelector,
+          )
+        : const SizedBox();
+  }
 
   void setFolder(bool isNetwork, String? folder) {
     setState(() {
@@ -99,6 +122,10 @@ class _FavoritesPageState extends State<FavoritesPage> {
       folder = data['name'];
       isNetwork = data['isNetwork'] ?? false;
     }
+    if (widget.initialLocalFolder != null) {
+      folder = widget.initialLocalFolder;
+      isNetwork = false;
+    }
     if (folder != null
         && !isNetwork
         && !LocalFavoritesManager().existsFolder(folder!)) {
@@ -130,7 +157,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
         ],
       ),
     );
-    final handlesNetworkBack = folder != null && isNetwork;
+    final handlesNetworkBack = !isFolderShortcut && folder != null && isNetwork;
     return PopScope(
       canPop: !handlesNetworkBack,
       onPopInvokedWithResult: (didPop, result) {

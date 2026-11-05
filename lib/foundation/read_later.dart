@@ -6,6 +6,7 @@ import 'package:venera/foundation/app.dart';
 import 'package:venera/foundation/comic_source/comic_source.dart';
 import 'package:venera/foundation/comic_type.dart';
 import 'package:venera/foundation/log.dart';
+import 'package:venera/utils/data_sync.dart';
 import 'package:venera/utils/io.dart';
 
 class ReadLaterComic implements Comic {
@@ -253,7 +254,7 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
         DateTime.now().millisecondsSinceEpoch,
       ],
     );
-    notifyListeners();
+    _notifyDataChanged();
     return true;
   }
 
@@ -278,7 +279,7 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
         ],
       );
     }
-    notifyListeners();
+    _notifyDataChanged();
   }
 
   bool remove(String id, ComicType type) {
@@ -287,7 +288,7 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
       type.value,
     ]);
     final changed = (_db.select('SELECT changes();').first[0] as int) > 0;
-    if (changed) notifyListeners();
+    if (changed) _notifyDataChanged();
     return changed;
   }
 
@@ -312,12 +313,17 @@ class ReadLaterManager with ChangeNotifier, BatchedNotifications {
       _db.execute('ROLLBACK;');
       rethrow;
     }
-    notifyListeners();
+    _notifyDataChanged();
   }
 
   void clear() {
     _db.execute('DELETE FROM read_later;');
+    _notifyDataChanged();
+  }
+
+  void _notifyDataChanged() {
     notifyListeners();
+    DataSync.instance?.onDataChanged();
   }
 
   void close() {

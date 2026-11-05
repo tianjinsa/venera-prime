@@ -364,7 +364,9 @@ class Appdata with Init {
           .take(50)
           .toList();
     }
-    _restoreSearchRecords(data['searchRecords']);
+    if (data.containsKey('searchRecords')) {
+      _restoreSearchRecords(data['searchRecords']);
+    }
     if (persist) {
       saveData();
     }
@@ -530,6 +532,7 @@ class Settings with ChangeNotifier {
     'longPressZoomPosition': "press", // press, center
     'checkUpdateOnStart': true,
     'limitImageWidth': true,
+    'readerWaterfall': false,
     'webdav': [], // empty means not configured
     "disableSyncFields": "", // "field1, field2, ..."
     'dataVersion': 0,

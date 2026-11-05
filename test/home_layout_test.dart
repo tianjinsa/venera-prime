@@ -1,14 +1,35 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:venera/foundation/app.dart';
+import 'package:venera/components/components.dart';
+import 'package:venera/foundation/favorites.dart';
 import 'package:venera/foundation/appdata.dart';
 import 'package:venera/foundation/home_layout.dart';
 import 'package:venera/pages/settings/home_layout_page.dart';
 import 'package:venera/utils/translations.dart';
 
 void main() {
+  test(
+    'favorite modules and compact preference persist and can be removed',
+    () {
+      final layout = HomeLayout.fromJson(null)
+        ..addFolder('My favorites')
+        ..compact = true;
+      layout.addFolder('My favorites');
+      expect(layout.order.where((id) => id == 'folder:My favorites').length, 1);
+      final restored = HomeLayout.fromJson(layout.toJson());
+      expect(restored.compact, isTrue);
+      expect(restored.folders['folder:My favorites'], 'My favorites');
+      restored.hidden.add('folder:My favorites');
+      restored.removeFolder('folder:My favorites');
+      expect(restored.order, HomeLayout.titles.keys.toList());
+      expect(restored.hidden, isEmpty);
+    },
+  );
+
   test('defaults preserve all existing modules in order', () {
     final layout = HomeLayout.fromJson(null);
     expect(layout.order, HomeLayout.titles.keys.toList());
@@ -43,12 +64,20 @@ void main() {
     final root = (await tester.runAsync(
       () => Directory.systemTemp.createTemp('prime-home-layout-'),
     ))!;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (_) async => root.path,
+    );
     App.dataPath = root.path;
     appdata.settings['webdav'] = [];
     appdata.settings['homeLayout'] = <String, dynamic>{};
     tester.view.resetPhysicalSize();
     tester.view.physicalSize = const Size(320, 900);
     tester.view.devicePixelRatio = 1;
+    final favorites = LocalFavoritesManager();
+    favorites.close();
+    await tester.runAsync(() => favorites.init());
+    favorites.createFolder('Home shortcut');
     try {
       await tester.pumpWidget(const MaterialApp(home: HomeLayoutPage()));
       await tester.runAsync(() async {
@@ -59,6 +88,19 @@ void main() {
       expect(HomeLayout.fromJson(appdata.settings['homeLayout']).hidden, {
         'search',
       });
+      await tester.tap(find.byIcon(Icons.settings_outlined));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.byType(SwitchListTile));
+        await appdata.saveData(false);
+      });
+      await tester.pumpAndSettle();
+      expect(
+        HomeLayout.fromJson(appdata.settings['homeLayout']).compact,
+        isTrue,
+      );
+      Navigator.of(tester.element(find.byType(ContentDialog))).pop();
+      await tester.pumpAndSettle();
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );
@@ -88,9 +130,30 @@ void main() {
         HomeLayout.fromJson(appdata.settings['homeLayout']).order,
         HomeLayout.titles.keys.toList(),
       );
+      await tester.tap(find.byIcon(Icons.add));
+      await tester.pumpAndSettle();
+      expect(find.byType(PopUpWidgetScaffold), findsOneWidget);
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Home shortcut'));
+      });
+      await tester.pumpAndSettle();
+      expect(
+        HomeLayout.fromJson(appdata.settings['homeLayout']).folders.values,
+        contains('Home shortcut'),
+      );
+      expect(find.byType(PopUpWidgetScaffold), findsNothing);
+      // The popup completes after its closing transition; flush the resulting
+      // asynchronous settings write before starting another save.
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+      }
       expect(tester.takeException(), isNull);
     } finally {
       await tester.pumpWidget(const SizedBox());
+      favorites.close();
       appdata.restoreMemorySnapshot(snapshot);
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
