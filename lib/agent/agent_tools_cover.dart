@@ -11,6 +11,61 @@ extension _AgentCoverTools on AgentTools {
     if (c.messageId == null) {
       throw const AgentException('INVALID_ARGUMENT', '封面需要关联当前工具消息');
     }
+    if (!args.containsKey('covers')) return _readOneCover(args, c);
+    final covers = args['covers'];
+    if (covers is! List || covers.isEmpty) {
+      throw const AgentException('INVALID_ARGUMENT', 'covers 需要非空数组');
+    }
+    if (covers.length > 10) {
+      throw const AgentException('BATCH_TOO_LARGE', '一次最多读取10张封面，请分批');
+    }
+    final results = <AgentJson>[];
+    // Bound image memory and keep deterministic input order. A failed image
+    // must not discard the successful images from the same tool call.
+    for (var index = 0; index < covers.length; index++) {
+      c.run.check();
+      final item = covers[index];
+      try {
+        if (item is! Map ||
+            item.keys.any(
+              (key) => !['source_key', 'comic_id', 'cover_url'].contains(key),
+            )) {
+          throw const AgentException(
+            'INVALID_ARGUMENT',
+            '封面项需要 source_key + comic_id 或 cover_url',
+          );
+        }
+        final data = await _readOneCover(agentObject(item), c);
+        results.add({'index': index + 1, 'status': 'ok', ...data});
+      } on AgentException catch (e) {
+        if (e.code == 'CANCELLED') rethrow;
+        results.add({
+          'index': index + 1,
+          'status': 'failed',
+          'reason': e.code,
+          'message': e.message,
+        });
+      } catch (_) {
+        results.add({
+          'index': index + 1,
+          'status': 'failed',
+          'reason': 'COVER_LOAD_FAILED',
+          'message': '封面读取失败，请检查漫画源或网络状态',
+        });
+      }
+    }
+    return {
+      'summary': {
+        'total': covers.length,
+        'ok': results.where((r) => r['status'] == 'ok').length,
+        'skipped': 0,
+        'failed': results.where((r) => r['status'] == 'failed').length,
+      },
+      'results': results,
+    };
+  }
+
+  Future<AgentJson> _readOneCover(AgentJson args, AgentToolContext c) async {
     String? sourceKey = args.containsKey('source_key')
         ? AgentTools._text(args, 'source_key')
         : null;

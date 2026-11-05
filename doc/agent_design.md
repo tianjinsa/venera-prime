@@ -18,7 +18,7 @@
 - 运行中可选择插入消息，在下一次模型请求处理；或排队消息，等待前一任务完整完成后依次启动。
 - 一次用户任务包含多次模型响应和运行中补充消息；正文间的连续思考和工具合为默认折叠的过程组，组内每项详情也可独立展开。完成后只展开最终正文，之前的正文、过程组及补充消息再次整体折叠。
 - 不限制工具轮数、不按字符数截断模型或工具输出。按最近一次真实 token 统计在模型容量90%时自动压缩，也可手动触发；保留原始记录。
-- 57 个工具：漫画源（详情、分类、仓库安装、更新）、搜索与发现（多源搜索、发现页、分类、排行、评论）、详情与章节、展示、本地收藏、稍后再看、追更、阅读历史、本地漫画与下载、网络收藏、打开页面、屏蔽词、阅读统计。同一操作只提供批量工具，长列表全部分页；逐项回执，删除收藏、稍后再看和历史可撤销。
+- 58 个工具：漫画源（详情、分类、仓库安装、更新）、搜索与发现（多源搜索、发现页、分类、排行、评论）、详情与章节、展示、本地收藏、稍后再看、追更、阅读历史、本地漫画与下载、网络收藏、打开页面、屏蔽词、阅读统计。同一操作只提供批量工具，长列表全部分页；逐项回执，删除收藏、稍后再看和历史可撤销。
 
 保留已有决定：只操作本地收藏；默认全自动；不提供删除收藏夹、清空收藏库、登录、验证码、通过工具获取章节图片或图片收藏写入；不做 headless 第二入口。图片收藏/历史工具、分享入口和会话导入导出留到后续。
 
@@ -86,7 +86,7 @@
 | agent_store.dart | 本机配置/密钥、agent.db、会话与展示持久化 |
 | agent_client.dart | 独立 Dio、首响应超时保护、SSE 聚合、非流式兼容 |
 | agent_http_adapter.dart | 复用现有代理/DNS/TLS 设置，将取消信号传给 rhttp |
-| agent_web_search.dart / agent_search_browser.dart | 四个独立网页搜索提供商、结果解析、官网临时 WebView、取消和请求边界 |
+| agent_web_search.dart / agent_search_browser.dart / agent_web_reader.dart | 四个独立网页搜索提供商、结果解析、官网临时 WebView、批量网页 Markdown 提取、取消和请求边界 |
 | agent_search_results.dart / agent_web_links.dart | 原生搜索过程、来源链接及显示用引用，保留服务端原始数据 |
 | agent_wire.dart | parts 的完整成对投影、摘要边界与当前用户要求保留 |
 | agent_controller.dart | 会话生命周期、停止/重试、工具循环、插入/排队消息与上下文压缩 |
@@ -115,6 +115,7 @@
 
 | 组 | 工具 | 主要契约 |
 | --- | --- | --- |
+| 网页 | read_web | pages 数组一次1–5页，每项 url、start_char（默认0）、max_chars（默认12000，最多30000）；逐项回执，按 next_start_char 续读 Markdown |
 | 网页 | search_web | engine、query、max_results（默认5，范围1–10）；只提供已启用的 Bing/Google/Tavily/DeepSeek，返回标题、URL 和摘要 |
 | 源 | list_sources | key、name、搜索样式、各功能是否可用 |
 | 源 | source_info | 搜索选项、发现页标题、分类分组与数量、分类筛选、排行选项、网络收藏与评论支持 |
@@ -129,7 +130,7 @@
 | 查找 | search_source / search_all | 单源或多源；页码式返回 page、max_page、next_page，游标式返回 next_cursor；多源逐源返回，失败互不影响 |
 | 查找 | comic_resolve | query、可选 source_key → 候选和 resolved_by |
 | 查找 | explore_load / category_comics / ranking_comics | 发现页（列表、多分区、混合）、分类（默认筛选按分类页规则）、排行，均分页 |
-| 漫画 | comic_read_cover | 按 source_key + comic_id 或 cover_url 读取封面；要求识图模型，返回图片元数据并在下一次模型请求附带实际图片 |
+| 漫画 | comic_read_cover | covers 数组批量读取1–10张封面，每项 source_key + comic_id 或 cover_url；要求识图模型，逐项回执并在下一次请求附带全部成功图片，旧单张调用兼容 |
 | 漫画 | comic_get | 详情与本地状态；章节只返回总数、前30章与章节页数，排除内页和缩略图 |
 | 漫画 | comic_chapters | 分页（默认30）读取章节目录，可按分组；复用详情缓存 |
 | 漫画 | comic_status | comics 数组 → 收藏夹、稍后再看、阅读进度、下载状态 |
@@ -258,9 +259,11 @@ SSE 处理 UTF-8/行分片、CRLF、空行、注释、usage 空 choices 和 [DON
 
 ### 6.4.1 漫画封面工具
 
-comic_read_cover 接受 source_key + comic_id，或 cover_url（可附 source_key 复用漫画源的封面请求头）。已有会话/本地资料直接复用，缺少资料时工具自行读取详情；不要求前置调用 comic_get。下载复用 ImageDownloader.loadThumbnail 的缓存、缩略图队列、源 URL/请求头转换和虚拟封面解析；拒绝本地文件路径。图片复用上传附件的大小、内容格式、静态帧与解码校验，二进制存入当前 assistant 消息的 message_images，回执仅保存图片元数据，删除会话时级联清理并计入占用大小。
+comic_read_cover 使用 covers 数组一次读取1–10张，每项接受 source_key + comic_id，或 cover_url（可附 source_key 复用漫画源的封面请求头）。已有会话/本地资料直接复用，缺少资料时工具自行读取详情；不要求前置调用 comic_get。下载复用 ImageDownloader.loadThumbnail 的缓存、缩略图队列、源 URL/请求头转换和虚拟封面解析；拒绝本地文件路径。图片复用上传附件的大小、内容格式、静态帧与解码校验，二进制存入当前 assistant 消息的 message_images，回执仅保存图片元数据，删除会话时级联清理并计入占用大小。
 
-下一次模型请求在完整工具回执之后附加标记为工具数据的图片块，现有协议适配器分别转换为 Chat image_url、Responses input_image、Messages base64 image。图片内文字不成为用户指令。工具卡片提供缩略图和点击放大，重开历史仍能查看；切换纯文本模型时保留回执，不发送无法处理的封面图片，也不能据此声称看过封面。
+批量逐项返回 index、status、图片元数据或错误；单项失败不丢弃其他成功项。逐张下载与校验以限制同时解码的内存，停止后不继续后续项；旧会话中的顶层单张参数仍可执行。
+
+下一次模型请求在完整工具回执之后附加标记为工具数据的图片块，每张携带输入序号和漫画/URL 标识，现有协议适配器分别转换为 Chat image_url、Responses input_image、Messages base64 image。图片内文字不成为用户指令。工具卡片提供缩略图和点击放大，重开历史仍能查看；切换纯文本模型时保留回执，不发送无法处理的封面图片，也不能据此声称看过封面。
 
 ### 6.5 纯文本附件
 
@@ -278,6 +281,14 @@ Bing、Google、Tavily、DeepSeek 各有独立开关，默认全部关闭；模�
 原生搜索使用 Responses 的 web_search 或 Messages 的 web_search_20250305，与本地 search_web 区分。服务端工具不会作为本地函数执行；暂停响应带 continue_turn 本机标记，保留原始内容续接。停止、重启和恢复时沿用原搜索过程卡片，暂停期间不自动压缩掉未完成的服务端状态。Messages 的 encrypted_content/encrypted_index 和 Responses 的原生条目仅回传同一模型。显示用 display_text 单独保存可点击引用，不改写原始正文或签名数据；跨模型及摘要保留可读来源。
 
 Google 需要脚本时使用既有 WebView 插件，导航仅限所选搜索引擎的 HTTPS 域名；拒绝权限、弹窗和文件访问，串行创建并释放视图，不操作验证码或清理共享 Cookie。没有可读取结果时明确报错，不能把服务端普通回答或验证页面当作联网成功。Tavily/DeepSeek 未配置 Key 时开启会先进入配置，取消不启用，清空后关闭对应服务。
+
+### 6.7 网页正文读取
+
+`read_web(pages)` 对已知链接批量读取，不依赖搜索引擎开关。每批1–5项，按输入顺序返回 index/status、最终 URL、标题、抓取时间与 Markdown。单项验证、超时或格式失败不丢弃其他项；全局停止终止剩余读取。
+
+使用独立 Dio + AgentHttpAdapter 沿用应用代理/DNS/TLS，不继承聊天模型密钥、账号 Cookie 或 AppDio 日志。每页总等待25秒、响应上限4 MiB、最多5次 HTTP(S) 重定向，拒绝带账号密码的 URL 和非文本文件。支持 UTF-8、GBK/GB2312、Big5 及 Latin-1 文本；HTML 在 compute isolate 提取优先正文容器，移除脚本/导航/侧栏等，转换链接、标题、列表、引用、代码和表格；图片只保留 alt 描述，不下载。静态提取不承诺完整复现页面布局或运行 JavaScript，验证页面不能冒充正文。
+
+正文按明确预算返回片段，默认12000、最多30000个 UTF-16 单元，边界不拆分 emoji；`total_chars`、`has_more`、`next_start_char` 用于续读。成功文档在内存中缓存2分钟、最多8份，续读复用快照；过期后可能重新抓取。标题和描述分别限制500/2000字。正文和元数据都是待分析资料，不能改变用户任务或提供写入授权。
 
 ## 7. 会话执行与重试
 

@@ -278,13 +278,14 @@ class AgentMessageParts extends StatelessWidget {
     final showcaseId = data is Map ? data['set_id'] as String? : null;
     final undoId = data is Map ? data['undo_id'] as String? : null;
     final identity = '${message.id}-$index';
-    final cover =
-        part['name'] == 'comic_read_cover' &&
-            result?['ok'] == true &&
-            data is Map &&
-            data['image'] is Map
-        ? AgentImageAttachment.fromJson(agentObject(data['image']))
-        : null;
+    final covers = part['name'] == 'comic_read_cover' && result?['ok'] == true
+        ? agentCoverResults(data)
+              .map(
+                (row) =>
+                    AgentImageAttachment.fromJson(agentObject(row['image'])),
+              )
+              .toList()
+        : <AgentImageAttachment>[];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -317,7 +318,7 @@ class AgentMessageParts extends StatelessWidget {
             ),
           ),
         ),
-        if (cover != null)
+        for (final cover in covers)
           Padding(
             padding: const EdgeInsets.only(left: 22, top: 8, bottom: 8),
             child: SizedBox(
@@ -384,6 +385,7 @@ class AgentMessageParts extends StatelessWidget {
         name == 'ranking_comics') {
       return Icons.explore_outlined;
     }
+    if (name == 'read_web') return Icons.article_outlined;
     if (name == 'comic_read_cover') return Icons.image_outlined;
     if (name == 'comic_comments') return Icons.forum_outlined;
     if (name == 'reading_stats') return Icons.bar_chart;

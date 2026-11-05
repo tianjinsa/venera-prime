@@ -361,7 +361,7 @@ void main() {
         .map((s) => s['function']['name'] as String)
         .toList();
     expect(names.toSet().length, names.length);
-    expect(names.length, 57);
+    expect(names.length, 58);
     for (final name in names) {
       expect(agentToolLabels, contains(name), reason: name);
       final params = AgentTools.schemas.firstWhere(
@@ -401,6 +401,8 @@ void main() {
       'net_fav_add',
       'source_install',
       'history_remove',
+      'comic_read_cover',
+      'read_web',
     ]) {
       final properties =
           AgentTools.schemas.firstWhere(

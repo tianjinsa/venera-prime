@@ -21,6 +21,7 @@ const agentToolLabels = {
   'comic_open_by_id': '按 ID 查看漫画',
   'comic_resolve': '识别漫画',
   'comic_get': '查看漫画详情',
+  'read_web': '读取网页正文',
   'comic_read_cover': '读取漫画封面',
   'comic_chapters': '读取章节目录',
   'comic_status': '查询漫画状态',
@@ -798,4 +799,17 @@ class AgentShowcase {
     this.kind = 'discovery',
     this.folder,
   });
+}
+
+/// Successful cover receipts, including the single-image legacy format.
+List<AgentJson> agentCoverResults(Object? data) {
+  if (data is! Map) return const [];
+  if (data['image'] is Map) return [agentObject(data)];
+  final results = data['results'];
+  if (results is! List) return const [];
+  return [
+    for (final row in results)
+      if (row is Map && row['status'] == 'ok' && row['image'] is Map)
+        agentObject(row),
+  ];
 }

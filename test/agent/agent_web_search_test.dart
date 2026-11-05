@@ -92,6 +92,91 @@ void main() {
   });
 
   test(
+    'Bing falls back from malformed or unavailable RSS to HTML before a browser',
+    () async {
+      for (final first in [
+        searchBody('<rss><channel><item>broken'),
+        searchBody('Unavailable', status: 503),
+        searchBody('<html><body>Unsupported RSS view</body></html>'),
+      ]) {
+        final adapter = SearchTestAdapter(
+          (_, i) => i == 0
+              ? first
+              : searchBody(
+                  '<li class="b_algo"><h2><a href="https://example.org/prime">Prime</a></h2><p>Snippet</p></li>',
+                ),
+        );
+        final client = AgentWebSearchClient(
+          createDio: adapter.dio,
+          loadPage: (_, _) async => throw StateError('must not render'),
+        );
+        final result = await client.search(
+          engine: AgentSearchEngine.bing,
+          query: 'Prime',
+          run: AgentRun(),
+        );
+        expect(result['returned_count'], 1);
+        expect(adapter.requests.first.uri.queryParameters['format'], 'rss');
+        expect(
+          adapter.requests.last.uri.queryParameters,
+          isNot(contains('format')),
+        );
+        expect(adapter.requests, hasLength(2));
+      }
+    },
+  );
+
+  test(
+    'Bing CAPTCHA and rate limits do not trigger a fallback request',
+    () async {
+      for (final (body, code) in [
+        (searchBody('<form id="captcha-form">Verify</form>'), 'SEARCH_BLOCKED'),
+        (searchBody('Denied', status: 403), 'SEARCH_BLOCKED'),
+        (searchBody('Slow down', status: 429), 'SEARCH_RATE_LIMITED'),
+      ]) {
+        final adapter = SearchTestAdapter((_, _) => body);
+        await expectLater(
+          AgentWebSearchClient(createDio: adapter.dio).search(
+            engine: AgentSearchEngine.bing,
+            query: 'Prime',
+            run: AgentRun(),
+          ),
+          throwsA(searchError(code)),
+        );
+        expect(adapter.requests, hasLength(1));
+      }
+    },
+  );
+
+  test(
+    'Google handles accessible headings, excludes internal links and detects consent',
+    () {
+      final results = AgentWebSearchClient.parseWebsite(
+        AgentSearchEngine.google,
+        '''
+      <a href="/url?url=https%3A%2F%2Fexample.org%2Fnew"><div role="heading" aria-level="3">Result</div></a>
+      <a href="https://accounts.google.com/login"><h3>Sign in</h3></a>
+      <a href="https://developers.google.com/search/docs"><h3>Developer docs</h3></a>
+      <a href="https://www.google.com/search?q=other"><h3>Related</h3></a>
+    ''',
+        5,
+      );
+      expect(results.map((r) => r['url']), [
+        'https://example.org/new',
+        'https://developers.google.com/search/docs',
+      ]);
+      expect(
+        () => AgentWebSearchClient.parseWebsite(
+          AgentSearchEngine.google,
+          '<form action="https://consent.google.com/save">Before you continue to Google</form>',
+          5,
+        ),
+        throwsA(searchError('SEARCH_BLOCKED')),
+      );
+    },
+  );
+
+  test(
     'public requests contain no API credentials and encode the query',
     () async {
       final adapter = SearchTestAdapter((_, _) => searchBody(searchRss));

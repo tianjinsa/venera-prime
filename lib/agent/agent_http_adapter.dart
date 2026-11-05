@@ -4,7 +4,7 @@ import 'package:rhttp/rhttp.dart' as rhttp;
 import 'package:venera/network/app_dio.dart';
 
 /// Reuses the application's network preferences, without its interceptors.
-/// RHttpAdapter does not forward Dio cancellation, so bridge it here.
+/// Own each native stream so stopping a task also releases its response body.
 class AgentHttpAdapter implements HttpClientAdapter {
   final _active = <rhttp.CancelToken>{};
   bool _closed = false;

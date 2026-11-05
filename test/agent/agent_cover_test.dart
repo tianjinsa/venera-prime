@@ -229,11 +229,70 @@ void main() {
     expect(jsonEncode(error), isNot(contains('private request')));
   });
 
+  test(
+    'batch keeps successes in order with individual failure receipts',
+    () async {
+      store.remember(conversation.id, comic);
+      final result = await read({
+        'covers': [
+          {'source_key': 'jm', 'comic_id': '123'},
+          {'cover_url': 'file:///private'},
+          {'cover_url': 'https://covers.invalid/second.png'},
+          {'cover_url': comic.cover, 'unknown': true},
+          'invalid item',
+        ],
+      });
+      expect(result['ok'], true);
+      expect(result['data']['summary'], {
+        'total': 5,
+        'ok': 2,
+        'skipped': 0,
+        'failed': 3,
+      });
+      final rows = result['data']['results'] as List;
+      expect(rows.map((r) => r['index']), [1, 2, 3, 4, 5]);
+      expect(rows[1]['reason'], 'INVALID_ARGUMENT');
+      expect(loads, hasLength(2));
+      for (final row in [rows[0], rows[2]]) {
+        expect(store.imageBytes(conversation.id, row['image']['id']), png);
+      }
+      final advertised = AgentTools.schemas.singleWhere(
+        (s) => s['function']['name'] == 'comic_read_cover',
+      );
+      expect(advertised['function']['parameters']['required'], ['covers']);
+      expect(advertised['function']['parameters']['properties'].keys, [
+        'covers',
+      ]);
+    },
+  );
+
+  test('empty and oversized cover batches do not fetch images', () async {
+    for (final args in <AgentJson>[
+      {'covers': []},
+      {'covers': 'invalid'},
+    ]) {
+      expect((await read(args))['error']['code'], 'INVALID_ARGUMENT');
+    }
+    expect(
+      (await read({
+        'covers': List.filled(11, {'cover_url': comic.cover}),
+      }))['error']['code'],
+      'BATCH_TOO_LARGE',
+    );
+    expect(loads, isEmpty);
+  });
+
   for (final protocol in AgentProtocol.values) {
     test(
       '${protocol.id} sends real cover bytes after all tool receipts',
       () async {
-        final result = await read({'cover_url': comic.cover});
+        final result = await read({
+          'covers': [
+            {'cover_url': comic.cover},
+            {'cover_url': 'file:///invalid'},
+            {'cover_url': 'https://covers.invalid/second.png'},
+          ],
+        });
         message.parts.addAll([
           {
             'type': 'tool_call',
@@ -269,6 +328,10 @@ void main() {
           'tool',
           'user',
         ]);
+        final images = wire.last['content'] as List;
+        expect(images.where((p) => p['type'] == 'image_url'), hasLength(2));
+        expect(images.first['text'], contains('封面信息'));
+        expect(images[2]['text'], contains('second.png'));
         final body = AgentClient.requestBody(
           model: model,
           thinkingId: null,
@@ -330,7 +393,12 @@ void main() {
     tester,
   ) async {
     final result = await tester.runAsync(
-      () => read({'cover_url': comic.cover}),
+      () => read({
+        'covers': [
+          {'cover_url': comic.cover},
+          {'cover_url': 'https://covers.invalid/second.png'},
+        ],
+      }),
     );
     message.parts.add({
       'type': 'tool_call',
@@ -358,8 +426,8 @@ void main() {
         ),
       ),
     );
-    expect(find.byType(AgentImageTile), findsOneWidget);
-    await tester.tap(find.byType(AgentImageTile));
+    expect(find.byType(AgentImageTile), findsNWidgets(2));
+    await tester.tap(find.byType(AgentImageTile).first);
     await tester.pumpAndSettle();
     expect(find.byType(InteractiveViewer), findsOneWidget);
     expect(tester.takeException(), isNull);

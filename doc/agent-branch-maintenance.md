@@ -7,10 +7,10 @@
 | 项目 | 2026-11-05 盘点结果 |
 | --- | --- |
 | 开发分支 | `codex/agent-center-tab` |
-| 盘点的开发提交 | `c467bf9a99527f4b2fc52d95bd89f96a5512a0e3` |
-| 开发分支已合入的 master 基线（共同祖先） | `efd5d908cbb2227d2ce22f073917352cbd904759`，2.7.0 |
+| 盘点的开发提交 | `e51cc3a`（本次合并提交；工具优化见第6节） |
+| 开发分支已合入的 master 基线（共同祖先） | `228fd8d08b3b7c8f40959cc15f7434c163ba50b3`，2.7.2 |
 | 本次读取的 fork master | `228fd8d08b3b7c8f40959cc15f7434c163ba50b3` |
-| master 尚未合入的内容 | 包含 2.7.1 的瀑布流阅读、可定制主页，以及 2.7.2 的 WebDAV 同步和主页收藏导航修复；本次只盘点，没有执行合并 |
+| master 合并状态 | 已合入 2.7.1 的瀑布流阅读、可定制主页，以及 2.7.2 的 WebDAV 同步和主页收藏导航修复 |
 | 当前 origin | `https://github.com/tianjinsa/venera-prime.git`，用户 fork |
 | 源仓库 | `https://github.com/venera-app/venera-prime`；GitHub Sync fork 用于将其 master 更新到用户 fork 的 master |
 
@@ -31,14 +31,15 @@
 | A05 | 多轮任务、停止、重试、重新生成、编辑重发；运行中插入消息与队列消息语义分开；队列顺序、取消、附件和重启恢复可用 | `lib/agent/agent_controller.dart`、`lib/agent/agent_queue_view.dart`、`lib/agent/agent_store.dart` | `agent/agent_controller_test.dart`、`agent/agent_message_queue_test.dart`、`agent/agent_queue_view_test.dart` |
 | A06 | 上下文管理：按真实 token 用量接近容量时压缩，也可手动压缩；保留原记录、当前要求及成对的工具调用/结果，不用固定字符截断代替上下文管理 | `lib/agent/agent_context.dart`、`lib/agent/agent_wire.dart`、`lib/agent/agent_controller.dart` | `agent/agent_context_controller_test.dart` |
 | A07 | 图片和纯文本附件：选择、校验、预览、仅附件发送、持久化、删除与资源清理；Android 使用原生相册，完成/取消后恢复应用文件选择状态 | `lib/agent/agent_images.dart`、`lib/agent/agent_files.dart`、`lib/utils/io.dart`、`android/app/src/main/kotlin/com/github/wgh136/venera/AgentImagePicker.kt` 及 `MainActivity.kt` | `agent/agent_image_picker_test.dart`、`agent/agent_images_resources_test.dart`、`agent/agent_text_files_test.dart`、`agent/agent_text_files_page_test.dart` |
-| A08 | 漫画封面识图：`comic_read_cover` 读取实际图片，跨三种协议发送，支持历史预览；仅浏览漫画不自动上传封面；不扩展为章节图片读取 | `lib/agent/agent_tools_cover.dart`、`lib/agent/agent_wire.dart`、`lib/agent/agent_message_view.dart` | `agent/agent_cover_test.dart` |
+| A08 | 漫画封面识图：`comic_read_cover(covers)` 一次读取1–10张实际图片，逐项回执，跨三种协议发送并标明各图身份；支持多图历史预览及旧单张调用；仅浏览漫画不自动上传封面；不扩展为章节图片读取 | `lib/agent/agent_tools_cover.dart`、`lib/agent/agent_wire.dart`、`lib/agent/agent_message_view.dart` | `agent/agent_cover_test.dart` |
 | A09 | 会话管理与资源管理：新建、搜索、切换、重命名、删除、占用大小、搜索结果多选删除；图片/文本资源可查看并正确清理 | `lib/agent/agent_history_view.dart`、`lib/agent/agent_store.dart`、`lib/agent/agent_image_view.dart` | `agent/agent_images_history_page_test.dart`、`agent/agent_images_resources_test.dart`、`agent/agent_text_files_page_test.dart` |
 | A10 | 漫画工具覆盖源、搜索/发现/分类/排行/评论、详情/章节、展示、收藏、稍后再看、追更、历史、本地漫画、下载、网络收藏、屏蔽词、统计和页面导航；批量逐项回执、长列表分页，旧会话调用保持兼容；明确源与 ID 时不强制前置搜索 | `lib/agent/agent_tools*.dart`、`lib/agent/agent_app_bridge.dart`、`lib/agent/agent_tool_schemas.dart` | `agent/agent_more_tools_test.dart`、`agent/agent_storage_tools_test.dart`；逐工具契约见 [Agent 设计](agent_design.md) 第 5 节 |
 | A11 | 漫画源诊断/编辑：读取日志、代码分页与搜索、精确替换、解析成功后生效；失败不能破坏原源；自动/手动备份独立限额，自动超额淘汰最旧自动备份，手动备份达到限额时报错；还原前保留当前代码 | `lib/agent/agent_tools_code.dart`、`lib/agent/agent_source_backups.dart`、`lib/agent/agent_backup_settings.dart`、`lib/foundation/log.dart` | `agent/agent_more_tools_test.dart`、`agent/agent_storage_tools_test.dart` |
-| A12 | 独立联网：Bing、Google、Tavily、DeepSeek 分别配置和启用；与聊天模型配置独立；只暴露已启用引擎，验证页面/普通回答不能冒充搜索结果 | `lib/agent/agent_web_search.dart`、`lib/agent/agent_search_browser.dart`、`lib/agent/agent_search_settings.dart` | `agent/agent_web_search_test.dart`、`agent/agent_web_search_settings_test.dart`；限制见 [网络搜索](agent_web_search.md) |
+| A12 | 独立联网：Bing、Google、Tavily、DeepSeek 分别配置和启用；与聊天模型配置独立；只暴露已启用引擎，Bing RSS 格式或端点失败时先回退 HTML，Google 支持语义标题并区分同意/验证页；验证码/限流不重复请求，普通回答不能冒充搜索结果 | `lib/agent/agent_web_search.dart`、`lib/agent/agent_search_browser.dart`、`lib/agent/agent_search_settings.dart` | `agent/agent_web_search_test.dart`、`agent/agent_web_search_settings_test.dart`；限制见 [网络搜索](agent_web_search.md) |
 | A13 | 模型原生联网：Responses / Messages 使用协议工具，保留搜索过程、引用链接及续接；换模型或压缩后保留可读来源，服务端私有搜索块不跨模型误用；Chat Completions 不假装具有统一原生搜索接口 | `lib/agent/agent_protocol.dart`、`lib/agent/agent_search_results.dart`、`lib/agent/agent_web_links.dart` | `agent/agent_native_search_test.dart`、`agent/agent_protocols_test.dart` |
 | A14 | 对话体验与性能：流式长内容按需渲染，思考/工具/历史任务分层折叠；消息和 Markdown 可拖动滚动；用户离开底部后不强制跟随；输入区与上下文条一起避让键盘；模型选择和浅色菜单风格保持一致 | `lib/agent/agent_page.dart`、`lib/agent/agent_message_view.dart`、`lib/agent/agent_floating_composer.dart`、`lib/agent/agent_settings_widgets.dart` | `agent/agent_long_content_test.dart`、`agent/agent_markdown_scroll_test.dart`、`agent/agent_chat_interaction_test.dart`、`agent/agent_floating_composer_test.dart`、`agent/agent_settings_layout_test.dart` |
 | A15 | 展示与本地操作性能：漫画卡片按需构建、集合分页读取、优先复用已有元数据，不为单项操作扫描整库或打开无关数据库；使用既有管理器 API 和通用批量通知，避免每条操作触发整页刷新 | `lib/agent/agent_showcase_view.dart`、`lib/agent/agent_tools_library.dart`、`lib/foundation/batched_notifications.dart`、`lib/foundation/read_later.dart`、`lib/foundation/favorites.dart` | `agent/agent_showcase_performance_test.dart`、`agent/agent_storage_tools_test.dart`、`batched_notifications_test.dart`、`favorites_batch_move_test.dart` |
+| A16 | 网页 Markdown：`read_web(pages)` 一次读取1–5页，逐项回执，保留来源和正文结构、分页续读与短期缓存；取消/超时/响应限额生效，不下载图片、执行网页脚本或转交第三方转换服务 | `lib/agent/agent_web_reader.dart`、`lib/agent/agent_tools.dart` | `agent/agent_web_reader_test.dart` |
 
 ### 2.2 既有页面与阅读体验优化
 
@@ -54,6 +55,8 @@
 | O08 | 阅读生命周期：退出/后台立即保存最后进度和阅读统计；取消定时器、移除监听并释放分页/缩放控制器；预取安排在页变化后的帧中，退出后的手势、滚动、电量异步回调不可访问已销毁页面；兼容双页真实图片页码 | `lib/pages/reader/reader.dart`、`lib/pages/reader/images.dart`、`lib/pages/reader/gesture.dart`、`lib/pages/reader/scaffold.dart` | `reader_scrubbing_test.dart`、`reader_spread_test.dart`、`reading_statistics_test.dart`、`integration_test/reader_performance_test.dart` |
 | O09 | 漫画线条增强与夜览：增强开关/强度，暗色/暖色/红色夜览及强度可组合；保持黑色墨线，减少冷色且不提亮纸白；仅作用于阅读内容，评论可跳过增强但保留夜览；实时调整不重建阅读子树、不丢页码/控制器，保留设备/单漫画设置优先级 | `lib/utils/reader_appearance.dart`、`lib/pages/settings/reader.dart`、`lib/pages/reader/scaffold.dart`、`lib/foundation/appdata.dart` | `reader_color_effects_test.dart`、`reader_appearance_controls_test.dart` |
 | O10 | 数据完整性：历史分页独立连接/WAL 不阻塞进度保存；导出用 SQLite 快照包含已提交 WAL；恢复前等待后台读取退出；数据库锁或权限错误不能误判为损坏后重建；收藏读取冲突保留原数据 | `lib/foundation/history.dart`、`lib/foundation/favorites.dart`、`lib/utils/data.dart` | `history_pagination_test.dart`、`data_backup_test.dart`、`favorites_locking_test.dart`、`integration_test/history_legacy_test.dart` |
+
+上游 2.7.1/2.7.2 回归保护：瀑布流跨章滚动与进度、主页模块/收藏夹快捷入口、WebDAV 自动同步开关/数据通知和传输超时。验证入口：`test/reader_waterfall_test.dart`、`test/home_layout_test.dart`、`test/home_favorite_navigation_test.dart`、`test/data_sync_backup_policy_test.dart`、`test/rhttp_transport_timeout_test.dart`。这些上游功能与 O07–O10、A01/A15 同时保留。
 
 相关定位提交：Agent 初接入 `cfd8a4c`；后台任务 `c54b3f8`；作者屏蔽 `8af9806`；弱网封面 `6e2cbb6`；历史分页 `d05a02c`；阅读缓存/退出 `2f55f73`；规则复用 `7c88309`；用户列表过滤范围 `5dd8b7a`；联网 `6d59b32`；模型发现/封面识图 `1234488`；线条增强/夜览 `c467bf9`。提交用于追溯设计，不要求合并时逐个重放。
 
@@ -158,7 +161,20 @@ flutter test
 - 合入 2.7.1/2.7.2：瀑布流阅读、自定义主页与收藏夹快捷入口、WebDAV 数据变更通知及传输超时修复。
 - 影响 A01/A02/A10/A15、O02/O03/O05–O10。唯一文本冲突为 AGENTS.md，保留功能维护和代理提交身份规则，并加入上游 issue 状态核对规则。
 - 行为审查：瀑布流继承原连续阅读的缓存与释放链路，颜色效果仍由外层 scaffold 应用；历史后台分页/WAL 快照未被替换；稍后再看的通知仍经过批量通知 mixin；主页收藏入口使用独立 FavoritesPage，不依赖主导航下标；Agent 独立目录不进入 WebDAV。
-- `git diff --check`、未解决冲突检查通过；Flutter 验证在本次工具优化完成后统一执行并补记。设备和真实 WebDAV 账号回归未运行。
+- 合并结果：`e51cc3a`。`git diff --check`、未解决冲突检查通过；Flutter 验证见下条优化记录。设备和真实 WebDAV 账号回归未运行。
+
+### 2026-11-05：封面批量、搜索与网页读取优化
+
+- A08：只向模型提供 covers 数组，逐项返回成功/失败；保留旧顶层单张参数。三种协议发送全部成功图片并附输入序号/URL，界面提供多个历史缩略图。
+- A12：Bing RSS 解析/端点失败先试 HTML，之后才考虑临时 WebView；Google 增加轻量请求参数、语义标题与同意页识别，修正引擎导航链接误作结果。验证/限流不触发重试，不自动换引擎。
+- A16：新增批量网页 Markdown 提取、正文选择、相对链接、列表/引用/代码/表格、文本编码、长文分页、短期缓存和网络取消/限额。
+- 合并兼容修复：追更用例的 `_WaitingSync` 替身补齐上游 `batchAutomaticUploads`；保留“取消同步等待不能中断手动追更”断言，没有跳过失败用例。
+- 验证环境：Flutter 3.41.4 / Dart 3.11.1。AVIF 官方产物经过 manifest SHA-256 校验；Linux 测试使用系统 SQLite 名称链接和锁定依赖源码构建的 ZIP/PNG/QuickJS，均放在忽略的 work 目录，不提交构建产物。
+- `dart analyze lib test integration_test`、`git diff --check` 通过。
+- 针对性回归：`flutter test --no-pub test/agent/agent_cover_test.dart test/agent/agent_web_reader_test.dart test/agent/agent_web_search_test.dart test/agent/agent_more_tools_test.dart`，81项通过；之后 Google 子域导航过滤与追更替身修正后的搜索/网页/追更/EPUB/原生图像处理复测，72项通过。
+- 全量最终回归：`flutter test --no-pub`，805项通过、17项按现有套件条件跳过，无失败（包括全部 Agent 测试）；未显式启用的原生/服务联调不能视为通过。瀑布流、主页收藏导航、主页布局与备份策略另行专项复测16项通过。
+- 首轮全量暴露新增工具数量断言、编译期间新增的 Big5 用例与旧代码不一致、追更替身缺失接口，以及 ZIP/PNG 原生库缺失；均已修正或补齐并复测，没有归类为既有失败。
+- 公开联调结果及服务端限制见 [网络搜索说明](agent_web_search.md)；Bing 本环境相关性未通过、Google 真正结果未取得，不将 HTTP 200 冒充功能通过。付费 Key、手机/Windows WebView、真实 WebDAV 账号与真机性能未运行。
 
 ### 下一次合并记录模板（待填写，不代表完成）
 

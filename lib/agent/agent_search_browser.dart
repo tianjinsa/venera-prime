@@ -262,8 +262,8 @@ const _snapshot = r'''
   if (document.readyState === 'loading') return null;
   const text = document.body ? document.body.innerText : '';
   const ready = document.querySelector(
-    'a h3, .BNeawe.vvjwJb, li.b_algo, #captcha-form, #b_captcha, .g-recaptcha, form[action*="/sorry"]'
-  ) || /did not match any documents|no results found|unusual traffic|没有找到|未找到|验证码|请完成验证/i.test(text);
+    'a h3, [role="heading"][aria-level="3"], .BNeawe.vvjwJb, li.b_algo, #captcha-form, #b_captcha, .g-recaptcha, form[action*="/sorry"]'
+  ) || /did not match any documents|no results found|unusual traffic|没有找到|未找到|验证码|请完成验证|before you continue|consent/i.test(text);
   if (!ready) return null;
   const copy = document.documentElement.cloneNode(true);
   copy.querySelectorAll('script,style,noscript,svg').forEach(node => node.remove());

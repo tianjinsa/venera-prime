@@ -46,6 +46,7 @@ class AgentWebSearchClient {
           'q': query,
           'num': '$count',
           'udm': '14',
+          'gbv': '1',
         }),
         AgentSearchEngine.tavily => Uri.https('api.tavily.com', '/search'),
         AgentSearchEngine.deepseek => Uri.parse(
@@ -118,18 +119,41 @@ class AgentWebSearchClient {
         results = (data['results'] as List).cast<AgentJson>();
         warnings = (data['warnings'] as List).cast<String>();
       } else {
-        final body = await run.wait(
-          _request(dio, requestUrl, engine, query, maxResults, key, cancel),
-          timeout: timeout,
-        );
         if (engine == AgentSearchEngine.tavily) {
+          final body = await run.wait(
+            _request(dio, requestUrl, engine, query, maxResults, key, cancel),
+            timeout: timeout,
+          );
           results = parseTavily(body, maxResults, secret: key);
         } else {
-          try {
-            results = await run.wait(
+          Future<List<AgentJson>> read(Uri target) async {
+            final body = await run.wait(
+              _request(dio, target, engine, query, maxResults, '', cancel),
+              timeout: timeout,
+            );
+            return run.wait(
               compute(_parsePage, (engine, body, maxResults)),
               timeout: timeout,
             );
+          }
+
+          try {
+            try {
+              results = await read(requestUrl);
+            } catch (e) {
+              final recoverable =
+                  e is FormatException ||
+                  e is XmlParserException ||
+                  e is AgentException &&
+                      [
+                        'SEARCH_BROWSER_REQUIRED',
+                        'SEARCH_HTTP_ERROR',
+                        'SEARCH_INVALID_RESPONSE',
+                      ].contains(e.code);
+              if (engine != AgentSearchEngine.bing || !recoverable) rethrow;
+              run.check();
+              results = await read(url);
+            }
           } on AgentException catch (e) {
             if (e.code != 'SEARCH_BROWSER_REQUIRED' || loadPage == null) {
               rethrow;
@@ -143,8 +167,6 @@ class AgentWebSearchClient {
                 timeout: timeout,
               );
             } finally {
-              // Also release a renderer still queued when this search times out.
-              // Stopping this search must not stop the whole Agent task.
               rendering.cancel();
             }
             if (rendered.length > maxResponseBytes) {
@@ -186,6 +208,11 @@ class AgentWebSearchClient {
       throw AgentException(
         'SEARCH_REQUEST_FAILED',
         '${engine.label} 连接失败或超时，请检查网络和应用代理设置',
+      );
+    } on XmlParserException {
+      throw AgentException(
+        'SEARCH_INVALID_RESPONSE',
+        '${engine.label} 返回了无效的 RSS 搜索结果',
       );
     } on FormatException {
       throw AgentException(
@@ -347,6 +374,12 @@ class AgentWebSearchClient {
             '${engine.label} 密钥无效或无权搜索，请检查 API Key',
           );
         }
+        if (!_isApi(engine) && [401, 403].contains(status)) {
+          throw AgentException(
+            'SEARCH_BLOCKED',
+            '${engine.label} 限制访问或要求验证，请改用其他已启用引擎',
+          );
+        }
         if (status == 429) {
           throw AgentException(
             'SEARCH_RATE_LIMITED',
@@ -492,6 +525,10 @@ class AgentWebSearchClient {
     if (engine == AgentSearchEngine.bing &&
         RegExp(r'<rss[\s>]', caseSensitive: false).hasMatch(body)) {
       final rss = XmlDocument.parse(body);
+      if (rss.rootElement.localName != 'rss' ||
+          rss.rootElement.getElement('channel') == null) {
+        throw const AgentException('SEARCH_INVALID_RESPONSE', 'Bing RSS 格式无效');
+      }
       for (final item in rss.findAllElements('item')) {
         _addResult(
           output,
@@ -507,6 +544,12 @@ class AgentWebSearchClient {
           limit,
         );
       }
+      if (output.isEmpty && rss.findAllElements('item').isNotEmpty) {
+        throw const AgentException(
+          'SEARCH_INVALID_RESPONSE',
+          'Bing RSS 未包含有效结果链接',
+        );
+      }
       return output;
     }
     final document = html.parse(body);
@@ -514,6 +557,14 @@ class AgentWebSearchClient {
       element.remove();
     }
     final text = document.body?.text ?? '';
+    if (document.querySelector('form[action*="consent.google.com"]') != null ||
+        document.querySelector('a[href*="consent.google.com"]') != null &&
+            RegExp(
+              r'before you continue|继续使用.*之前',
+              caseSensitive: false,
+            ).hasMatch(text)) {
+      throw const AgentException('SEARCH_BLOCKED', '搜索引擎需要同意页面，请改用其他已启用引擎');
+    }
     if (document.querySelector(
               'form[action*="/sorry"], #captcha-form, #b_captcha, .g-recaptcha, #challenge-form',
             ) !=
@@ -541,7 +592,9 @@ class AgentWebSearchClient {
         );
       }
     } else {
-      for (final heading in document.querySelectorAll('h3, .BNeawe.vvjwJb')) {
+      for (final heading in document.querySelectorAll(
+        'h3, .BNeawe.vvjwJb, [role="heading"][aria-level="3"]',
+      )) {
         Element? link = heading;
         while (link != null && link.localName != 'a') {
           link = link.parent;
@@ -556,7 +609,14 @@ class AgentWebSearchClient {
           card != null && depth < 5;
           depth++, card = card.parent
         ) {
-          if (card.querySelectorAll('h3, .BNeawe.vvjwJb').length > 1) break;
+          if (card
+                  .querySelectorAll(
+                    'h3, .BNeawe.vvjwJb, [role="heading"][aria-level="3"]',
+                  )
+                  .length >
+              1) {
+            break;
+          }
           final candidate = card.querySelector(
             '.VwiC3b, .IsZvec, .BNeawe.s3v9rd, [data-sncf]',
           );
@@ -586,22 +646,19 @@ class AgentWebSearchClient {
     var uri = agentWebUri(href, base: base);
     if (uri == null) return '';
     if (engine == AgentSearchEngine.google &&
-        (uri.host == 'google.com' || uri.host.endsWith('.google.com'))) {
+        (uri.host == 'google.com' || uri.host == 'www.google.com')) {
       if (uri.path == '/url') {
         uri = agentWebUri(
           uri.queryParameters['q'] ?? uri.queryParameters['url'] ?? '',
         );
-      } else if ([
-        '/search',
-        '/preferences',
-        '/setprefs',
-        '/imgres',
-        '/advanced_search',
-      ].contains(uri.path)) {
+      } else {
         return '';
       }
+    } else if (engine == AgentSearchEngine.google &&
+        ['accounts.google.com', 'consent.google.com'].contains(uri.host)) {
+      return '';
     } else if (engine == AgentSearchEngine.bing &&
-        uri.host.endsWith('.bing.com') &&
+        (uri.host == 'bing.com' || uri.host.endsWith('.bing.com')) &&
         uri.path == '/ck/a') {
       var encoded = uri.queryParameters['u'] ?? '';
       if (encoded.startsWith('a1')) {

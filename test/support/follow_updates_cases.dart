@@ -70,6 +70,9 @@ class _CountingFavorites implements LocalFavoritesManager {
 }
 
 class _WaitingSync extends ChangeNotifier implements DataSync {
+  @override
+  Future<T> batchAutomaticUploads<T>(Future<T> Function() action) => action();
+
   bool downloading = true;
   final resumed = Completer<void>();
 

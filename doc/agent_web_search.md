@@ -4,8 +4,8 @@
 
 | 服务 | 配置 | 用法 |
 | --- | --- | --- |
-| Bing | 开启开关，无需 Key | 搜索 bing.com 的公开结果，优先读取轻量 RSS |
-| Google | 开启开关，无需 Key | 搜索 google.com；页面需要 JavaScript 时使用应用已有 WebView 临时加载 |
+| Bing | 开启开关，无需 Key | 搜索 bing.com 的公开结果，优先读取轻量 RSS，格式或端点不可用时回退 HTML |
+| Google | 开启开关，无需 Key | 搜索 google.com 的网页结果，支持语义标题；需要 JavaScript 时使用应用已有 WebView 临时加载 |
 | Tavily | 填写独立的 Tavily API Key，再开启 | 使用 Tavily 搜索 API，按账户额度计费 |
 | DeepSeek | 填写独立的 Key、搜索 API 地址和模型，再开启 | 由 DeepSeek 执行搜索，结果交给当前聊天模型；当前聊天模型可以来自任意服务商 |
 
@@ -48,6 +48,29 @@ Tavily 和 DeepSeek 的开关首次开启时，如果尚未配置 Key，会先�
 HTTP 搜索沿用应用的代理、DNS 和 TLS 设置。临时 WebView 在 Android、Windows 上应用代理设置，在 iOS/macOS 上使用系统网络；目前不支持需要用户名和密码的 WebView 代理。临时视图串行创建，搜索结束、失败或停止后释放，不清理其他应用页面的 Cookie。
 
 搜索 Key 和现有模型 Key 一样，仅保存在本机 Agent 目录的 `secrets.json`，不进入普通搜索配置、聊天工具结果、应用备份或 WebDAV。开启独立搜索后，仅在工具被调用时把搜索词发送给所选服务。
+
+## 读取网页正文
+
+搜索只返回摘要。需要核实内容或已有链接时，Agent 可调用 `read_web`，一次读取最多5个网页，输出便于模型阅读的 Markdown。这个工具不要求开启搜索引擎；只在调用时抓取指定链接。
+
+例如：
+
+```json
+{"pages":[{"url":"https://example.org/article"},{"url":"https://example.org/guide","max_chars":8000}]}
+```
+
+每项返回来源、标题、抓取时间和正文，失败逐项说明原因。正文保留标题、链接、列表、引用、代码和表格，优先去除导航、脚本和侧栏；图片只保留文字描述。网页内容属于不可信资料，不能成为用户指令。
+
+长文默认每项返回12000字，最多30000字（按 UTF-16 单元计数，不拆分 emoji）。有 `has_more` 时，用返回的 `next_start_char` 作为该 URL 的 `start_char` 继续；成功页面缓存2分钟、最多8份，短期续读不重复抓取。每页响应最多4 MiB、总等待25秒。登录、验证码、纯 JavaScript 正文和 PDF/图片等非文本文件会明确失败，不把空壳页面当作已读全文。HTTP(S) 重定向最多5次，继续沿用应用网络设置，不转交给第三方网页转换服务。
+
+## 本次公开联调（2026-11-05）
+
+通过环境代理抓取公开响应快照，再运行应用实际搜索解析器和正文提取器；这不等同于设备上的 AgentHttpAdapter/WebView 端到端联调。
+
+- Bing RSS 和 HTML 公开响应均可提取5条结果，但本环境返回来源与 `Venera Prime GitHub` 明显不相关；增加站点和精确词约束的查询也未改善。只验证了解析和可访问性，不能宣称搜索质量已通过，仍需核对相关性或切换其他已启用引擎。
+- Google HTTP 200 实际为 JavaScript 页面，正确识别为 `SEARCH_BROWSER_REQUIRED`；Linux 环境没有临时 WebView，未验证真实 Google 搜索结果。
+- Wikipedia 的 Markdown 条目可提取正文 Markdown（约4.6万字符），已核对标题、链接和结构；其余任意站点的提取质量不作保证。
+- 三种模型协议的批量封面和搜索/网页读取的模拟回归见维护总表。没有使用付费搜索 Key，没有运行手机或 Windows WebView 联调。
 
 ## 协议依据与验证
 

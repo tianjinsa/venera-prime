@@ -18,6 +18,7 @@ import 'agent_models.dart';
 import 'agent_images.dart';
 import 'agent_store.dart';
 import 'agent_web_search.dart';
+import 'agent_web_reader.dart';
 
 part 'agent_tool_schemas.dart';
 part 'agent_tools_cover.dart';
@@ -47,6 +48,7 @@ class AgentTools {
   final Duration sourceTimeout;
   final AgentAppBridge app;
   final AgentWebSearchClient webSearch;
+  final AgentWebReader webReader;
   final Future<Uint8List> Function(String, String?, String?, AgentRun)
   coverLoader;
 
@@ -70,8 +72,10 @@ class AgentTools {
     this.sourceTimeout = const Duration(seconds: 30),
     AgentAppBridge? app,
     this.webSearch = const AgentWebSearchClient(),
+    AgentWebReader? webReader,
     this.coverLoader = loadAgentCover,
-  }) : app = app ?? const AgentAppBridge(),
+  }) : webReader = webReader ?? AgentWebReader(),
+       app = app ?? const AgentAppBridge(),
        favorites = favorites ?? LocalFavoritesManager(),
        later = later ?? ReadLaterManager(),
        initializeSources =
@@ -318,6 +322,65 @@ class AgentTools {
           deepseekModel: store.settings.webSearch.deepseekSearchModel,
           run: c.run,
         );
+      case 'read_web':
+        final pages = a['pages'];
+        if (pages is! List || pages.isEmpty) {
+          throw const AgentException('INVALID_ARGUMENT', 'pages 需要非空数组');
+        }
+        if (pages.length > 5) {
+          throw const AgentException('BATCH_TOO_LARGE', '一次最多读取5个网页');
+        }
+        final results = <AgentJson>[];
+        for (var i = 0; i < pages.length; i++) {
+          c.run.check();
+          try {
+            final page = pages[i];
+            if (page is! Map ||
+                page.keys.any(
+                  (key) => !['url', 'start_char', 'max_chars'].contains(key),
+                )) {
+              throw const AgentException(
+                'INVALID_ARGUMENT',
+                '网页项需要 url，可附 start_char、max_chars',
+              );
+            }
+            final args = agentObject(page);
+            final start = args['start_char'] ?? 0;
+            if (start is! int || start < 0) {
+              throw const AgentException(
+                'INVALID_ARGUMENT',
+                'start_char 需要非负整数',
+              );
+            }
+            results.add({
+              'index': i + 1,
+              'status': 'ok',
+              ...await webReader.read(
+                _text(args, 'url'),
+                c.run,
+                startChar: start,
+                maxChars: _number(args, 'max_chars', 12000, 30000),
+              ),
+            });
+          } on AgentException catch (e) {
+            if (e.code == 'CANCELLED') rethrow;
+            results.add({
+              'index': i + 1,
+              'status': 'failed',
+              'reason': e.code,
+              'message': e.message,
+            });
+          }
+        }
+        return {
+          'summary': {
+            'total': pages.length,
+            'ok': results.where((r) => r['status'] == 'ok').length,
+            'skipped': 0,
+            'failed': results.where((r) => r['status'] == 'failed').length,
+          },
+          'results': results,
+        };
       case 'comic_read_cover':
         return _readCover(a, c);
       case 'list_sources':
