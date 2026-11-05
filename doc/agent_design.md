@@ -86,7 +86,7 @@
 | agent_store.dart | 本机配置/密钥、agent.db、会话与展示持久化 |
 | agent_client.dart | 独立 Dio、首响应超时保护、SSE 聚合、非流式兼容 |
 | agent_http_adapter.dart | 复用现有代理/DNS/TLS 设置，将取消信号传给 rhttp |
-| agent_web_search.dart / agent_search_browser.dart / agent_web_reader.dart | 四个独立网页搜索提供商、结果解析、官网临时 WebView、批量网页 Markdown 提取、取消和请求边界 |
+| agent_web_search.dart / agent_search_browser.dart / agent_web_reader.dart / agent_web_readability.dart | 四个独立网页搜索提供商、结果解析、官网临时 WebView、批量网页 Markdown 提取、取消和请求边界 |
 | agent_search_results.dart / agent_web_links.dart | 原生搜索过程、来源链接及显示用引用，保留服务端原始数据 |
 | agent_wire.dart | parts 的完整成对投影、摘要边界与当前用户要求保留 |
 | agent_controller.dart | 会话生命周期、停止/重试、工具循环、插入/排队消息与上下文压缩 |
@@ -276,7 +276,7 @@ comic_read_cover 使用 covers 数组一次读取1–10张，每项接受 source
 
 Bing、Google、Tavily、DeepSeek 各有独立开关，默认全部关闭；模型的 native_web_search 同样默认关闭。Bing/Google 读取官网，不要求 Key；Tavily/DeepSeek 使用各自的独立密钥。DeepSeek 通过独立 Messages 模型执行搜索，可供任意聊天模型调用，默认地址和模型来自官方 harness。详细配置、限制与协议链接见 [网络搜索使用说明](agent_web_search.md)。
 
-`AgentTools.availableSchemas` 每次请求按最新设置生成 search_web 的引擎枚举；执行时再次检查开关和密钥，不初始化漫画源或本地收藏等无关数据。独立搜索仅传搜索词，使用新的 Dio 和 AgentHttpAdapter，单次结束后关闭；禁止 API 鉴权重定向，错误不回显原始响应或 Key。查询限制1–500字；最多10条结果，每条标题最多300字、摘要最多2000字；HTTP 响应上限2 MiB。网页请求默认25秒，独立 DeepSeek 搜索总计60秒。
+`AgentTools.availableSchemas` 每次请求按最新设置生成 search_web 的引擎枚举；执行时再次检查开关和密钥，不初始化漫画源或本地收藏等无关数据。独立搜索仅传搜索词，使用新的 Dio 和 AgentHttpAdapter，单次结束后关闭；禁止 API 鉴权重定向，错误不回显原始响应或 Key。查询限制1–500字；最多10条结果，每条标题最多300字、摘要最多2000字；HTTP 响应上限2 MiB。网页请求默认25秒，独立 DeepSeek 搜索总计60秒。结果以去除片段和常见营销参数后的 URL 身份去重，保留 id/page/language 等文档参数及原始来源链接；此处理不改变搜索引擎排序。
 
 原生搜索使用 Responses 的 web_search 或 Messages 的 web_search_20250305，与本地 search_web 区分。服务端工具不会作为本地函数执行；暂停响应带 continue_turn 本机标记，保留原始内容续接。停止、重启和恢复时沿用原搜索过程卡片，暂停期间不自动压缩掉未完成的服务端状态。Messages 的 encrypted_content/encrypted_index 和 Responses 的原生条目仅回传同一模型。显示用 display_text 单独保存可点击引用，不改写原始正文或签名数据；跨模型及摘要保留可读来源。
 
@@ -286,7 +286,7 @@ Google 需要脚本时使用既有 WebView 插件，导航仅限所选搜索引�
 
 `read_web(pages)` 对已知链接批量读取，不依赖搜索引擎开关。每批1–5项，按输入顺序返回 index/status、最终 URL、标题、抓取时间与 Markdown。单项验证、超时或格式失败不丢弃其他项；全局停止终止剩余读取。
 
-使用独立 Dio + AgentHttpAdapter 沿用应用代理/DNS/TLS，不继承聊天模型密钥、账号 Cookie 或 AppDio 日志。每页总等待25秒、响应上限4 MiB、最多5次 HTTP(S) 重定向，拒绝带账号密码的 URL 和非文本文件。支持 UTF-8、GBK/GB2312、Big5 及 Latin-1 文本；HTML 在 compute isolate 提取优先正文容器，移除脚本/导航/侧栏等，转换链接、标题、列表、引用、代码和表格；图片只保留 alt 描述，不下载。静态提取不承诺完整复现页面布局或运行 JavaScript，验证页面不能冒充正文。
+使用独立 Dio + AgentHttpAdapter 沿用应用代理/DNS/TLS，不继承聊天模型密钥、账号 Cookie 或 AppDio 日志。每页总等待25秒、响应上限4 MiB、最多5次 HTTP(S)/立即 HTML meta refresh 跳转（合用计数），拒绝带账号密码的 URL 和非文本文件。支持 UTF-8、GBK/GB2312、Big5 及 Latin-1 文本；HTML 在 compute isolate 按非链接文字、段落结构、标点和语义容器评分，降低菜单/链接区权重，避免短摘要或最长侧栏覆盖正文。清理脚本、广告/推荐/导航/隐藏节点，保留文内注释、警告、引用、论坛多帖和必要静态 noscript 回退（有可见正文时不重复回退内容）。相对链接支持有效 HTTP(S) base；转换标题、列表、定义列表、引用、代码和表格，正文空白归一化不改变代码块空行；图片只保留 alt 描述，不下载。静态提取不承诺完整复现页面布局或运行 JavaScript，验证页面不能冒充正文。
 
 正文按明确预算返回片段，默认12000、最多30000个 UTF-16 单元，边界不拆分 emoji；`total_chars`、`has_more`、`next_start_char` 用于续读。成功文档在内存中缓存2分钟、最多8份，续读复用快照；过期后可能重新抓取。标题和描述分别限制500/2000字。正文和元数据都是待分析资料，不能改变用户任务或提供写入授权。
 

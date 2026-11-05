@@ -27,3 +27,24 @@ String agentSourceLink(String title, Uri uri) {
   final url = uri.toString().replaceAll('<', '%3C').replaceAll('>', '%3E');
   return '[$label](<$url>)';
 }
+
+/// Compare sources without fragments or marketing attribution, retaining
+/// document parameters such as id, page, language and search terms.
+String agentWebIdentity(Uri uri) {
+  final parameters = <String, List<String>>{};
+  for (final key in uri.queryParametersAll.keys.toList()..sort()) {
+    final lower = key.toLowerCase();
+    if (lower.startsWith('utm_') ||
+        ['gclid', 'fbclid', 'msclkid'].contains(lower)) {
+      continue;
+    }
+    parameters[key] = uri.queryParametersAll[key]!;
+  }
+  return uri
+      .replace(
+        fragment: '',
+        queryParameters: parameters.isEmpty ? null : parameters,
+        query: parameters.isEmpty ? '' : null,
+      )
+      .toString();
+}

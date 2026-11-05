@@ -13,6 +13,8 @@ import 'agent_models.dart';
 import 'agent_web_links.dart';
 import 'agent_web_search.dart';
 
+part 'agent_web_readability.dart';
+
 /// Fetches public documents with the app's transport preferences, without
 /// account cookies, model credentials, logging interceptors or remote readers.
 class AgentWebReader {
@@ -191,6 +193,17 @@ class AgentWebReader {
         'iso-8859-1' || 'latin1' => latin1.decode(raw),
         _ => utf8.decode(raw, allowMalformed: true),
       };
+      if (mime.isEmpty ||
+          ['text/html', 'application/xhtml+xml'].contains(mime)) {
+        final redirect = _webDocumentRedirect(text, url);
+        if (redirect != null) {
+          if (redirects == 5) {
+            throw const AgentException('WEB_REDIRECT', '网页重定向次数过多');
+          }
+          url = redirect;
+          continue;
+        }
+      }
       final data = await compute(_extractWebDocument, (
         text,
         url.toString(),
@@ -218,15 +231,20 @@ class AgentWebReader {
         'content_type': mime,
       };
     }
+    if (_webDocumentRedirect(body, url) != null) {
+      throw const AgentException('WEB_REDIRECT_PAGE', '当前是跳转提示页，尚未取得目标正文');
+    }
     final document = html.parse(body);
     if (document.querySelector(
               'form[action*="/sorry"], #captcha-form, #b_captcha, .g-recaptcha, #challenge-form',
             ) !=
             null ||
         RegExp(
-          r'verify you are human|checking your browser|unusual traffic from your computer network|请完成验证',
-          caseSensitive: false,
-        ).hasMatch(document.body?.text ?? '')) {
+              r'verify you are human|checking your browser|unusual traffic from your computer network|请完成验证',
+              caseSensitive: false,
+            ).hasMatch(document.body?.text ?? '') &&
+            (document.body?.text.length ?? 0) < 1500 &&
+            document.querySelector('article p') == null) {
       throw const AgentException('WEB_BLOCKED', '网页需要验证，未取得正文');
     }
     final title =
@@ -238,34 +256,14 @@ class AgentWebReader {
     final description = document
         .querySelector('meta[name="description"]')
         ?.attributes['content'];
-    for (final node in document.querySelectorAll(
-      'script, style, noscript, svg, canvas, iframe, form, nav, footer, aside, [role="navigation"], .mw-editsection, .noprint, [hidden], [aria-hidden="true"]',
-    )) {
-      node.remove();
-    }
-    final contentBodies = document.querySelectorAll(
-      '.post-content, .entry-content, .article-body, .mw-parser-output, [itemprop="articleBody"]',
-    );
-    final candidates = contentBodies.isNotEmpty
-        ? contentBodies
-        : document.querySelectorAll('article, main, [role="main"], #content');
-    // Prefer the content-rich semantic root. Retain body as a fallback for
-    // forums and small documents with no article markup.
-    Element? root;
-    var score = 0;
-    for (final candidate in candidates) {
-      final length = candidate.text.trim().length;
-      if (length > score) {
-        root = candidate;
-        score = length;
-      }
-    }
-    root ??= document.body;
-    final markdown = _WebMarkdown(url)
-        .render(root)
-        .replaceAll(RegExp(r'\n[ \t]+\n'), '\n\n')
-        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
-        .trim();
+    final base =
+        agentWebUri(
+          document.querySelector('base[href]')?.attributes['href'] ?? '',
+          base: url,
+        ) ??
+        url;
+    final root = _WebReadability(document).select();
+    final markdown = _normalizeWebMarkdown(_WebMarkdown(base).render(root));
     if (markdown.isEmpty ||
         (markdown.length < 200 &&
             RegExp(
@@ -356,11 +354,27 @@ class _WebMarkdown {
           final prefix = tag == 'ol' ? '${index++}. ' : '- ';
           return '$prefix${children(e).trim().replaceAll('\n', '\n  ')}';
         }).join('\n')}\n\n';
+      case 'dl':
+        return '\n\n$text\n\n';
+      case 'dt':
+        return '\n\n**${text.trim()}**\n';
+      case 'dd':
+        return '${text.trim()}\n';
       case 'blockquote':
         return '\n\n${text.trim().split('\n').map((line) => '> $line').join('\n')}\n\n';
       case 'table':
         final rows = node
             .querySelectorAll('tr')
+            .where((row) {
+              for (
+                Element? ancestor = row.parent;
+                ancestor != null;
+                ancestor = ancestor.parent
+              ) {
+                if (ancestor.localName == 'table') return ancestor == node;
+              }
+              return false;
+            })
             .map(
               (row) => row.children
                   .where((cell) => ['td', 'th'].contains(cell.localName))
@@ -394,4 +408,58 @@ class _WebMarkdown {
         return text;
     }
   }
+}
+
+/// Collapse layout whitespace without changing blank lines inside code blocks.
+String _normalizeWebMarkdown(String value) {
+  final output = <String>[];
+  var fenceLength = 0;
+  var blank = false;
+  for (final line in value.split('\n')) {
+    final fence = RegExp(r'^\s*(?:>\s*)*(`{3,})(.*)$').firstMatch(line);
+    if (fence != null) {
+      final length = fence.group(1)!.length;
+      if (fenceLength == 0) {
+        fenceLength = length;
+      } else if (length >= fenceLength && fence.group(2)!.trim().isEmpty) {
+        fenceLength = 0;
+      }
+      output.add(line);
+      blank = false;
+    } else if (fenceLength > 0) {
+      output.add(line);
+    } else if (line.trim().isEmpty) {
+      if (!blank) output.add('');
+      blank = true;
+    } else {
+      output.add(line);
+      blank = false;
+    }
+  }
+  return output.join('\n').trim();
+}
+
+/// Some blogs use an immediate HTML redirect rather than an HTTP Location.
+/// Treat both as navigation, within the same shared five-redirect budget.
+Uri? _webDocumentRedirect(String text, Uri current) {
+  if (!text.toLowerCase().contains('http-equiv')) return null;
+  final head = html.parse(text.substring(0, text.length.clamp(0, 8192)));
+  for (final meta in head.querySelectorAll('meta[http-equiv]')) {
+    if (meta.attributes['http-equiv']?.toLowerCase() != 'refresh') continue;
+    final match = RegExp(
+      r'^\s*[01](?:\.0+)?\s*;\s*url\s*=\s*(.+?)\s*$',
+      caseSensitive: false,
+    ).firstMatch(meta.attributes['content'] ?? '');
+    if (match == null) continue;
+    var target = match.group(1)!;
+    if (target.length > 1 &&
+        ((target.startsWith('"') && target.endsWith('"')) ||
+            (target.startsWith("'") && target.endsWith("'")))) {
+      target = target.substring(1, target.length - 1);
+    }
+    final next = agentWebUri(target, base: current);
+    if (next == null) throw const AgentException('WEB_REDIRECT', '网页跳转地址无效');
+    return next;
+  }
+  return null;
 }

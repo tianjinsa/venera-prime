@@ -9,6 +9,20 @@ import 'package:venera/agent/agent_search_browser.dart';
 import 'package:venera/agent/agent_web_search.dart';
 import 'package:venera/foundation/app.dart';
 
+void expectProjectSource(List sources) {
+  expect(
+    sources.any((source) {
+      final uri = Uri.tryParse(source['url'] as String? ?? '');
+      final text = '${source['title']} ${source['url']}'.toLowerCase();
+      return uri?.host == 'github.com' &&
+          text.contains('venera') &&
+          text.contains('prime');
+    }),
+    isTrue,
+    reason: '不相关链接不能作为 Venera Prime 查询成功的证据',
+  );
+}
+
 /// Opt in explicitly: this suite sends only the public query below, uses no
 /// account keys, and keeps its WebView profile in a new temporary directory.
 void main() {
@@ -39,7 +53,7 @@ void main() {
     }
   });
 
-  testWidgets('Bing official RSS returns usable public sources', (
+  testWidgets('Bing official search returns a source for the queried project', (
     tester,
   ) async {
     await tester.pumpWidget(const MaterialApp(home: Scaffold()));
@@ -53,11 +67,12 @@ void main() {
     expect(sources, isNotEmpty);
     expect(sources.length, lessThanOrEqualTo(3));
     expect(sources.every((s) => Uri.parse(s['url']).hasAuthority), true);
+    expectProjectSource(sources);
     debugPrint('Bing live search: ${sources.length} public sources');
   }, skip: !live);
 
   testWidgets(
-    'Google temporary WebView renders usable search results',
+    'Google temporary WebView renders a source for the queried project',
     (tester) async {
       await tester.pumpWidget(const MaterialApp(home: Scaffold()));
       final page = await loadAgentSearchPage(
@@ -71,6 +86,7 @@ void main() {
       );
       expect(sources, isNotEmpty);
       expect(sources.length, lessThanOrEqualTo(3));
+      expectProjectSource(sources);
       debugPrint('Google live WebView: ${sources.length} public sources');
     },
     skip: !live || Platform.isLinux,

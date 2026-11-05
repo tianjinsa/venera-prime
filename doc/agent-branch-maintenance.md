@@ -35,11 +35,11 @@
 | A09 | 会话管理与资源管理：新建、搜索、切换、重命名、删除、占用大小、搜索结果多选删除；图片/文本资源可查看并正确清理 | `lib/agent/agent_history_view.dart`、`lib/agent/agent_store.dart`、`lib/agent/agent_image_view.dart` | `agent/agent_images_history_page_test.dart`、`agent/agent_images_resources_test.dart`、`agent/agent_text_files_page_test.dart` |
 | A10 | 漫画工具覆盖源、搜索/发现/分类/排行/评论、详情/章节、展示、收藏、稍后再看、追更、历史、本地漫画、下载、网络收藏、屏蔽词、统计和页面导航；批量逐项回执、长列表分页，旧会话调用保持兼容；明确源与 ID 时不强制前置搜索 | `lib/agent/agent_tools*.dart`、`lib/agent/agent_app_bridge.dart`、`lib/agent/agent_tool_schemas.dart` | `agent/agent_more_tools_test.dart`、`agent/agent_storage_tools_test.dart`；逐工具契约见 [Agent 设计](agent_design.md) 第 5 节 |
 | A11 | 漫画源诊断/编辑：读取日志、代码分页与搜索、精确替换、解析成功后生效；失败不能破坏原源；自动/手动备份独立限额，自动超额淘汰最旧自动备份，手动备份达到限额时报错；还原前保留当前代码 | `lib/agent/agent_tools_code.dart`、`lib/agent/agent_source_backups.dart`、`lib/agent/agent_backup_settings.dart`、`lib/foundation/log.dart` | `agent/agent_more_tools_test.dart`、`agent/agent_storage_tools_test.dart` |
-| A12 | 独立联网：Bing、Google、Tavily、DeepSeek 分别配置和启用；与聊天模型配置独立；只暴露已启用引擎，Bing RSS 格式或端点失败时先回退 HTML，Google 支持语义标题并区分同意/验证页；验证码/限流不重复请求，普通回答不能冒充搜索结果 | `lib/agent/agent_web_search.dart`、`lib/agent/agent_search_browser.dart`、`lib/agent/agent_search_settings.dart` | `agent/agent_web_search_test.dart`、`agent/agent_web_search_settings_test.dart`；限制见 [网络搜索](agent_web_search.md) |
+| A12 | 独立联网：Bing、Google、Tavily、DeepSeek 分别配置和启用；与聊天模型配置独立；只暴露已启用引擎，Bing RSS 格式或端点失败时先回退 HTML，Google 支持语义标题并区分同意/验证页；验证码/限流不重复请求，普通回答不能冒充搜索结果；按去除常见营销参数后的 URL 去重，保留文档参数与原始链接 | `lib/agent/agent_web_search.dart`、`lib/agent/agent_search_browser.dart`、`lib/agent/agent_search_settings.dart` | `agent/agent_web_search_test.dart`、`agent/agent_web_search_settings_test.dart`；限制见 [网络搜索](agent_web_search.md) |
 | A13 | 模型原生联网：Responses / Messages 使用协议工具，保留搜索过程、引用链接及续接；换模型或压缩后保留可读来源，服务端私有搜索块不跨模型误用；Chat Completions 不假装具有统一原生搜索接口 | `lib/agent/agent_protocol.dart`、`lib/agent/agent_search_results.dart`、`lib/agent/agent_web_links.dart` | `agent/agent_native_search_test.dart`、`agent/agent_protocols_test.dart` |
 | A14 | 对话体验与性能：流式长内容按需渲染，思考/工具/历史任务分层折叠；消息和 Markdown 可拖动滚动；用户离开底部后不强制跟随；输入区与上下文条一起避让键盘；模型选择和浅色菜单风格保持一致 | `lib/agent/agent_page.dart`、`lib/agent/agent_message_view.dart`、`lib/agent/agent_floating_composer.dart`、`lib/agent/agent_settings_widgets.dart` | `agent/agent_long_content_test.dart`、`agent/agent_markdown_scroll_test.dart`、`agent/agent_chat_interaction_test.dart`、`agent/agent_floating_composer_test.dart`、`agent/agent_settings_layout_test.dart` |
 | A15 | 展示与本地操作性能：漫画卡片按需构建、集合分页读取、优先复用已有元数据，不为单项操作扫描整库或打开无关数据库；使用既有管理器 API 和通用批量通知，避免每条操作触发整页刷新 | `lib/agent/agent_showcase_view.dart`、`lib/agent/agent_tools_library.dart`、`lib/foundation/batched_notifications.dart`、`lib/foundation/read_later.dart`、`lib/foundation/favorites.dart` | `agent/agent_showcase_performance_test.dart`、`agent/agent_storage_tools_test.dart`、`batched_notifications_test.dart`、`favorites_batch_move_test.dart` |
-| A16 | 网页 Markdown：`read_web(pages)` 一次读取1–5页，逐项回执，保留来源和正文结构、分页续读与短期缓存；取消/超时/响应限额生效，不下载图片、执行网页脚本或转交第三方转换服务 | `lib/agent/agent_web_reader.dart`、`lib/agent/agent_tools.dart` | `agent/agent_web_reader_test.dart` |
+| A16 | 网页 Markdown：`read_web(pages)` 一次读取1–5页，逐项回执，保留来源和正文结构、分页续读与短期缓存；正文按段落/链接密度评分，保留注释、论坛多帖、静态回退及代码空行，支持立即 HTML 跳转；取消/超时/响应限额生效，不下载图片、执行网页脚本或转交第三方转换服务 | `lib/agent/agent_web_reader.dart`、`lib/agent/agent_web_readability.dart`、`lib/agent/agent_tools.dart` | `agent/agent_web_reader_test.dart`、`agent/agent_web_readability_test.dart` |
 
 ### 2.2 既有页面与阅读体验优化
 
@@ -175,6 +175,14 @@ flutter test
 - 全量最终回归：`flutter test --no-pub`，805项通过、17项按现有套件条件跳过，无失败（包括全部 Agent 测试）；未显式启用的原生/服务联调不能视为通过。瀑布流、主页收藏导航、主页布局与备份策略另行专项复测16项通过。
 - 首轮全量暴露新增工具数量断言、编译期间新增的 Big5 用例与旧代码不一致、追更替身缺失接口，以及 ZIP/PNG 原生库缺失；均已修正或补齐并复测，没有归类为既有失败。
 - 公开联调结果及服务端限制见 [网络搜索说明](agent_web_search.md)；Bing 本环境相关性未通过、Google 真正结果未取得，不将 HTTP 200 冒充功能通过。付费 Key、手机/Windows WebView、真实 WebDAV 账号与真机性能未运行。
+
+### 2026-11-05：网页正文提取质量与搜索去重
+
+- 开发基线 `f7b8ec1`，继续在 `codex/agent-center-tab` 开发。按用户补充，将重点收缩为应用实际可改进的正文提取，不增加大规模搜索质量评分工具，不声称改善 Bing/Google 排序。
+- A12：仅修正常见营销参数/片段导致的重复来源；已有设备官网用例增加项目来源断言，避免不相关链接被当作查询通过。原查询、顺序、启用状态、服务商和鉴权边界保持。
+- A16：正文按段落/非链接文字/标点及语义容器评分，清理菜单、推荐、广告、隐藏内容；保留文内说明/引用、论坛多帖与静态 noscript 正文，避免重复回退。支持安全 base 相对链接、定义列表及代码空行保留，嵌套表格不重复遍历内层行。立即 HTML 跳转和 HTTP 跳转共用5次预算，不把提示页冒充文章。
+- 公开样本比较和限制见 [网络搜索说明](agent_web_search.md)。Python Insider 经实际读取器（环境代理 Dart IO 传输）得到7967字符文章；Dart 文档清除站点横幅且保留文内注释；论坛多帖与 Wikipedia 内容保留。中文样本404，不计通过。设备原生网络/WebView、付费服务未运行。
+- 验证：`flutter test --no-pub test/agent`，358项通过、3项按既有原生测试开关跳过；补强验证提示页/嵌套表格/静态回退后，`flutter test --no-pub test/agent/agent_web_readability_test.dart test/agent/agent_web_reader_test.dart test/agent/agent_web_search_test.dart`，58项通过。`dart analyze lib test integration_test` 与 `git diff --check` 通过。未重跑整套非 Agent 应用/真机性能测试，前一轮805项结果不作为本轮新结果。
 
 ### 下一次合并记录模板（待填写，不代表完成）
 

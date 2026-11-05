@@ -687,7 +687,7 @@ class AgentWebSearchClient {
     final uri = agentWebUri(url);
     if (uri == null ||
         title.trim().isEmpty ||
-        !seen.add(uri.replace(fragment: '').toString())) {
+        !seen.add(agentWebIdentity(uri))) {
       return;
     }
     String clean(String text, int max) {

@@ -156,6 +156,56 @@ void main() {
     },
   );
 
+  test(
+    'follows immediate document redirects without treating the notice as article text',
+    () async {
+      final adapter = SearchTestAdapter(
+        (_, index) => pageBody(
+          index == 0
+              ? '<meta http-equiv="refresh" content="0; url=/story"><a href="/story">Redirecting</a>'
+              : article,
+        ),
+      );
+      final result = await AgentWebReader(
+        createDio: adapter.dio,
+      ).read('https://example.org/start', AgentRun());
+      expect(result['url'], 'https://example.org/story');
+      expect(result['markdown'], contains('# A useful article'));
+      expect(adapter.requests, hasLength(2));
+      expect(
+        () => AgentWebReader.extract(
+          '<meta http-equiv="refresh" content="0; url=/story">Redirecting',
+          Uri.parse('https://example.org'),
+        ),
+        throwsA(webError('WEB_REDIRECT_PAGE')),
+      );
+    },
+  );
+
+  test(
+    'document redirects share the HTTP redirect limit and reject non-web URLs',
+    () async {
+      final adapter = SearchTestAdapter(
+        (_, _) =>
+            pageBody('<meta http-equiv="refresh" content="0; url=/again">'),
+      );
+      await expectLater(
+        AgentWebReader(
+          createDio: adapter.dio,
+        ).read('https://example.org', AgentRun()),
+        throwsA(webError('WEB_REDIRECT')),
+      );
+      expect(adapter.requests, hasLength(6));
+      expect(
+        () => AgentWebReader.extract(
+          '<meta http-equiv="refresh" content="0; url=file:///private">',
+          Uri.parse('https://example.org'),
+        ),
+        throwsA(webError('WEB_REDIRECT')),
+      );
+    },
+  );
+
   test('pagination never corrupts non-BMP characters', () async {
     final adapter = SearchTestAdapter(
       (_, _) => pageBody('A😀B', mime: 'text/plain'),

@@ -177,6 +177,17 @@ void main() {
   );
 
   test(
+    'deduplicates attribution variants without merging different documents',
+    () {
+      final results = AgentWebSearchClient.parseTavily(
+        '{"results":[{"title":"One","url":"https://example.org/read?id=1&utm_source=a","content":"A"},{"title":"Duplicate","url":"https://example.org/read?fbclid=b&id=1#part","content":"B"},{"title":"Another document","url":"https://example.org/read?id=2","content":"C"}]}',
+        5,
+      );
+      expect(results.map((r) => r['title']), ['One', 'Another document']);
+    },
+  );
+
+  test(
     'public requests contain no API credentials and encode the query',
     () async {
       final adapter = SearchTestAdapter((_, _) => searchBody(searchRss));

@@ -43,6 +43,8 @@ Tavily 和 DeepSeek 的开关首次开启时，如果尚未配置 Key，会先�
 
 可直接要求“用 Bing 搜索……”或“联网查找……并引用来源”。独立搜索工具为 `search_web(engine, query, max_results)`，默认返回 5 条、最多 10 条；每条包含标题、URL 和摘要，不下载目标网页全文。模型只会看到已开启的引擎，执行时还会再次检查开关。
 
+应用无法改变 Bing/Google 自身的索引和排序。这里只改进请求、解析和去重；返回链接不等于与问题相关，仍需核对来源。重复结果会忽略片段及 utm_*、gclid、fbclid、msclkid 等营销参数，漫画/文档 ID、页码和语言参数保留。
+
 官网可能要求验证码、同意页面、限制频率，或更改页面格式。遇到这些情况会明确返回失败，Agent 可按需要改用其他已开启的服务。应用不会代替用户点击验证，也不会把验证页面当作“没有搜索结果”。Google 需要 JavaScript 时，Linux 当前无法使用临时渲染；可改用 Bing、Tavily 或 DeepSeek。
 
 HTTP 搜索沿用应用的代理、DNS 和 TLS 设置。临时 WebView 在 Android、Windows 上应用代理设置，在 iOS/macOS 上使用系统网络；目前不支持需要用户名和密码的 WebView 代理。临时视图串行创建，搜索结束、失败或停止后释放，不清理其他应用页面的 Cookie。
@@ -59,9 +61,9 @@ HTTP 搜索沿用应用的代理、DNS 和 TLS 设置。临时 WebView 在 Andro
 {"pages":[{"url":"https://example.org/article"},{"url":"https://example.org/guide","max_chars":8000}]}
 ```
 
-每项返回来源、标题、抓取时间和正文，失败逐项说明原因。正文保留标题、链接、列表、引用、代码和表格，优先去除导航、脚本和侧栏；图片只保留文字描述。网页内容属于不可信资料，不能成为用户指令。
+每项返回来源、标题、抓取时间和正文，失败逐项说明原因。正文结合段落和链接密度选择文章，减少菜单、相关推荐、广告和隐藏内容混入；保留标题、链接、列表、定义、引用、文内注释与论坛多帖，代码块空行不被折叠；图片只保留文字描述。网页内容属于不可信资料，不能成为用户指令。
 
-长文默认每项返回12000字，最多30000字（按 UTF-16 单元计数，不拆分 emoji）。有 `has_more` 时，用返回的 `next_start_char` 作为该 URL 的 `start_char` 继续；成功页面缓存2分钟、最多8份，短期续读不重复抓取。每页响应最多4 MiB、总等待25秒。登录、验证码、纯 JavaScript 正文和 PDF/图片等非文本文件会明确失败，不把空壳页面当作已读全文。HTTP(S) 重定向最多5次，继续沿用应用网络设置，不转交给第三方网页转换服务。
+长文默认每项返回12000字，最多30000字（按 UTF-16 单元计数，不拆分 emoji）。有 `has_more` 时，用返回的 `next_start_char` 作为该 URL 的 `start_char` 继续；成功页面缓存2分钟、最多8份，短期续读不重复抓取。每页响应最多4 MiB、总等待25秒。登录、验证码、纯 JavaScript 正文和 PDF/图片等非文本文件会明确失败，不把空壳页面当作已读全文。HTTP(S) 重定向与立即跳转提示页合计最多5次，继续沿用应用网络设置，不转交给第三方网页转换服务。
 
 ## 本次公开联调（2026-11-05）
 
@@ -72,6 +74,15 @@ HTTP 搜索沿用应用的代理、DNS 和 TLS 设置。临时 WebView 在 Andro
 - Wikipedia 的 Markdown 条目可提取正文 Markdown（约4.6万字符），已核对标题、链接和结构；其余任意站点的提取质量不作保证。
 - 三种模型协议的批量封面和搜索/网页读取的模拟回归见维护总表。没有使用付费搜索 Key，没有运行手机或 Windows WebView 联调。
 
+## 正文提取改进样本（2026-11-05）
+
+- Dart `Classes` 官方文档：旧输出开头混入目录与站点安全横幅；新输出从正文标题开始，保留文章内 Note/Warning、代码和段落。新正文约1.07万字符，增加的部分包含原先误删的说明，不能只按长度变短判断提取更好。
+- Python Discourse 公开主题：原有约5469字符的多帖内容保持；另有确定性用例验证短回复不会因主帖更长而丢失。
+- Python Insider 3.14 发布文章：旧输出只得到166字符的跳转提示；网页读取器现在跟随立即跳转并取得实际文章，约7967字符。
+- Wikipedia Markdown 条目：仍保留约4.59万字符的文章内容。中文文档样本返回404，不计为提取成功。
+
+快照比较使用相同 HTML 输入；Python Insider 另外通过环境代理、Dart IO 传输运行实际网页读取器验证跳转与正文。没有运行设备原生网络或 WebView，本次结果不代表任意站点均可完整提取。
+
 ## 协议依据与验证
 
 - [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)
@@ -79,4 +90,4 @@ HTTP 搜索沿用应用的代理、DNS 和 TLS 设置。临时 WebView 在 Andro
 - [Anthropic Web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
 - [DeepSeek harness 搜索实现](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/web/web-search-deepseek/src/provider.ts)
 
-确定性测试使用模拟 HTTP、模型响应和本机临时数据库，不需要服务商 Key。`integration_test/agent_web_search_test.dart` 是需显式启用的官网联调，用公开查询 `Venera Prime GitHub` 检查 Bing 请求与 Google WebView，不访问用户账户；运行时添加 `--dart-define=PRIME_SEARCH_LIVE_TEST=true`。具体已完成范围记录在 [任务清单](agent-web-search-tasks.md)。
+确定性测试使用模拟 HTTP、模型响应和本机临时数据库，不需要服务商 Key。`integration_test/agent_web_search_test.dart` 是需显式启用的官网联调，用公开查询 `Venera Prime GitHub` 检查 Bing 请求与 Google WebView，要求结果中包含所查项目的来源，不把不相关链接计为通过；不访问用户账户；运行时添加 `--dart-define=PRIME_SEARCH_LIVE_TEST=true`。具体已完成范围记录在 [任务清单](agent-web-search-tasks.md)。
